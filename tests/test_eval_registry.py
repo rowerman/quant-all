@@ -14,7 +14,8 @@ from calculate.errors import MetricError
 
 BUILTIN_KEYS = [
     "coverage", "ic_stats", "ic_series", "ic_dist",
-    "bin_returns", "bin_curves", "spread", "bin_dist", "turnover",
+    "bin_returns", "bin_curves", "spread", "bin_dist", "turnover", "decay",
+    "exposure", "incremental_ic",
 ]
 
 
@@ -29,6 +30,17 @@ def test_metric_describe_is_flat():
     assert described["stage"] == "overview"
     assert described["params"] == []
     assert described["requires_quantiles"] is False
+
+
+def test_industry_switch_is_an_enum_param():
+    """行业层开关以枚举参数暴露：默认关闭，可选值来自已注册的行业数据源。"""
+    described = get_metric("exposure").describe()
+    assert described["stage"] == "exposure"
+    param = described["params"][0]
+    assert (param["key"], param["kind"], param["default"]) == ("industry", "enum", "off")
+    assert param["choices"][0] == "off"
+    assert "stock_basic" in param["choices"]
+    assert get_metric("incremental_ic").describe()["params"] == [param]
 
 
 def test_duplicate_registration_raises_with_code():
@@ -48,24 +60,25 @@ def test_duplicate_registration_raises_with_code():
 def test_custom_metric_extends_stage_plan():
     """加一个指标只需要注册一次：stage 计划与参数声明都会自动跟着走。"""
     fake = Metric(
-        key="fake_decay",
-        label="假的衰减",
-        stage="decay",
+        key="fake_correlation",
+        label="假的相关性",
+        stage="correlation",
         params=(MetricParam(key="quantiles", label="组数", kind="enum",
                             default=10, choices=(5, 10, 20)),),
         compute=lambda context, options: {"ok": True},
     )
-    assert "decay" not in calculate.planned_stages()
+    # 还没实现的 stage 不会出现在计划里，注册之后自动补上（V11-5 未做）
+    assert "correlation" not in calculate.planned_stages()
     register_metric(fake)
     try:
-        assert "decay" in calculate.planned_stages()
-        assert metrics_by_stage("decay") == (fake,)
-        described = get_metric("fake_decay").describe()
+        assert "correlation" in calculate.planned_stages()
+        assert metrics_by_stage("correlation") == (fake,)
+        described = get_metric("fake_correlation").describe()
         assert described["params"][0]["choices"] == [5, 10, 20]
         assert described["params"][0]["default"] == 10
     finally:
-        unregister_metric("fake_decay")
-    assert "decay" not in calculate.planned_stages()
+        unregister_metric("fake_correlation")
+    assert "correlation" not in calculate.planned_stages()
 
 
 def test_unknown_metric_raises():

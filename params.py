@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from calculate.errors import EvalParamError
 
@@ -45,8 +46,19 @@ class EvalParams:
     winsorize: bool = True
 
     def __post_init__(self) -> None:
-        if not self.factor:
-            raise EvalParamError("因子名不能为空")
+        if not isinstance(self.factor, str) or not self.factor:
+            raise EvalParamError("因子名必须是非空字符串")
+        for key in ("start", "end"):
+            value = getattr(self, key)
+            try:
+                if not isinstance(value, str) or date.fromisoformat(value).isoformat() != value:
+                    raise ValueError("需要 YYYY-MM-DD 格式")
+            except ValueError as error:
+                raise EvalParamError(f"{key} 日期非法：{value!r}，需要 YYYY-MM-DD") from error
+        if type(self.horizon) is not int or type(self.quantiles) is not int:
+            raise EvalParamError("horizon 与 quantiles 必须是整数")
+        if not isinstance(self.winsorize, bool):
+            raise EvalParamError("winsorize 必须是布尔值")
         if self.start > self.end:
             raise EvalParamError(f"起始日 {self.start} 晚于截止日 {self.end}")
         if self.horizon not in HORIZONS:

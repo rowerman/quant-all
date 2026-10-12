@@ -18,7 +18,8 @@ def test_stage_sequence_and_payloads(momentum_dir):
     events = list(evaluate("MOM_20", params, factor_dir=momentum_dir))
     assert [stage for stage, _ in events] == [
         "meta", "overview", "ic_series", "ic_dist",
-        "bins", "bin_curves", "spread", "bin_dist", "turnover", "decay", "done",
+        "bins", "bin_curves", "spread", "bin_dist", "turnover", "decay",
+        "exposure", "incremental_ic", "done",
     ]
     for _, payload in events:
         assert isinstance(json.loads(json.dumps(payload)), dict)
@@ -30,11 +31,12 @@ def test_stage_sequence_and_payloads(momentum_dir):
     assert [metric["key"] for metric in meta["metrics"]] == [
         "coverage", "ic_stats", "ic_series", "ic_dist",
         "bin_returns", "bin_curves", "spread", "bin_dist", "turnover", "decay",
+        "exposure", "incremental_ic",
     ]
     assert meta["panel"]["days"] == 20
     assert planned_stages() == (
         "overview", "ic_series", "ic_dist", "bins", "bin_curves", "spread", "bin_dist",
-        "turnover", "decay",
+        "turnover", "decay", "exposure", "incremental_ic",
     )
 
     payloads = dict(events)
@@ -50,9 +52,17 @@ def test_stage_sequence_and_payloads(momentum_dir):
     assert [item["horizon"] for item in payloads["decay"]["metrics"]["decay"]["curve"]] == [
         1, 3, 5, 10, 20
     ]
+    exposure = payloads["exposure"]["metrics"]["exposure"]
+    assert [item["key"] for item in exposure["styles"]] == [
+        "SIZE", "VALUE", "MOMENTUM", "SHORT_REV", "VOL", "LIQUIDITY", "BETA_60"
+    ]
+    assert exposure["industry"]["enabled"] is False
+    incremental = payloads["incremental_ic"]["metrics"]["incremental_ic"]
+    assert {"raw", "residual", "days", "basis"} <= set(incremental)
     assert [item["stage"] for item in payloads["done"]["stages"]] == [
         "meta", "overview", "ic_series", "ic_dist",
         "bins", "bin_curves", "spread", "bin_dist", "turnover", "decay",
+        "exposure", "incremental_ic",
     ]
 
 
@@ -79,4 +89,7 @@ def test_default_window_on_real_factor_library():
     assert stats["insufficient"] is False
     assert stats["valid_days"] > 500
     assert stats["rank_ic"]["mean"] is not None
-    assert payloads["done"]["total_elapsed_ms"] < 30_000
+    # 默认 3 年区间实测约 54 秒：建面板 9.7 秒、decay 8.7 秒（5 档标签的截面排名）、
+    # exposure 18.0 秒（风格取数 6.4 秒 + 合并 2.1 秒 + 标准化 3.6 秒 + 逐日回归 3 秒
+    # + 残差 IC 2.5 秒）、其余 stage 合计约 5 秒。上限留出余量，压测优化见 V11-9
+    assert payloads["done"]["total_elapsed_ms"] < 75_000

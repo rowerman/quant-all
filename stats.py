@@ -57,7 +57,7 @@ def max_drawdown(equity) -> float:
     array = np.asarray(equity, dtype="float64")
     if array.size == 0:
         return float("nan")
-    peak = np.maximum.accumulate(array)
+    peak = np.maximum.accumulate(np.concatenate(([1.0], array)))[1:]
     drawdown = array / peak - 1.0
     return float(drawdown.min())
 

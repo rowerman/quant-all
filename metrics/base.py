@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping as MappingABC
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from calculate.errors import MetricError
@@ -88,6 +89,10 @@ def register_metric(metric: Metric, overwrite: bool = False) -> Metric:
     """
     if not metric.key or not metric.stage:
         raise MetricError("指标必须有 key 与 stage")
+    if metric.stage not in STAGE_ORDER[1:-1]:
+        raise MetricError(f"非法指标 stage {metric.stage!r}；可选：{list(STAGE_ORDER[1:-1])}")
+    if not callable(metric.compute):
+        raise MetricError(f"指标 {metric.key} 的 compute 必须可调用")
     if metric.key in _METRICS and not overwrite:
         raise MetricError(f"指标 {metric.key} 重复注册；要覆盖请显式传 overwrite=True")
     _METRICS[metric.key] = metric
@@ -118,7 +123,7 @@ def unregister_metric(key: str) -> None:
 def list_metrics() -> tuple[Metric, ...]:
     """返回全部指标，按 stage 顺序排列（即前端卡片顺序）。"""
     return tuple(
-        sorted(_METRICS.values(), key=lambda item: (_STAGE_POSITION.get(item.stage, 99), item.key))
+        sorted(_METRICS.values(), key=lambda item: _STAGE_POSITION[item.stage])
     )
 
 
@@ -138,6 +143,32 @@ def default_options(metric: Metric) -> dict:
         metric: 指标定义。
     """
     return {param.key: param.default for param in metric.params}
+
+
+def resolve_options(metric: Metric, options: Mapping[str, Any] | None = None) -> dict:
+    """合并并校验指标参数，错误在读库前返回。
+
+    参数:
+        metric: 指标定义。
+        options: 参数名到取值的映射，未提供的参数取默认值。
+    """
+    if options is not None and not isinstance(options, MappingABC):
+        raise MetricError(f"指标 {metric.key} 的参数必须是映射")
+    supplied = {} if options is None else dict(options)
+    declared = {param.key: param for param in metric.params}
+    unknown = supplied.keys() - declared.keys()
+    if unknown:
+        raise MetricError(f"指标 {metric.key} 未声明参数：{sorted(unknown)}")
+    values = default_options(metric) | supplied
+    for key, param in declared.items():
+        value = values[key]
+        valid = (param.kind == "bool" and isinstance(value, bool)
+                 or param.kind == "int" and isinstance(value, int) and not isinstance(value, bool)
+                 or param.kind == "enum" and value in param.choices)
+        if not valid:
+            raise MetricError(f"指标 {metric.key} 参数 {key} 非法：{value!r}；"
+                              f"类型={param.kind}，可选={list(param.choices)}")
+    return values
 
 
 def clear_metrics() -> None:

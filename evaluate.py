@@ -9,9 +9,10 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Iterator
+from collections.abc import Mapping
 
 from calculate.jsonutil import json_safe
-from calculate.metrics import default_options, list_metrics, metrics_by_stage
+from calculate.metrics import list_metrics, metrics_by_stage, resolve_options
 from calculate.panel import build_panel, default_params
 from calculate.params import EvalParams
 from calculate.stages import STAGE_ORDER
@@ -26,11 +27,13 @@ def planned_stages() -> tuple[str, ...]:
     return tuple(stage for stage in STAGE_ORDER[1:-1] if metrics_by_stage(stage))
 
 
-def meta_payload(context) -> dict:
+def meta_payload(context, stages=None, metric_options=None) -> dict:
     """组装 meta 事件：参数回显、因子定义、面板概览与指标清单。
 
     参数:
         context: 评估上下文。
+        stages: 本次实际执行的阶段；None 表示全部已实现阶段。
+        metric_options: 本次已校验的指标参数，用于回显。
     """
     spec = context.spec
     return {
@@ -50,13 +53,14 @@ def meta_payload(context) -> dict:
         "universe": context.summary["universe"],
         "panel": {key: value for key, value in context.summary.items() if key != "universe"},
         "metrics": [metric.describe() for metric in list_metrics()],
-        "stages": list(planned_stages()),
+        "stages": list(planned_stages() if stages is None else stages),
+        "metric_options": metric_options or {},
     }
 
 
 def evaluate(factor: str, params: EvalParams | None = None, *,
              db_file: Path | str | None = None, factor_dir: Path | str | None = None,
-             stages=None) -> Iterator[tuple[str, dict]]:
+             stages=None, metric_options: Mapping | None = None) -> Iterator[tuple[str, dict]]:
     """跑一次因子评估，按 stage 逐段产出结果。
 
     参数:
@@ -64,12 +68,30 @@ def evaluate(factor: str, params: EvalParams | None = None, *,
         params: 评估参数；留空按「最近 3 年 + 默认口径」构造。
         db_file: 日线主库路径，默认取项目配置。
         factor_dir: 因子数据根目录，默认取项目配置。
-        stages: 只跑这些 stage；留空表示全部。
+        stages: 只跑这些已实现 stage；留空表示全部。
+        metric_options: 指标 key 到参数映射，例如
+            {"exposure": {"industry": "stock_basic"}}。不改变其他指标的参数。
 
     产出:
         ``(stage, payload)`` 序列，payload 保证是 JSON 可序列化的 dict。
     """
     started = time.perf_counter()
+    available = planned_stages()
+    if isinstance(stages, str):
+        raise EvalParamError("stages 必须是阶段名序列，不能是字符串")
+    selected = None if stages is None else set(stages)
+    unknown = set() if selected is None else selected - set(available)
+    if unknown:
+        raise EvalParamError(f"未实现或未知 stage：{sorted(unknown)}；可选：{list(available)}")
+    if metric_options is not None and not isinstance(metric_options, Mapping):
+        raise EvalParamError("metric_options 必须是指标 key 到参数映射")
+    supplied = {} if metric_options is None else dict(metric_options)
+    unknown_metrics = supplied.keys() - {metric.key for metric in list_metrics()}
+    if unknown_metrics:
+        raise EvalParamError(f"未知指标参数：{sorted(unknown_metrics)}")
+    options = {metric.key: resolve_options(metric, supplied.get(metric.key))
+               for metric in list_metrics()}
+    actual_stages = tuple(stage for stage in available if selected is None or stage in selected)
     target_db = db_file or DB_FILE
     target_dir = factor_dir or FACTOR_DIR
     if params is None:
@@ -80,9 +102,8 @@ def evaluate(factor: str, params: EvalParams | None = None, *,
         )
 
     context = build_panel(params, db_file=target_db, factor_dir=target_dir)
-    selected = None if stages is None else set(stages)
     timings = [{"stage": "meta", "elapsed_ms": round(context.panel_elapsed_ms, 1)}]
-    yield ("meta", json_safe(meta_payload(context)))
+    yield ("meta", json_safe(meta_payload(context, actual_stages, options)))
 
     for stage in STAGE_ORDER[1:-1]:
         metrics = metrics_by_stage(stage)
@@ -90,7 +111,7 @@ def evaluate(factor: str, params: EvalParams | None = None, *,
             continue
         stage_started = time.perf_counter()
         results = {
-            metric.key: json_safe(metric.compute(context, default_options(metric)))
+            metric.key: json_safe(metric.compute(context, options[metric.key]))
             for metric in metrics
         }
         elapsed_ms = (time.perf_counter() - stage_started) * 1000

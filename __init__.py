@@ -7,6 +7,7 @@
 数据读取一律走 DuckDB 只读连接（主库的 ``md`` / ``ref`` 表 + ``factor_data`` 的 parquet）。
 """
 
+from calculate.history import ic_sql, load_daily_ic
 from calculate.evaluate import STAGE_ORDER, evaluate, meta_payload, planned_stages
 from calculate.metrics import (
     Metric,
@@ -24,16 +25,36 @@ from calculate.panel import (
     build_panel,
     default_params,
     open_source,
+    panel_columns,
     panel_sql,
     resolve_factor,
     summarize_panel,
 )
 from calculate.params import (
+    DECAY_HORIZONS,
     HORIZONS,
     MAX_TRADE_DAYS,
     PRICE_CHANNELS,
     QUANTILE_CHOICES,
     EvalParams,
+)
+from calculate.exposure import (
+    ExposureResult,
+    describe_styles,
+    residual_rank_ic,
+    run_exposure,
+)
+from calculate.styles import (
+    INDUSTRY_OFF,
+    INDUSTRY_SOURCES,
+    STYLE_FACTORS,
+    STYLE_KEYS,
+    IndustrySource,
+    StockBasicIndustry,
+    StyleSpec,
+    build_styles,
+    list_industry_sources,
+    resolve_industry_source,
 )
 from calculate.universe import (
     ALL_A,
@@ -46,7 +67,10 @@ from calculate.universe import (
 
 __all__ = [
     "ALL_A",
+    "DECAY_HORIZONS",
     "HORIZONS",
+    "INDUSTRY_OFF",
+    "INDUSTRY_SOURCES",
     "MAX_PANEL_ROWS",
     "MAX_TRADE_DAYS",
     "MIN_LISTED_DAYS",
@@ -54,26 +78,41 @@ __all__ = [
     "PRICE_CHANNELS",
     "QUANTILE_CHOICES",
     "STAGE_ORDER",
+    "STYLE_FACTORS",
+    "STYLE_KEYS",
     "TRADABLE_FILTER",
     "EvalContext",
     "EvalParams",
+    "ExposureResult",
+    "IndustrySource",
     "Metric",
     "MetricParam",
+    "StockBasicIndustry",
+    "StyleSpec",
     "UniverseSpec",
+    "ic_sql",
+    "load_daily_ic",
+    "build_styles",
     "build_panel",
     "default_params",
+    "describe_styles",
     "evaluate",
     "get_metric",
+    "list_industry_sources",
     "list_metrics",
     "list_universes",
     "meta_payload",
     "metrics_by_stage",
     "open_source",
+    "panel_columns",
     "panel_sql",
     "planned_stages",
     "register_metric",
+    "residual_rank_ic",
     "resolve_factor",
+    "resolve_industry_source",
     "resolve_universe",
+    "run_exposure",
     "summarize_panel",
     "unregister_metric",
 ]

@@ -6,7 +6,7 @@ import pytest
 from scipy import stats
 
 import factors
-from calculate.daily import daily_ic
+from calculate.daily import daily_ic, rank_pct_by_day
 from calculate.metrics import coverage as coverage_metric
 from calculate.metrics import ic as ic_metric
 from calculate.normalize import mad_winsorize
@@ -76,6 +76,19 @@ def test_perfect_rank_factor_gives_unit_rank_ic():
     panel["label"] = panel.groupby("trade_date")["factor"].rank()
     series = daily_ic(panel, winsorize=False)
     assert np.allclose(series["rank_ic"].to_numpy(), 1.0, atol=1e-12)
+
+
+def test_rank_pct_by_day_matches_pandas_with_ties_and_missing():
+    """截面分位与 pandas 同语义：并列取平均名次，空值不参与也留空。"""
+    rng = np.random.default_rng(3)
+    days = np.repeat(np.arange(5), 12)
+    values = rng.integers(0, 4, size=days.size).astype("float64")  # 大量并列
+    values[[3, 17, 40]] = np.nan
+    mine = rank_pct_by_day(days, values)
+    expected = pd.DataFrame({"day": days, "value": values}).groupby("day")["value"].rank(
+        pct=True
+    ).to_numpy()
+    assert np.allclose(mine, expected, atol=1e-15, equal_nan=True)
 
 
 def test_series_stats_matches_numpy():

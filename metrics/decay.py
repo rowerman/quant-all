@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from calculate.binning import bin_daily_returns
+from calculate.binning import bin_returns_multi
 from calculate.daily import daily_rank_ic_multi
 from calculate.metrics.base import Metric, register_metric
 from calculate.params import DECAY_HORIZONS
@@ -63,23 +63,6 @@ def _weight_column(weight: str) -> str | None:
     return None if weight == "equal" else "total_mv"
 
 
-def _pool_mean(frame: pd.DataFrame, column: str, weight_column: str | None) -> pd.Series:
-    """池内该档的平均收益，权重要与分位口径一致。
-
-    参数:
-        frame: 分位分组表（池内、因子非空）。
-        column: 用哪一档标签算收益。
-        weight_column: 加权列；为空表示等权。
-    """
-    work = frame.loc[frame[column].notna()]
-    if weight_column is None:
-        return work.groupby("trade_date")[column].mean()
-    work = work.loc[work[weight_column].notna() & (work[weight_column] > 0)]
-    weighted = work.assign(_w=work[column] * work[weight_column])
-    grouped = weighted.groupby("trade_date")
-    return grouped["_w"].sum() / grouped[weight_column].sum()
-
-
 def _spread_stats(series: pd.Series) -> dict:
     """把一条多空/超额序列压成统计量。
 
@@ -124,19 +107,20 @@ def compute_decay(context, options) -> dict:
     quantiles = context.params.quantiles
     long_excess: dict[str, list] = {weight: [] for weight in WEIGHTINGS}
     long_short: dict[str, list] = {weight: [] for weight in WEIGHTINGS}
-    for horizon in horizons:
-        column = columns[horizon]
-        for weight in WEIGHTINGS:
-            weight_column = _weight_column(weight)
-            daily = bin_daily_returns(
-                frame, quantiles, label_column=column, weight_column=weight_column
-            )
+    label_columns = [columns[horizon] for horizon in horizons]
+    for weight in WEIGHTINGS:
+        matrices, pools = bin_returns_multi(
+            frame, quantiles, label_columns, _weight_column(weight)
+        )
+        for horizon in horizons:
+            column = columns[horizon]
+            daily = matrices[column]
             top = daily[quantiles]
             bottom = daily[1]
-            pool = _pool_mean(frame, column, weight_column)
+            pool = pools[column]
             long_excess[weight].append({
                 "horizon": horizon,
-                **_spread_stats(top - pool.reindex(top.index)),
+                **_spread_stats(top - pool),
             })
             long_short[weight].append({
                 "horizon": horizon,
@@ -152,9 +136,11 @@ def compute_decay(context, options) -> dict:
         hint = (f"主档（{primary_horizon} 日）有效交易日只有 {primary['days']} 天，"
                 f"少于 {INSUFFICIENT_DAYS} 天，结论不可用；请拉长评估区间")
     else:
+        ir = primary["rank_ic_ir"]
+        ir_note = "ICIR 无定义（RankIC 时序波动为零）" if ir is None else f"ICIR {ir:.3f}"
         hint = (
             f"主档 {primary_horizon} 日 RankIC 均值 {primary['rank_ic_mean']:+.4f}，"
-            f"ICIR {primary['rank_ic_ir']:.3f}；各档独立取样本，长周期档天数更少"
+            f"{ir_note}；各档独立取样本，长周期档天数更少"
         )
     return {
         "horizons": horizons,

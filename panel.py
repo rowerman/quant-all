@@ -339,13 +339,26 @@ class EvalContext:
         """风格因子原始值（带缓存）：键 stock_code + trade_date，7 个风格列。
 
         风格因子需要 260 个交易日的回看，塞进面板要多占几百万行内存，
-        所以单独取一次（实测 3 年区间约 1.1 秒），只有用到拆分阶段才触发。
+        所以单独取一次，只有用到拆分阶段才触发；耗时以包 README 的实测为准。
         """
         from calculate.styles import build_styles
 
         if "styles" not in self._cache:
             self._cache["styles"] = build_styles(self.params, db_file=self.db_file)
         return self._cache["styles"]
+
+    def exposures(self, industry_key: str = "off"):
+        """风格拆分结果（带缓存）：逐日截面回归的系数、t 值与残差。
+
+        参数:
+            industry_key: 行业数据源标识，``off`` 表示不加行业层。
+        """
+        from calculate.exposure import run_exposure
+
+        key = ("exposure", industry_key or "off")
+        if key not in self._cache:
+            self._cache[key] = run_exposure(self, industry_key or "off")
+        return self._cache[key]
 
     def daily_ic(self, winsorize: bool | None = None) -> pd.DataFrame:
         """逐日 IC 序列（带缓存），列：ic、rank_ic、n。
@@ -389,7 +402,8 @@ class EvalContext:
         key = ("matrices", int(count))
         if key not in self._cache:
             frame = self.bins(count)
-            self._cache[key] = (bin_matrix(frame), rank_matrix(frame))
+            dates = pd.DatetimeIndex(sorted(self.panel["trade_date"].unique()), name="trade_date")
+            self._cache[key] = (bin_matrix(frame).reindex(dates), rank_matrix(frame).reindex(dates))
         return self._cache[key]
 
 

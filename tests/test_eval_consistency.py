@@ -32,7 +32,7 @@ def test_rank_ic_matches_validate_direction_check(momentum_dir):
         conn.close()
     row = next(item for item in checks if item["name"] == "MOM_20")
 
-    # 容差留给并列名次的语义差异（DuckDB percent_rank 取最小名次、pandas 取平均名次）
-    assert row["value"] == pytest.approx(mine["rank_ic"]["mean"], abs=1e-5)
+    # 两边都先取有效配对，再用平均并列名次，恢复原定一致性验收。
+    assert row["value"] == pytest.approx(mine["rank_ic"]["mean"], abs=1e-6)
     days = int(re.search(r"(\d+) 个交易日", row["detail"]).group(1))
     assert days == mine["valid_days"]

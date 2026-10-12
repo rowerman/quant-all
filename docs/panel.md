@@ -15,14 +15,22 @@ factor_data/<族>/year=*/part.parquet   因子值
 
 `stock_code`、`trade_date`、`factor`、`label`、`label_1d`、`in_universe`、`is_st`、
 `listed_days`、`can_buy_close`、`can_sell_close`、`total_mv`、`circ_mv`、
-`turnover_rate`、`pe_ttm`、`pb`、`amount_cny`、`close`、`ret`
+`turnover_rate`、`pe_ttm`、`pb`、`amount_cny`、`close`、`ret`，
+再往后跟**多周期标签列**（V11-3 加入，只有衰减阶段用）
 
 - 主键是 `stock_code + trade_date`，唯一性在 `build_panel` 里断言；
 - `factor` / `label` 用 float64 参与计算，原料列用 float32 省内存；
 - `label` 允许为空：停牌行没有未来价，区间末端不足 N 个交易日的也没有；
 - `label_1d` 是**同价格通道的 1 日前瞻收益**，专门给分位净值与多空曲线用：
   期收益逐日重叠，累乘会把同一区间重复计入，曲线必须用 1 日口径（V11-2 加入）；
+- 多周期标签列＝衰减档位里除 `label`（= `params.horizon`）与 `label_1d`（= 1 日档）
+  之外的那几档，命名为 `label_h{h}`，同价格通道、同为 float64。
+  默认（5 日档 + close）面板多出 `label_h3` / `label_h10` / `label_h20` 三列；
+  列名一律通过 `EvalParams.horizon_label_column(h)` 或 `EvalContext.horizon_label(h)`
+  取，别在指标里手写列名。多出来的列不复制 `label` / `label_1d`，避免白占几百万行内存；
 - 面板**不做排序**：几百万行的 `ORDER BY` 要多花 2 秒以上，下游都按交易日分组。
+  风格因子（V11-4）需要 260 个交易日的回看，**不放进面板**，由 `EvalContext.styles()`
+  单独取一次（旧实现实测约 6.4 秒，新实现耗时见包 README），只有进入拆分阶段才触发。
 
 ## 股票池
 
@@ -54,3 +62,14 @@ factor_data/<族>/year=*/part.parquet   因子值
 
 行数上限用 parquet 的文件级元数据估（不扫数据），是个**上界**：区间跨越的整年都算进去，
 所以临界情况下会把实际没超的区间也拦下来。实测最长可用区间约 6 年（≈710 万行）。
+
+## 全历史 IC 的独立路径
+
+`load_daily_ic(params, db_file=..., factor_dir=...)` 用 DuckDB 内聚合返回日度
+ic/rank_ic/n，不构建完整面板，所以不受本页完整面板的 2400 日/800 万行限制。
+两条路径都在有效配对上按平均并列名次计算 RankIC；只有 Pearson IC 受 winsorize 影响。
+独立连接设置工作内存 1GB、4 个数据库线程，溢出文件位于自动清理的临时目录。
+该限制是 DuckDB 工作内存限制，不是整个 Python 进程 RSS 上限。
+覆盖率、分位和风格分析仍走完整面板；不可把全历史 IC 的耗时当作完整分析的耗时。
+
+函数参考与示例见 [../README.md](../README.md)。

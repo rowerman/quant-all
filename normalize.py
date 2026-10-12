@@ -72,3 +72,32 @@ def zscore(values) -> np.ndarray:
     if std <= 0:
         return np.full(array.shape, np.nan)
     return (array - float(valid.mean())) / std
+
+
+def zscore_by_day(dates, values) -> np.ndarray:
+    """按交易日分别做截面标准化。
+
+    参数:
+        dates: 与 values 等长、表示交易日的序列。
+        values: 一维取值序列，允许含 NaN。
+
+    返回:
+        标准化后的数组，顺序与输入一致；有效样本不足 2 个或标准差为 0 的
+        交易日返回空值。
+    """
+    value = np.asarray(values, dtype="float64")
+    frame = pd.DataFrame({
+        "day": np.asarray(dates),
+        "value": np.where(np.isfinite(value), value, np.nan),
+    })
+    frame["square"] = frame["value"] ** 2
+    grouped = frame.groupby("day", sort=False)
+    count = grouped["value"].transform("count").to_numpy(dtype="float64")
+    mean = grouped["value"].transform("mean").to_numpy(dtype="float64")
+    square_sum = grouped["square"].transform("sum").to_numpy(dtype="float64")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        variance = (square_sum - count * mean ** 2) / np.where(count > 1, count - 1, np.nan)
+        std = np.sqrt(np.clip(variance, 0.0, None))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        result = (value - mean) / std
+    return np.where((count >= 2) & (std > 0), result, np.nan)
