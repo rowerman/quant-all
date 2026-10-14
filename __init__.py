@@ -8,6 +8,10 @@
 """
 
 from calculate.history import ic_sql, load_daily_ic
+from calculate.correlation import (
+    available_factors, accumulate_correlations, daily_spearman_matrix,
+    correlation_result, compute_correlation,
+)
 from calculate.evaluate import STAGE_ORDER, evaluate, meta_payload, planned_stages
 from calculate.metrics import (
     Metric,
@@ -91,6 +95,11 @@ __all__ = [
     "StyleSpec",
     "UniverseSpec",
     "ic_sql",
+    "available_factors",
+    "accumulate_correlations",
+    "daily_spearman_matrix",
+    "correlation_result",
+    "compute_correlation",
     "load_daily_ic",
     "build_styles",
     "build_panel",

@@ -23,6 +23,19 @@ ROLLING_WINDOW = 20
 HIST_BINS = 40
 
 
+def _cumulative(values: np.ndarray) -> np.ndarray:
+    """计算累计和；缺失日保留空值，但不污染后续累计值。
+
+    参数:
+        values: 日度 IC 或 RankIC 序列，可含 NaN/无穷值。
+    """
+    values = np.asarray(values, dtype="float64")
+    finite = np.isfinite(values)
+    cumulative = np.cumsum(np.where(finite, values, 0.0))
+    cumulative[~finite] = np.nan
+    return cumulative
+
+
 def _blank(stats: dict) -> dict:
     """样本不足时只保留天数，其余数值一律置空。
 
@@ -77,20 +90,26 @@ def compute_stats(context, options) -> dict:
 
 
 def compute_series(context, options) -> dict:
-    """输出逐日 IC 序列与 20 日滚动均值，供前端画柱状图与曲线。
+    """输出逐日 IC 序列、累计和与 20 日滚动均值，供前端画曲线。
 
     参数:
         context: 评估上下文。
         options: 指标参数（本指标无参数）。
     """
     series = context.daily_ic()
+    ic = series["ic"].to_numpy(dtype="float64")
+    rank_ic = series["rank_ic"].to_numpy(dtype="float64")
     rolling_ic = series["ic"].rolling(ROLLING_WINDOW, min_periods=1).mean()
     rolling_rank = series["rank_ic"].rolling(ROLLING_WINDOW, min_periods=1).mean()
     return {
         "dates": [day.strftime("%Y-%m-%d") for day in series.index],
-        "ic": series["ic"].to_numpy(),
-        "rank_ic": series["rank_ic"].to_numpy(),
+        "ic": ic,
+        "rank_ic": rank_ic,
         "n": series["n"].to_numpy(),
+        "cumulative": {
+            "ic": _cumulative(ic),
+            "rank_ic": _cumulative(rank_ic),
+        },
         "rolling": {
             "window": ROLLING_WINDOW,
             "ic": rolling_ic.to_numpy(),

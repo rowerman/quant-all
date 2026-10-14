@@ -19,7 +19,7 @@ def test_stage_sequence_and_payloads(momentum_dir):
     assert [stage for stage, _ in events] == [
         "meta", "overview", "ic_series", "ic_dist",
         "bins", "bin_curves", "spread", "bin_dist", "turnover", "decay",
-        "exposure", "incremental_ic", "done",
+        "exposure", "incremental_ic", "correlation", "done",
     ]
     for _, payload in events:
         assert isinstance(json.loads(json.dumps(payload)), dict)
@@ -31,12 +31,12 @@ def test_stage_sequence_and_payloads(momentum_dir):
     assert [metric["key"] for metric in meta["metrics"]] == [
         "coverage", "ic_stats", "ic_series", "ic_dist",
         "bin_returns", "bin_curves", "spread", "bin_dist", "turnover", "decay",
-        "exposure", "incremental_ic",
+        "exposure", "incremental_ic", "correlation",
     ]
     assert meta["panel"]["days"] == 20
     assert planned_stages() == (
         "overview", "ic_series", "ic_dist", "bins", "bin_curves", "spread", "bin_dist",
-        "turnover", "decay", "exposure", "incremental_ic",
+        "turnover", "decay", "exposure", "incremental_ic", "correlation",
     )
 
     payloads = dict(events)
@@ -62,7 +62,7 @@ def test_stage_sequence_and_payloads(momentum_dir):
     assert [item["stage"] for item in payloads["done"]["stages"]] == [
         "meta", "overview", "ic_series", "ic_dist",
         "bins", "bin_curves", "spread", "bin_dist", "turnover", "decay",
-        "exposure", "incremental_ic",
+        "exposure", "incremental_ic", "correlation",
     ]
 
 
@@ -83,7 +83,7 @@ def test_factor_name_mismatch_raises(momentum_dir):
 
 def test_default_window_on_real_factor_library():
     """默认口径（最近 3 年 + 全A池 + close_5）在真实因子库上跑通且数值可用。"""
-    events = list(evaluate("MOM_20"))
+    events = list(evaluate("MOM_20", stages=[s for s in planned_stages() if s != "correlation"]))
     payloads = dict(events)
     stats = payloads["overview"]["metrics"]["ic_stats"]
     assert stats["insufficient"] is False

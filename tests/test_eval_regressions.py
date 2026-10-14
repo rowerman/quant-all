@@ -91,7 +91,7 @@ def test_metric_order_preserves_registration_within_stage():
     try:
         register_metric(Metric('zzz_regression', '先注册', 'correlation', lambda c, o: {}))
         register_metric(Metric('aaa_regression', '后注册', 'correlation', lambda c, o: {}))
-        assert [m.key for m in metrics_by_stage('correlation')] == ['zzz_regression', 'aaa_regression']
+        assert [m.key for m in metrics_by_stage('correlation')] == ['correlation', 'zzz_regression', 'aaa_regression']
     finally:
         unregister_metric('zzz_regression')
         unregister_metric('aaa_regression')
@@ -157,7 +157,7 @@ def test_metric_module_is_discovered_without_editing_imports(tmp_path, monkeypat
     importlib.invalidate_caches()
     try:
         metrics.discover_metrics()
-        assert metrics.metrics_by_stage('correlation')[0].key == 'discovered_regression'
+        assert metrics.metrics_by_stage('correlation')[-1].key == 'discovered_regression'
         metrics.discover_metrics()  # 重复发现不重复注册
     finally:
         unregister_metric('discovered_regression')

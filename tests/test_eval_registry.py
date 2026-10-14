@@ -15,7 +15,7 @@ from calculate.errors import MetricError
 BUILTIN_KEYS = [
     "coverage", "ic_stats", "ic_series", "ic_dist",
     "bin_returns", "bin_curves", "spread", "bin_dist", "turnover", "decay",
-    "exposure", "incremental_ic",
+    "exposure", "incremental_ic", "correlation",
 ]
 
 
@@ -67,18 +67,18 @@ def test_custom_metric_extends_stage_plan():
                             default=10, choices=(5, 10, 20)),),
         compute=lambda context, options: {"ok": True},
     )
-    # 还没实现的 stage 不会出现在计划里，注册之后自动补上（V11-5 未做）
-    assert "correlation" not in calculate.planned_stages()
+    original = metrics_by_stage("correlation")
+    assert "correlation" in calculate.planned_stages()
     register_metric(fake)
     try:
         assert "correlation" in calculate.planned_stages()
-        assert metrics_by_stage("correlation") == (fake,)
+        assert metrics_by_stage("correlation") == (*original, fake)
         described = get_metric("fake_correlation").describe()
         assert described["params"][0]["choices"] == [5, 10, 20]
         assert described["params"][0]["default"] == 10
     finally:
         unregister_metric("fake_correlation")
-    assert "correlation" not in calculate.planned_stages()
+    assert metrics_by_stage("correlation") == original
 
 
 def test_unknown_metric_raises():

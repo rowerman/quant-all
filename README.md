@@ -8,7 +8,7 @@
 在项目根目录 `/home/hanwen/quant` 使用 `.venv/bin/python`，或在 notebook 的项目环境里
 `import calculate`。不要在 calculate/ 内直接执行 `python evaluate.py`，那会改变包导入路径。
 使用 Python 3.12；依赖 numpy、pandas、scipy、duckdb（沿用项目 .venv）。
-后端、前端与因子相关性阶段尚未实现；当前入口是 Python。
+后端、前端与因子相关性阶段已接入；后端原生计算资源保护见 [原生计算资源保护](docs/native.md)。
 
 ## 快速调用
 
@@ -86,7 +86,7 @@ for stage, payload in evaluate("MOM_20", params,
 |---|---|---|---|
 | coverage | overview | 全样本/池内/配对覆盖率、分布、每日样本数 | `calculate.metrics.coverage.compute` |
 | ic_stats | overview | IC/RankIC 均值、ICIR、t、胜率、方向 | `calculate.metrics.ic.compute_stats` |
-| ic_series | ic_series | 每日 IC/RankIC/n 与 20 日滚动均值 | `calculate.metrics.ic.compute_series` |
+| ic_series | ic_series | 每日 IC/RankIC/n、累计 IC/RankIC 与 20 日滚动均值 | `calculate.metrics.ic.compute_series` |
 | ic_dist | ic_dist | IC 直方图、分位数、偏度峰度 | `calculate.metrics.ic.compute_dist` |
 | bin_returns | bins | 分位期收益、标准误、t、单调性；两套权重 | `calculate.metrics.bins.compute_bin_returns` |
 | bin_curves | bin_curves | 同价格通道 1 日收益累乘；两套权重 | `calculate.metrics.bins.compute_bin_curves` |
@@ -162,8 +162,10 @@ frontend/    前端：纯 HTML/JS + ECharts（待实现）
 | `params.py` | `EvalParams` 定义与校验 | `panel`、指标、接口层 | `errors` | 加字段要同步 `describe()`，meta 事件靠它回显参数 |
 | `universe.py` | 股票池定义与指数成分 CTE | `panel`、接口层 | `errors` | 全 A 池口径必须与数据项目的 `scripts/build_factors/validate.py` 的 `POOL_FILTER` 一字不差；指数池用**上一个已结束月份**的月末快照，别改成当月（会前视） |
 | `panel.py` | 评估面板、连接、默认参数、`EvalContext` | `evaluate`、各指标、后续拆分阶段 | `factors` 注册表、`universe`、DuckDB、`config` | 面板列是公共契约，后续阶段只加不删；行数/交易日上限也在这里；**不要给面板加 ORDER BY**（几百万行排序要多花 2 秒以上，下游都按交易日分组） |
+| `correlation.py` | 按月取数、成对Spearman、Top-N与矩阵 | metrics/correlation | DuckDB、factors、panel上下文 | 成对缺失后重排名，不用标签；目录跟随context.factor_dir |
+| `metrics/correlation.py` | 相关性指标声明 | 注册表/evaluate | correlation、metrics/base | Top-N只影响明细数量，不改变全矩阵 |
 | `history.py` | 全历史 IC SQL 聚合与轻量读取 | 调用方 | panel/universe/DuckDB | 不构建完整面板；逐日平均并列排名，工作内存 1GB，临时文件自动清理 |
-| `daily.py` | 逐日截面相关（IC / RankIC、通用 `daily_corr`、多档 `daily_rank_ic_multi` 与截面排名 `rank_pct_by_day`） | `metrics/ic.py`、`metrics/decay.py`，后续相关性阶段 | `normalize` | RankIC 一律对**原始值**排名；去极值只作用于 Pearson IC；池内过滤默认开（`pool_only=True`）；`rank_pct_by_day` 必须与 pandas `groupby().rank(pct=True)` 同语义（并列取平均名次、按交易日内的位置算名次） |
+| `daily.py` | 逐日截面相关（IC / RankIC、通用 `daily_corr`、多档 `daily_rank_ic_multi` 与截面排名 `rank_pct_by_day`） | `metrics/ic.py`、`metrics/decay.py`，相关性模块独立读取 | `normalize` | RankIC 一律对**原始值**排名；去极值只作用于 Pearson IC；池内过滤默认开（`pool_only=True`）；`rank_pct_by_day` 必须与 pandas `groupby().rank(pct=True)` 同语义（并列取平均名次、按交易日内的位置算名次） |
 | `normalize.py` | MAD 去极值、分位、zscore | `daily`、后续风格因子 | — | 都按交易日分组调用，NaN 原样保留 |
 | `stages.py` | `STAGE_ORDER`（stage 顺序契约） | `evaluate`、指标注册表 | — | 单独成模块是为了让注册表能按它排序又不与评估入口循环依赖 |
 | `stats.py` | 序列四件套、净值累乘、最大回撤、年化夏普 | IC 家族与 binplot 家族 | — | 加统计口径改这里，别在各指标里各写一遍 |
@@ -177,7 +179,7 @@ frontend/    前端：纯 HTML/JS + ECharts（待实现）
 | `metrics/turnover.py` | 分位换手、全池换手、因子自相关（lag 1/5/20） | 经注册表调用 | `binning`、`stats` | 宽表从 `EvalContext.bin_matrices()` 取，别自己再透视一次 |
 | `metrics/decay.py` | 多周期衰减：1/3/5/10/20 日标签的 RankIC 与多头超额、多空价差（各两套权重） | 经注册表调用 | `daily`、`binning`、`stats` | 各档独立取样本，末端缺标签只从该档剔除、不填充；主档取参数里的周期，参数用 15 档时回退到最接近的一档 |
 | `metrics/exposure.py` | 风格暴露（系数/t 值/逐日序列）与剔除风格后的增量 IC | 经注册表调用 | `exposure`、`stats`、`daily` | 两个 stage 共用同一份回归结果（`EvalContext.exposures()` 带缓存）；行业开关是 `enum` 参数，默认 `off` |
-| `evaluate.py` | stage 生成器与 meta 组装 | 接口层（后续 FastAPI） | `panel`、`metrics` | `STAGE_ORDER` 是前后端的公共契约，后续阶段只往空位里填 |
+| `evaluate.py` | stage 生成器与 meta 组装 | backend服务 | `panel`、`metrics` | `STAGE_ORDER` 是前后端的公共契约，后续阶段只往空位里填 |
 
 ## 怎么用
 
@@ -201,7 +203,7 @@ for stage, payload in evaluate("MOM_20", params, stages=["overview", "ic_series"
 |---|---|
 | `meta` | 因子定义、参数回显、股票池与面板概览、指标清单（前端据此先摆骨架） |
 | `overview` | `metrics.coverage`（覆盖率与分布）、`metrics.ic_stats`（IC/RankIC 汇总） |
-| `ic_series` | 逐日 IC / RankIC / 样本数与 20 日滚动均值 |
+| `ic_series` | 逐日 IC / RankIC / 样本数、累计 IC / RankIC 与 20 日滚动均值 |
 | `ic_dist` | 40 桶直方图、分位数、偏度峰度 |
 | `bins` | `metrics.bin_returns`：分位平均期收益、t 值、标准误、胜率、单调性（两种权重） |
 | `bin_curves` | `metrics.bin_curves`：分位累计净值曲线（1 日收益累乘，两种权重） |
@@ -213,7 +215,7 @@ for stage, payload in evaluate("MOM_20", params, stages=["overview", "ic_series"
 | `incremental_ic` | `metrics.incremental_ic`：剔除风格后残差的 RankIC（`residual`）与原始 RankIC（`raw`）对照、`delta`、`survivor_share`、逐日两条序列 |
 | `done` | 各 stage 耗时、总耗时、面板概览 |
 
-后续阶段还会填入 `correlation`（V11-5 与已有因子的相关性），接口与前端不用改。
+`correlation` 阶段已实现：与全部已注册且落盘因子的逐日成对 Spearman 均值、Top-N和全矩阵。前后端已接入，启动见 `backend/README.md`。
 
 ## 怎么加一个指标
 
@@ -1483,3 +1485,38 @@ EVAL-101 参数/日期/阶段，102 面板，103 股票池，104 因子，201 �
 原定全历史 IC ≤15 秒通过此轻量路径验收；完整 12 指标的耗时另算，
 不能把这条记录当作完整评估 ≤15 秒。完整路径仍保留面板上限，
 V11-5～V11-9 的相关性、前后端与多请求压测仍按原计划实施。
+
+## V11-5 相关性接口（2026-10-12）
+
+模块 `calculate.correlation` 只读取产物，不使用数据项目内部脚本。
+`EvalContext.factor_dir` 保存此次评估所用的因子目录（默认 `factor_data/`）；
+`build_panel` 已传入此字段，相关性不会绕过调用者指定的自定义目录。
+`open_source` 默认每连接工作内存1GB、2线程；全历史轻量IC仍独立设4线程。
+
+| 公开函数 | 输入与输出 |
+|---|---|
+| `available_factors(factor_dir=FACTOR_DIR)` | parquet根目录 → `{族: 因子名元组}`；仅保留注册且实际存在的列，空目录返回空字典 |
+| `daily_spearman_matrix(values)` | 股票×因子float矩阵 → 成对秩相关方阵；非有限值成对删除、至少5只、常数返回NaN |
+| `accumulate_correlations(frame,names,sums,days)` | 含trade_date的月长表、因子列名、和/计数方阵 → 原地累计；不返回结果 |
+| `correlation_result(names,sums,days,factor,top_n=10)` | 累计矩阵、目标因子 → names/matrix/days/top等字典；不足20有效日返回NaN，Top-N排除自身，范围1～100 |
+| `compute_correlation(context,options)` | 评估上下文与`{'top_n':10}` → 按月计算的完整结果；由注册指标调用，无长期缓存 |
+
+```python
+import calculate
+from calculate.jsonutil import json_safe
+params = calculate.EvalParams('MOM_20', '2024-01-01', '2024-12-31')
+result = dict(calculate.evaluate('MOM_20', params, stages=['correlation'],
+    metric_options={'correlation': {'top_n': 10}}))
+result['correlation']['metrics']['correlation']['top']
+```
+
+新增指标 `correlation`（stage同名、中文名“与已有因子的相关性”），参数top_n默认10。
+结果：names列名、matrix时间均值方阵、days每对有效日方阵、top记录数组
+（factor/correlation/days），另有min_days/min_stocks/basis/note/insufficient。
+原始函数可含ndarray/NaN；evaluate统一用json_safe转为数组/null。
+insufficient表示没有足够样本的可比较同伴，矩阵仍可有有效对角线。
+
+相同有限掩码分组复用排序；成对删除后按保留的并列块重新排名，不能先对全截面
+排名再直接删股票。相关性不筛收益标签，不做去极值。不同因子对可以有不同样本，
+因此均值矩阵不保证半正定；Top-N按绝对相关性排序并保留正负号。
+完整分析性能请看 `docs/monitor/performance.md`，旧12指标耗时不包含本阶段。

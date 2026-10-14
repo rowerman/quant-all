@@ -152,12 +152,33 @@ def test_series_and_dist_shapes():
     context = make_context(make_panel(days=40))
     series = ic_metric.compute_series(context, {})
     assert len(series["dates"]) == 40
+    np.testing.assert_allclose(
+        series["cumulative"]["ic"], np.cumsum(series["ic"]), atol=1e-12
+    )
+    np.testing.assert_allclose(
+        series["cumulative"]["rank_ic"], np.cumsum(series["rank_ic"]), atol=1e-12
+    )
     assert len(series["rolling"]["ic"]) == 40
     assert series["rolling"]["window"] == ic_metric.ROLLING_WINDOW
 
     distribution = ic_metric.compute_dist(context, {})
     assert len(distribution["ic"]["edges"]) == distribution["bins"] + 1
     assert sum(distribution["ic"]["counts"]) == 40
+
+
+def test_cumulative_series_skips_invalid_days_without_contamination():
+    """累计 IC 遇到无效日保留空值，后续有效日从此前累计值继续。"""
+    panel = make_panel(days=25, stocks=30)
+    days = panel["trade_date"].unique()[:2]
+    dropped = panel["stock_code"].unique()[:26]
+    panel = panel.loc[
+        ~(panel["trade_date"].isin(days) & panel["stock_code"].isin(dropped))
+    ]
+    result = ic_metric.compute_series(make_context(panel), {})
+    cumulative = result["cumulative"]["ic"]
+    raw = result["ic"]
+    assert np.isnan(cumulative[:2]).all()
+    assert cumulative[2] == pytest.approx(raw[2])
 
 
 def test_coverage_metric_counts_missing_and_infinite():

@@ -89,6 +89,8 @@ def open_source(db_file: Path | str = DB_FILE) -> duckdb.DuckDBPyConnection:
     if not target.exists():
         raise FileNotFoundError(f"主库不存在: {target}")
     conn = duckdb.connect()
+    conn.execute("SET memory_limit='1GB'")
+    conn.execute('SET threads=2')
     conn.execute(f"ATTACH '{target}' AS src (READ_ONLY)")
     return conn
 
@@ -125,7 +127,9 @@ def resolve_factor(name: str, factor_dir: Path | str = FACTOR_DIR) -> FactorSpec
             f"因子 {name} 属于 {spec.family} 族，但该族还没有落盘数据；"
             "先跑 python -m scripts.build_factors.build"
         )
-    columns = duckdb.sql(f"SELECT * FROM read_parquet('{files[-1]}') LIMIT 0").columns
+    with duckdb.connect() as conn:
+        columns = [item[0] for item in conn.execute('SELECT * FROM read_parquet(?) LIMIT 0',
+                                                  [str(files[-1])]).description]
     if spec.name not in columns:
         available = sorted(col for col in columns if col not in ("stock_code", "trade_date", "year"))
         raise EvalFactorError(
@@ -315,6 +319,7 @@ class EvalContext:
     panel_elapsed_ms: float
     db_file: Path | str = DB_FILE
     _cache: dict = field(default_factory=dict, repr=False)
+    factor_dir: Path | str = FACTOR_DIR
 
     @property
     def label_columns(self) -> tuple[str, ...]:
@@ -463,7 +468,7 @@ def build_panel(params: EvalParams, *, db_file: Path | str = DB_FILE,
     )
     return EvalContext(
         params=params, spec=spec, universe=universe, panel=frame,
-        summary=summary, panel_elapsed_ms=elapsed_ms, db_file=db_file,
+        summary=summary, panel_elapsed_ms=elapsed_ms, db_file=db_file, factor_dir=factor_dir,
     )
 
 

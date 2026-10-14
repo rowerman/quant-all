@@ -181,6 +181,8 @@ def build_styles(params: EvalParams, *, db_file: Path | str = DB_FILE,
         if not target.exists():
             raise StyleFactorError(f"主库不存在: {target}")
         conn = duckdb.connect()
+        conn.execute("SET memory_limit='1GB'")
+        conn.execute('SET threads=2')
         conn.execute(f"ATTACH '{target}' AS src (READ_ONLY)")
     try:
         tables = {row[0] for row in conn.execute(
