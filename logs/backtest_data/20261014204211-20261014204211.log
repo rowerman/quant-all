@@ -1,0 +1,3 @@
+2026-10-14 20:43:27,918 INFO backtest.data 回测输入就绪：池=all_a 交易日=40 股票=5569 因子=['MOM_20', 'EP_TTM', 'VOL_20']
+2026-10-14 20:44:05,939 INFO backtest.data 回测输入就绪：池=all_a 交易日=19 股票=5569 因子=['MOM_20', 'EP_TTM', 'VOL_20']
+2026-10-14 20:44:26,758 INFO backtest.data 回测输入就绪：池=all_a 交易日=40 股票=5569 因子=['MOM_20', 'EP_TTM', 'VOL_20']
