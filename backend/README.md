@@ -23,7 +23,8 @@
 退出码0、无SIGSEGV，取消与慢消费者也通过；原生崩溃根因仍未知，该保护只覆盖后端入口，
 直接并行调用底层calculate不在此列。实测见 docs/monitor/performance.md。
 
-验证：`.venv/bin/python -m pytest backend/tests calculate/tests tests -q`。
+验证：`.venv/bin/python -m pytest backtest/tests calculate/tests tests total_front_back/backend/tests -q`
+（前后端都在 `total_front_back/` 下，该目录的 `conftest.py` 已把它加进导入路径）。
 接口详解见 `docs/monitor/api.md`；性能实测见 `docs/monitor/performance.md`。
 
 回测接口：
@@ -33,7 +34,7 @@
 - `GET /api/backtests`：历史运行列表；`POST /api/backtests` 同步运行一次回测；
 - `GET /api/backtests/stream`：流式运行，按阶段推送进度（独立调度器，默认 1 运行 / 2 等待）；
 - `GET /api/backtests/{run_id}`：运行状态与元数据；`/metrics` 绩效指标；
-- `GET /api/backtests/{run_id}/daily|holding|order|rejection|target_weight`：标准化结果。
+- `GET /api/backtests/{run_id}/daily|holding|order|rejection|liquidation|target_weight`：标准化结果。
 
 回测结果保存到独立的 `db/backtest.duckdb`，不会修改主行情库。内置策略在
 `GET /api/strategies` 时幂等写入策略表，与用户新建的策略共用同一条运行路径。

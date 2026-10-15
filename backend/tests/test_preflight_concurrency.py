@@ -6,6 +6,20 @@ import subprocess
 import sys
 
 
+def _subprocess_env() -> tuple[Path, dict]:
+    """子进程要同时导入仓库根的 calculate 与 total_front_back 下的 backend。"""
+    backend_root = Path(__file__).resolve().parents[2]
+    project_root = backend_root.parent
+    roots = [str(project_root), str(backend_root)]
+    if os.environ.get('PYTHONPATH'):
+        roots.append(os.environ['PYTHONPATH'])
+    return project_root, {
+        **os.environ,
+        'PYTHONFAULTHANDLER': '1',
+        'PYTHONPATH': os.pathsep.join(roots),
+    }
+
+
 def test_repeated_concurrent_preflight():
     """交替预检不同因子，覆盖独立连接的创建、挂载、列元数据读取与关闭。"""
     code = '''
@@ -16,8 +30,7 @@ with ThreadPoolExecutor(max_workers=2) as pool:
     results = list(pool.map(lambda name: prepare({'factor': name}), names))
 assert [r.params.factor for r in results] == names
 '''
-    result = subprocess.run([sys.executable, '-c', code],
-                            cwd=Path(__file__).resolve().parents[2],
-                            env={**os.environ, 'PYTHONFAULTHANDLER': '1'},
+    cwd, env = _subprocess_env()
+    result = subprocess.run([sys.executable, '-c', code], cwd=cwd, env=env,
                             capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stderr

@@ -69,6 +69,16 @@ def test_run_tables_and_metrics_are_readable(client, store):
             "weight": [0.5],
         }
     )
+    liquidation = pd.DataFrame(
+        {
+            "trade_date": [pd.Timestamp("2024-01-03")],
+            "stock_code": ["SZ000001"],
+            "delist_date": [pd.Timestamp("2024-01-03")],
+            "size": [4900.0],
+            "price": [9.995],
+            "value": [48975.5],
+        }
+    )
     result = BacktestResult(
         portfolio=object(),
         daily=daily,
@@ -79,6 +89,7 @@ def test_run_tables_and_metrics_are_readable(client, store):
         rejections=pd.DataFrame(),
         metrics={"total_return": 0.02},
         metadata={"strategy_hash": "hash", "universe": "all_a", "elapsed_seconds": 3.0},
+        liquidations=liquidation,
     )
     store.finish_run(run_id, result)
 
@@ -96,6 +107,10 @@ def test_run_tables_and_metrics_are_readable(client, store):
 
     assert client.get(f"/api/backtests/{run_id}/holding").json()[0]["stock_code"] == "SH600000"
     assert len(client.get(f"/api/backtests/{run_id}/daily").json()) == 2
+    forced = client.get(f"/api/backtests/{run_id}/liquidation").json()
+    assert len(forced) == 1
+    assert forced[0]["stock_code"] == "SZ000001"
+    assert forced[0]["value"] == pytest.approx(48975.5)
     assert client.get(f"/api/backtests/{run_id}/unknown").status_code == 400
     assert client.get("/api/backtests/missing-run").status_code == 400
 

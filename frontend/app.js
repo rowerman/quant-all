@@ -8,7 +8,7 @@ let backtestOptions=null;
 const rateKeys=new Set(['total_return','annual_return','annual_volatility','max_drawdown','daily_win_rate','monthly_win_rate','benchmark_total_return','benchmark_annual_return','excess_annual_return','excess_win_rate']);
 // 规则拒单原因与执行校准字段的中文名
 const reasonLabels={suspended:'停牌不能交易',limit_up_or_not_buyable:'涨停或开盘不可买',limit_down_or_not_sellable:'跌停或开盘不可卖'};
-const calibrationLabels={probe_orders:'探针成交笔数',probe_buys:'探针买入笔数',probe_sells:'探针卖出笔数',planned_orders:'计划下单格数',rebalance_orders:'其中再平衡格数',rejected_orders:'规则拒单笔数',final_orders:'最终成交笔数',final_buys:'最终买入笔数',final_sells:'最终卖出笔数',fallback_fee_orders:'探针无记录、按意图方向计费笔数',fee_matrix_max_diff:'费用矩阵核对最大偏差（元）',target_cells:'目标下单格数',weight_deviation_median:'权重偏差中位数',weight_deviation_p95:'权重偏差 95 分位',weight_deviation_max:'权重偏差最大值',weight_deviation_over_1pct:'权重偏差超 1% 的格数'};
+const calibrationLabels={probe_orders:'探针成交笔数',probe_buys:'探针买入笔数',probe_sells:'探针卖出笔数',planned_orders:'计划下单格数',rebalance_orders:'其中再平衡格数',rejected_orders:'规则拒单笔数',forced_liquidations:'退市强制清算笔数',final_orders:'最终成交笔数',final_buys:'最终买入笔数',final_sells:'最终卖出笔数',fallback_fee_orders:'探针无记录、按意图方向计费笔数',fee_matrix_max_diff:'费用矩阵核对最大偏差（元）',target_cells:'目标下单格数',weight_deviation_median:'权重偏差中位数',weight_deviation_p95:'权重偏差 95 分位',weight_deviation_max:'权重偏差最大值',weight_deviation_over_1pct:'权重偏差超 1% 的格数'};
 
 // 读取JSON接口，错误显示服务端提供的原因。
 async function get(url){const r=await fetch(url);const data=await r.json();if(!r.ok)throw new Error(data.message||'接口请求失败');return data;}
@@ -175,8 +175,9 @@ async function runPage(runId,version){
     <section class="card"><h2>运行未完成</h2><p role="alert">${esc(run.error_message||'运行尚未结束或已被取消，没有可展示的日结果。')}</p><a href="#/backtest">返回回测页</a></section>`;
     return;
   }
-  const [metrics,daily,holding,orders,rejections]=await Promise.all([
-    get(base+'/metrics'),get(base+'/daily'),get(base+'/holding'),get(base+'/order'),get(base+'/rejection')
+  const [metrics,daily,holding,orders,rejections,liquidations]=await Promise.all([
+    get(base+'/metrics'),get(base+'/daily'),get(base+'/holding'),get(base+'/order'),get(base+'/rejection'),
+    get(base+'/liquidation')
   ]);
   if(version!==routeVersion)return;
   const metadata=run.metadata||{};const params=metadata.params||{};
@@ -194,6 +195,7 @@ async function runPage(runId,version){
   <section class="card"><h2>净值与回撤</h2><div class="cards" id="run-curves"></div></section>
   <section class="card"><h2>换手与成本</h2><div class="cards" id="run-cost"></div></section>
   <section class="card"><h2>规则拒单</h2><div class="cards" id="run-rejection"></div></section>
+  <section class="card"><h2>退市强制清算</h2><div class="cards" id="run-liquidation"></div></section>
   <section class="card"><h2>执行校准</h2><div class="cards" id="run-calibration"></div></section>
   <section class="card"><h2>成交明细${orders.length>100?'（最近 100 笔）':''}</h2><div class="cards" id="run-orders"></div></section>
   <section class="card"><h2>最新持仓 ${esc(lastDate?String(lastDate).slice(0,10):'')}</h2><div class="cards" id="run-holding"></div></section>`;
@@ -215,6 +217,8 @@ async function runPage(runId,version){
   const reasonRows=Object.entries(reasonCounts).map(([reason,count])=>({拒单原因:reasonLabels[reason]||reason,笔数:count}));
   if(reasonRows.length)table(app.querySelector('#run-rejection'),reasonRows);
   else app.querySelector('#run-rejection').innerHTML='<p class="muted">本次运行没有规则拒单</p>';
+  if(liquidations.length)table(app.querySelector('#run-liquidation'),liquidations.map(row=>({日期:String(row.trade_date).slice(0,10),股票:row.stock_code,退市日:String(row.delist_date||'').slice(0,10),股数:row.size,价格:row.price,金额:row.value})));
+  else app.querySelector('#run-liquidation').innerHTML='<p class="muted">本次运行没有强制清算</p>';
   const calibration=metadata.calibration||{};
   const calibrationValue=key=>(key.startsWith('weight_deviation_')&&key!=='weight_deviation_over_1pct')?pct(calibration[key]):fmt(calibration[key]);
   table(app.querySelector('#run-calibration'),Object.keys(calibrationLabels).filter(key=>key in calibration).map(key=>({指标:calibrationLabels[key],数值:calibrationValue(key)})));

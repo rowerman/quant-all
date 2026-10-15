@@ -3,15 +3,18 @@
 from pathlib import Path
 
 from backend import service
-from calculate.config import DB_FILE, FACTOR_DB_FILE, PROJECT_ROOT
+from calculate.config import DB_FILE, FACTOR_DB_FILE
+
+# 前端与后端同在 total_front_back 下，用文件位置定位，不再依赖仓库根路径
+FRONTEND_DIR = Path(__file__).resolve().parents[1] / 'frontend'
 
 
 def check():
     """核验依赖、数据库、已落盘因子及本地图表文件，失败向调用者反馈。"""
     import fastapi
     import uvicorn
-    for path in (DB_FILE, FACTOR_DB_FILE, PROJECT_ROOT / 'frontend/index.html',
-                 PROJECT_ROOT / 'frontend/vendor/echarts.min.js'):
+    for path in (DB_FILE, FACTOR_DB_FILE, FRONTEND_DIR / 'index.html',
+                 FRONTEND_DIR / 'vendor/echarts.min.js'):
         if not Path(path).is_file():
             raise FileNotFoundError(f'启动预检：缺少 {path}')
     choices = service.options()
