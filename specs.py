@@ -11,6 +11,17 @@ from typing import Any
 from backtest.errors import SpecError
 
 
+BENCHMARK_OPTIONS = (
+    {"code": "H00300.CSI", "label": "沪深300全收益", "return_type": "total_return"},
+    {"code": "000300.SH", "label": "沪深300价格指数", "return_type": "price"},
+    {"code": "H00905.CSI", "label": "中证500全收益", "return_type": "total_return"},
+    {"code": "000905.SH", "label": "中证500价格指数", "return_type": "price"},
+)
+TOTAL_RETURN_BENCHMARKS = frozenset(
+    item["code"] for item in BENCHMARK_OPTIONS if item["return_type"] == "total_return"
+)
+
+
 def _date(value: str, name: str) -> str:
     """校验并返回 ISO 日期。"""
     try:
@@ -119,7 +130,13 @@ class CostSpec:
 class BenchmarkSpec:
     """基准指数配置。"""
 
-    index_code: str | None = "000300.SH"
+    index_code: str | None = "H00300.CSI"
+
+    def __post_init__(self) -> None:
+        if self.index_code is not None and (
+            not isinstance(self.index_code, str) or not self.index_code.strip()
+        ):
+            raise SpecError("benchmark.index_code 必须是非空指数代码或 None")
 
 
 @dataclass(frozen=True)

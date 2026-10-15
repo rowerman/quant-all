@@ -219,3 +219,21 @@ def test_engine_is_reproducible():
     assert first.metrics == second.metrics
     assert first.metadata["calibration"] == second.metadata["calibration"]
 
+
+def test_engine_records_benchmark_metadata(make_data):
+    """运行结果必须能区分价格指数与全收益指数。"""
+    score, price = _frames()
+    benchmark = pd.Series(np.arange(len(DATES), dtype=float) + 1000.0, index=DATES)
+    info = {
+        "code": "H00300.CSI", "name": "300收益", "return_type": "total_return",
+        "start": str(DATES[0].date()), "end": str(DATES[-1].date()),
+    }
+    data = make_data(
+        dates=DATES, stocks=STOCKS, open=price.astype("float32"),
+        close=(price + 0.5).astype("float32"), factors={"MOM_20": score.astype("float32")},
+        benchmark=benchmark, benchmark_info=info,
+    )
+    params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
+    result = run_backtest(data, _strategy(), params)
+    assert result.metadata["benchmark"] == info
+

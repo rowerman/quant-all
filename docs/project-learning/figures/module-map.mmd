@@ -1,0 +1,77 @@
+flowchart TD
+  subgraph n_entry["入口与公共 API"]
+    n_entry_main["__main__.py"]
+    n_entry_api["__init__.py"]
+  end
+  subgraph n_spec["配置与策略定义"]
+    n_spec_config["config.py"]
+    n_spec_specs["specs.py"]
+    n_spec_builtin["builtin.py"]
+  end
+  subgraph n_data["数据与股票池"]
+    n_data_market["data.py"]
+    n_data_universe["universe.py"]
+  end
+  subgraph n_strategy["信号与订单"]
+    n_strategy_signals["signals.py"]
+    n_strategy_orders["orders.py"]
+  end
+  subgraph n_execution["执行与指标"]
+    n_execution_engine["engine.py"]
+    n_execution_metrics["metrics.py"]
+  end
+  subgraph n_orchestration["编排与持久化"]
+    n_orchestration_pipeline["pipeline.py"]
+    n_orchestration_store["store.py"]
+  end
+  subgraph n_infra["基础设施"]
+    n_infra_errors["errors.py"]
+    n_infra_logging["logging_conf.py"]
+  end
+  subgraph n_tests["测试"]
+    n_tests_conftest["conftest.py"]
+    n_tests_data["test_data.py"]
+    n_tests_engine["test_engine.py"]
+    n_tests_metrics["test_metrics.py"]
+    n_tests_orders["test_orders.py"]
+    n_tests_signals["test_signals.py"]
+    n_tests_specs["test_specs.py"]
+    n_tests_store["test_store.py"]
+    n_tests_universe["test_universe.py"]
+  end
+  n_external_quant["quant 读取层"]
+  n_external_calculate["calculate.universe"]
+  n_external_vectorbt["VectorBT"]
+  n_external_duckdb["DuckDB"]
+  n_entry_main -->|"调用"| n_orchestration_pipeline
+  n_entry_main -->|"初始化"| n_orchestration_store
+  n_entry_api -->|"导出 API"| n_execution_engine
+  n_orchestration_pipeline -->|"恢复/覆盖配置"| n_spec_specs
+  n_orchestration_pipeline -->|"运行生命周期"| n_orchestration_store
+  n_orchestration_pipeline -->|"取数"| n_data_market
+  n_data_market -->|"解析池"| n_data_universe
+  n_data_market -.->|"行情/基准/版本"| n_external_quant
+  n_data_market -.->|"通过股票池适配"| n_external_calculate
+  n_data_universe -->|"复用定义"| n_external_calculate
+  n_orchestration_pipeline -->|"后台执行"| n_execution_engine
+  n_execution_engine -->|"生成目标"| n_strategy_signals
+  n_execution_engine -->|"生成订单计划"| n_strategy_orders
+  n_execution_engine -->|"两遍执行"| n_external_vectorbt
+  n_execution_engine -->|"汇总指标"| n_execution_metrics
+  n_strategy_orders -.->|"读取规则面板"| n_data_market
+  n_strategy_orders -.->|"读取执行/成本"| n_spec_specs
+  n_orchestration_store -->|"版本/结果落库"| n_external_duckdb
+  n_orchestration_store -.->|"保存 BacktestResult"| n_execution_engine
+  n_spec_builtin -->|"构造内置策略"| n_spec_specs
+  n_entry_main -->|"解析别名"| n_spec_builtin
+  n_entry_main -->|"错误出口"| n_infra_errors
+  n_data_market -->|"记录取数"| n_infra_logging
+  n_execution_engine -->|"记录执行"| n_infra_logging
+  n_tests_data -->|"验证"| n_data_market
+  n_tests_engine -->|"验证"| n_execution_engine
+  n_tests_metrics -->|"验证"| n_execution_metrics
+  n_tests_orders -->|"验证"| n_strategy_orders
+  n_tests_signals -->|"验证"| n_strategy_signals
+  n_tests_specs -->|"验证"| n_spec_specs
+  n_tests_store -->|"验证"| n_orchestration_store
+  n_tests_universe -->|"验证"| n_data_universe

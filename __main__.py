@@ -4,7 +4,7 @@
 
     .venv/bin/python -m backtest --strategy mom20 --start 2024-01-01 --end 2026-09-28
     .venv/bin/python -m backtest --strategy multifactor --start 2016-01-01 --end 2026-09-28 \
-        --universe index:000905.SH --benchmark 000905.SH
+        --universe index:000905.SH --benchmark H00905.CSI
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", required=True, help="截止交易日 YYYY-MM-DD")
     parser.add_argument("--init-cash", type=float, default=1_000_000.0, help="初始资金")
     parser.add_argument("--universe", help="运行级股票池覆盖，如 index:000300.SH")
-    parser.add_argument("--benchmark", help="运行级基准覆盖，如 000905.SH")
+    parser.add_argument("--benchmark", help="运行级基准覆盖，如 H00905.CSI（中证500全收益）")
     return parser
 
 

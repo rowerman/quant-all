@@ -1,0 +1,263 @@
+project: VectorBT A 股回测模块
+nodes:
+  - id: entry
+    label: 入口与公共 API
+    kind: layer
+  - id: entry.main
+    label: __main__.py
+    parent: entry
+    kind: leaf
+  - id: entry.api
+    label: __init__.py
+    parent: entry
+    kind: leaf
+  - id: spec
+    label: 配置与策略定义
+    kind: layer
+  - id: spec.config
+    label: config.py
+    parent: spec
+    kind: leaf
+  - id: spec.specs
+    label: specs.py
+    parent: spec
+    kind: leaf
+  - id: spec.builtin
+    label: builtin.py
+    parent: spec
+    kind: leaf
+  - id: data
+    label: 数据与股票池
+    kind: layer
+  - id: data.market
+    label: data.py
+    parent: data
+    kind: leaf
+  - id: data.universe
+    label: universe.py
+    parent: data
+    kind: leaf
+  - id: strategy
+    label: 信号与订单
+    kind: layer
+  - id: strategy.signals
+    label: signals.py
+    parent: strategy
+    kind: leaf
+  - id: strategy.orders
+    label: orders.py
+    parent: strategy
+    kind: leaf
+  - id: execution
+    label: 执行与指标
+    kind: layer
+  - id: execution.engine
+    label: engine.py
+    parent: execution
+    kind: leaf
+  - id: execution.metrics
+    label: metrics.py
+    parent: execution
+    kind: leaf
+  - id: orchestration
+    label: 编排与持久化
+    kind: layer
+  - id: orchestration.pipeline
+    label: pipeline.py
+    parent: orchestration
+    kind: leaf
+  - id: orchestration.store
+    label: store.py
+    parent: orchestration
+    kind: leaf
+  - id: infra
+    label: 基础设施
+    kind: layer
+  - id: infra.errors
+    label: errors.py
+    parent: infra
+    kind: leaf
+  - id: infra.logging
+    label: logging_conf.py
+    parent: infra
+    kind: leaf
+  - id: tests
+    label: 测试
+    kind: layer
+  - id: tests.conftest
+    label: conftest.py
+    parent: tests
+    kind: leaf
+  - id: tests.data
+    label: test_data.py
+    parent: tests
+    kind: leaf
+  - id: tests.engine
+    label: test_engine.py
+    parent: tests
+    kind: leaf
+  - id: tests.metrics
+    label: test_metrics.py
+    parent: tests
+    kind: leaf
+  - id: tests.orders
+    label: test_orders.py
+    parent: tests
+    kind: leaf
+  - id: tests.signals
+    label: test_signals.py
+    parent: tests
+    kind: leaf
+  - id: tests.specs
+    label: test_specs.py
+    parent: tests
+    kind: leaf
+  - id: tests.store
+    label: test_store.py
+    parent: tests
+    kind: leaf
+  - id: tests.universe
+    label: test_universe.py
+    parent: tests
+    kind: leaf
+  - id: external.quant
+    label: quant 读取层
+    kind: module
+  - id: external.calculate
+    label: calculate.universe
+    kind: module
+  - id: external.vectorbt
+    label: VectorBT
+    kind: module
+  - id: external.duckdb
+    label: DuckDB
+    kind: module
+edges:
+  - from: entry.main
+    to: orchestration.pipeline
+    label: 调用
+    kind: call
+  - from: entry.main
+    to: orchestration.store
+    label: 初始化
+    kind: call
+  - from: entry.api
+    to: execution.engine
+    label: 导出 API
+    kind: call
+  - from: orchestration.pipeline
+    to: spec.specs
+    label: 恢复/覆盖配置
+    kind: call
+  - from: orchestration.pipeline
+    to: orchestration.store
+    label: 运行生命周期
+    kind: call
+  - from: orchestration.pipeline
+    to: data.market
+    label: 取数
+    kind: call
+  - from: data.market
+    to: data.universe
+    label: 解析池
+    kind: call
+  - from: data.market
+    to: external.quant
+    label: 行情/基准/版本
+    kind: data
+  - from: data.market
+    to: external.calculate
+    label: 通过股票池适配
+    kind: data
+  - from: data.universe
+    to: external.calculate
+    label: 复用定义
+    kind: call
+  - from: orchestration.pipeline
+    to: execution.engine
+    label: 后台执行
+    kind: call
+  - from: execution.engine
+    to: strategy.signals
+    label: 生成目标
+    kind: call
+  - from: execution.engine
+    to: strategy.orders
+    label: 生成订单计划
+    kind: call
+  - from: execution.engine
+    to: external.vectorbt
+    label: 两遍执行
+    kind: call
+  - from: execution.engine
+    to: execution.metrics
+    label: 汇总指标
+    kind: call
+  - from: strategy.orders
+    to: data.market
+    label: 读取规则面板
+    kind: data
+  - from: strategy.orders
+    to: spec.specs
+    label: 读取执行/成本
+    kind: data
+  - from: orchestration.store
+    to: external.duckdb
+    label: 版本/结果落库
+    kind: call
+  - from: orchestration.store
+    to: execution.engine
+    label: 保存 BacktestResult
+    kind: data
+  - from: spec.builtin
+    to: spec.specs
+    label: 构造内置策略
+    kind: call
+  - from: entry.main
+    to: spec.builtin
+    label: 解析别名
+    kind: call
+  - from: entry.main
+    to: infra.errors
+    label: 错误出口
+    kind: call
+  - from: data.market
+    to: infra.logging
+    label: 记录取数
+    kind: call
+  - from: execution.engine
+    to: infra.logging
+    label: 记录执行
+    kind: call
+  - from: tests.data
+    to: data.market
+    label: 验证
+    kind: call
+  - from: tests.engine
+    to: execution.engine
+    label: 验证
+    kind: call
+  - from: tests.metrics
+    to: execution.metrics
+    label: 验证
+    kind: call
+  - from: tests.orders
+    to: strategy.orders
+    label: 验证
+    kind: call
+  - from: tests.signals
+    to: strategy.signals
+    label: 验证
+    kind: call
+  - from: tests.specs
+    to: spec.specs
+    label: 验证
+    kind: call
+  - from: tests.store
+    to: orchestration.store
+    label: 验证
+    kind: call
+  - from: tests.universe
+    to: data.universe
+    label: 验证
+    kind: call

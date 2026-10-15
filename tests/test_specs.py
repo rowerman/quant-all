@@ -2,7 +2,15 @@ import json
 
 import pytest
 
-from backtest.specs import BacktestParams, ExecutionSpec, PortfolioSpec, SpecError, StrategySpec
+from backtest.specs import (
+    BacktestParams,
+    BenchmarkSpec,
+    ExecutionSpec,
+    PortfolioSpec,
+    SpecError,
+    StrategySpec,
+)
+from backtest.pipeline import RunRequest, effective_spec
 
 
 def test_strategy_json_round_trip_is_stable():
@@ -56,3 +64,22 @@ def test_execution_lot_size_is_fixed():
     assert ExecutionSpec().lot_size == 100
     with pytest.raises(SpecError, match="100 股"):
         ExecutionSpec(lot_size=10)
+
+
+def test_default_benchmark_is_total_return():
+    """默认超额必须与含分红的组合收益使用同口径基准。"""
+    assert BenchmarkSpec().index_code == "H00300.CSI"
+    assert StrategySpec().benchmark.index_code == "H00300.CSI"
+    with pytest.raises(SpecError, match="benchmark.index_code"):
+        BenchmarkSpec(index_code="")
+
+
+def test_run_request_can_override_total_return_with_price_index():
+    """运行级覆盖仍直接使用指数代码，不改变已保存策略版本。"""
+    original = StrategySpec()
+    request = RunRequest(
+        strategy_id="demo", start="2024-01-01", end="2024-01-31", benchmark="000300.SH"
+    )
+    effective = effective_spec(original, request)
+    assert original.benchmark.index_code == "H00300.CSI"
+    assert effective.benchmark.index_code == "000300.SH"

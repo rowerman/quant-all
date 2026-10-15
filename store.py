@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import replace
 import json
 from pathlib import Path
 import uuid
@@ -131,11 +132,23 @@ class BacktestStore:
                 return self._insert_version(conn, strategy_id, spec, description, now), True
             current = int(row[0])
             stored = conn.execute(
-                "SELECT config_hash FROM strategy.version WHERE strategy_id = ? AND version = ?",
+                "SELECT config_json, config_hash FROM strategy.version WHERE strategy_id = ? AND version = ?",
                 [strategy_id, current],
             ).fetchone()
-        if stored is not None and stored[0] == spec.config_hash:
+        desired = replace(spec, version=current)
+        if stored is not None and stored[1] == desired.config_hash:
             return current, False
+        if stored is not None:
+            stored_spec = StrategySpec.from_dict(json.loads(stored[0]))
+            if replace(stored_spec, version=current).to_json() == desired.to_json():
+                now = self._now()
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE strategy.version SET config_json = ?, config_hash = ? "
+                        "WHERE strategy_id = ? AND version = ?",
+                        [desired.to_json(), desired.config_hash, strategy_id, current],
+                    )
+                return current, False
         return self.save_version(strategy_id, spec, description), True
 
     def save_version(self, strategy_id: str, spec: StrategySpec, description: str = "") -> int:
@@ -149,9 +162,10 @@ class BacktestStore:
             if current is None:
                 raise BacktestError(f"策略不存在：{strategy_id}")
             version = int(current[0]) + 1
+            versioned = replace(spec, version=version)
             conn.execute(
                 "INSERT INTO strategy.version VALUES (?, ?, ?, ?, ?)",
-                [strategy_id, version, spec.to_json(), spec.config_hash, now],
+                [strategy_id, version, versioned.to_json(), versioned.config_hash, now],
             )
             conn.execute(
                 "UPDATE strategy.definition SET name = ?, current_version = ?, description = ?, updated_at = ? "
@@ -248,7 +262,7 @@ class BacktestStore:
             ).fetchone()
         if row is None:
             raise BacktestError(f"策略版本不存在：{strategy_id} v{version}")
-        return StrategySpec.from_dict(json.loads(row[0]))
+        return replace(StrategySpec.from_dict(json.loads(row[0])), version=version)
 
     def start_run(self, strategy_id: str, version: int, params: BacktestParams) -> str:
         """登记一次运行。"""

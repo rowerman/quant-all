@@ -40,7 +40,9 @@ def test_strategy_versions_are_immutable(store):
     second = StrategySpec(name="MOM_20 Top30 v2")
     assert store.save_version(strategy_id, second) == 2
     assert store.get_version(strategy_id, 1) == first
-    assert store.get_version(strategy_id) == second
+    current = store.get_version(strategy_id)
+    assert current.name == second.name
+    assert current.version == 2
     assert store.list_strategies()[0]["current_version"] == 2
 
 

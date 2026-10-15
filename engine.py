@@ -338,6 +338,7 @@ def run_backtest(
         "strategy_hash": strategy.config_hash,
         "params": {"start": params.start, "end": params.end, "init_cash": params.init_cash},
         "universe": strategy.universe,
+        "benchmark": data.benchmark_info,
         "price_adjust": PRICE_ADJUST,
         "versions": data.versions,
         "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),

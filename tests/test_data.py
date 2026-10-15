@@ -10,6 +10,7 @@ from backtest.data import (
     PRICE_ADJUST,
     STATE_ADJUST,
     _load_field,
+    _load_benchmark,
     _load_versions,
     load_market_data,
 )
@@ -42,6 +43,22 @@ def test_market_data_crop_keeps_interval(make_data):
         data.crop("2024-06-01", "2024-06-30")
 
 
+def test_market_data_crop_updates_benchmark_coverage(make_data):
+    """直接调用引擎传入宽区间数据时，基准元数据要跟随实际运行区间。"""
+    index = pd.date_range("2024-01-29", periods=5, freq="B")
+    data = make_data(
+        dates=index,
+        benchmark=pd.Series(range(5), index=index, dtype=float),
+        benchmark_info={
+            "code": "H00300.CSI", "name": "300收益", "return_type": "total_return",
+            "start": "2024-01-29", "end": "2024-02-02",
+        },
+    )
+    cropped = data.crop("2024-01-30", "2024-02-01")
+    assert cropped.benchmark_info["start"] == "2024-01-30"
+    assert cropped.benchmark_info["end"] == "2024-02-01"
+
+
 def test_market_data_crop_is_a_noop_inside_range(make_data):
     index = pd.date_range("2024-01-29", periods=3, freq="B")
     data = make_data(dates=index)
@@ -59,10 +76,51 @@ def test_load_market_data_reads_real_panel():
     assert data.factors["MOM_20"].shape == data.open.shape
     assert data.benchmark is not None
     assert data.benchmark.notna().all()
+    assert data.benchmark_info["return_type"] == "total_return"
     assert data.versions["dataset"]["data_version"].startswith("tushare_fullA_")
     assert data.delist_date is not None
     for name in PANEL_FIELDS:
         assert getattr(data, name).shape == data.open.shape
+
+
+def test_benchmark_metadata_and_alignment(monkeypatch):
+    """基准代码、名称和收益口径应随严格对齐后的序列一起返回。"""
+    index = pd.date_range("2024-01-02", periods=2, freq="B")
+    monkeypatch.setattr(
+        quant,
+        "load_index_daily",
+        lambda *args, **kwargs: pd.DataFrame(
+            {"trade_date": index, "close": [1000.0, 1001.0]}
+        ),
+    )
+    monkeypatch.setattr(
+        quant,
+        "load_index_basic",
+        lambda *args, **kwargs: pd.DataFrame({"index_name": ["300收益"]}),
+    )
+    series, info = _load_benchmark("H00300.CSI", "2024-01-02", "2024-01-03", index, None)
+    assert series.tolist() == [1000.0, 1001.0]
+    assert info == {
+        "code": "H00300.CSI",
+        "name": "300收益",
+        "return_type": "total_return",
+        "start": "2024-01-02",
+        "end": "2024-01-03",
+    }
+
+
+def test_benchmark_missing_day_is_an_error(monkeypatch):
+    """基准缺日不能继续按零收益计算超额。"""
+    index = pd.date_range("2024-01-02", periods=2, freq="B")
+    monkeypatch.setattr(
+        quant,
+        "load_index_daily",
+        lambda *args, **kwargs: pd.DataFrame(
+            {"trade_date": [index[0]], "close": [1000.0]}
+        ),
+    )
+    with pytest.raises(DataAlignmentError, match="缺少 1 个回测交易日"):
+        _load_benchmark("H00300.CSI", "2024-01-02", "2024-01-03", index, None)
 
 
 def test_price_fields_use_adjusted_prices(monkeypatch):
@@ -118,8 +176,8 @@ def test_close_has_no_fake_gap_on_ex_dividend():
 def test_versions_are_read_from_manifests():
     """运行元数据里的数据版本与因子版本来自两个库的清单表。"""
     versions = _load_versions(None)
-    assert versions["dataset"]["data_version"] == "tushare_fullA_20000104_20260928"
-    assert versions["dataset"]["rows"] == 17955297
+    assert versions["dataset"]["data_version"] == "tushare_fullA_20000104_20261015"
+    assert versions["dataset"]["rows"] == 17999882
     assert versions["dataset"]["generated_at"]
     assert versions["factors"]["factor_version"] == "factors_v1"
     assert versions["factors"]["factor_count"] == 29

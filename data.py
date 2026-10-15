@@ -25,6 +25,7 @@ from quant.db import query as db_query
 from backtest.config import FACTOR_DB, MAX_PANEL_CELLS, MAX_TRADE_DAYS
 from backtest.errors import DataAlignmentError, ResourceLimitError
 from backtest.logging_conf import get_logger
+from backtest.specs import TOTAL_RETURN_BENCHMARKS
 from backtest.universe import (
     check_limits,
     membership_frame,
@@ -78,6 +79,7 @@ class MarketData:
     delist_date: pd.Series | None = None
     membership: pd.DataFrame | None = None
     benchmark: pd.Series | None = None
+    benchmark_info: dict | None = None
     versions: dict | None = None
 
     def __post_init__(self) -> None:
@@ -126,12 +128,18 @@ class MarketData:
         frames = {
             name: getattr(self, name).loc[mask] for name in PANEL_FIELDS
         }
+        benchmark = None if self.benchmark is None else self.benchmark.reindex(self.index[mask])
+        benchmark_info = None if self.benchmark_info is None else dict(self.benchmark_info)
+        if benchmark_info is not None and benchmark is not None and len(benchmark):
+            benchmark_info["start"] = str(pd.Timestamp(benchmark.index[0]).date())
+            benchmark_info["end"] = str(pd.Timestamp(benchmark.index[-1]).date())
         return MarketData(
             factors={name: frame.loc[mask] for name, frame in self.factors.items()},
             list_date=self.list_date,
             delist_date=self.delist_date,
             membership=self.membership.loc[mask] if self.membership is not None else None,
-            benchmark=None if self.benchmark is None else self.benchmark.reindex(self.index[mask]),
+            benchmark=benchmark,
+            benchmark_info=benchmark_info,
             versions=self.versions,
             **frames,
         )
@@ -292,16 +300,31 @@ def _load_benchmark(
     end: str,
     index: pd.DatetimeIndex,
     db_path: Path | str | None,
-) -> pd.Series | None:
-    """读取基准指数收盘价并对齐到回测交易日。"""
+) -> tuple[pd.Series | None, dict | None]:
+    """读取基准指数收盘价、严格对齐交易日并返回口径说明。"""
     if not code:
-        return None
+        return None, None
     daily = quant.load_index_daily(code, start=start, end=end, db_path=db_path)
     if daily.empty:
-        logger.warning("基准指数 %s 在 %s ~ %s 没有行情，本次回测不计算超额", code, start, end)
-        return None
+        raise DataAlignmentError(f"基准指数 {code} 在 {start} ~ {end} 没有行情")
     series = daily.assign(trade_date=pd.to_datetime(daily["trade_date"])).set_index("trade_date")
-    return series["close"].sort_index().reindex(index).astype("float64")
+    aligned = series["close"].sort_index().reindex(index).astype("float64")
+    if aligned.isna().any():
+        missing = [str(day.date()) for day in aligned.index[aligned.isna()][:5]]
+        raise DataAlignmentError(
+            f"基准指数 {code} 缺少 {int(aligned.isna().sum())} 个回测交易日，示例：{missing}"
+        )
+    basic = quant.load_index_basic(index_code=code, db_path=db_path)
+    name = str(basic.iloc[0]["index_name"]) if not basic.empty else code
+    return_type = "total_return" if code in TOTAL_RETURN_BENCHMARKS or "收益" in name else "price"
+    info = {
+        "code": code,
+        "name": name,
+        "return_type": return_type,
+        "start": str(aligned.index.min().date()),
+        "end": str(aligned.index.max().date()),
+    }
+    return aligned, info
 
 
 def load_market_data(
@@ -312,7 +335,7 @@ def load_market_data(
     universe: str = "all_a",
     db_path: Path | str | None = None,
     factor_dir: Path | str | None = None,
-    benchmark_code: str | None = "000300.SH",
+    benchmark_code: str | None = "H00300.CSI",
 ) -> MarketData:
     """从主库和因子目录读取回测输入。
 
@@ -364,12 +387,14 @@ def load_market_data(
         len(columns),
         list(factors),
     )
+    benchmark, benchmark_info = _load_benchmark(benchmark_code, start, end, index, db_path)
     return MarketData(
         factors=factors,
         list_date=list_date,
         delist_date=delist_date,
         membership=membership,
-        benchmark=_load_benchmark(benchmark_code, start, end, index, db_path),
+        benchmark=benchmark,
+        benchmark_info=benchmark_info,
         versions=_load_versions(db_path),
         **frames,
     )
