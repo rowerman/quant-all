@@ -42,6 +42,11 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
     payload = client.get("/api/backtest/options").json()
     assert {row["strategy_id"] for row in payload["strategies"]} >= {MOM20_ID}
     assert {"all_a", "index:000300.SH"} <= {row["key"] for row in payload["universes"]}
+    assert {"H00300.CSI", "H00905.CSI", "000300.SH", "000905.SH"} == {
+        row["code"] for row in payload["benchmarks"]
+    }
+    assert payload["defaults"]["benchmark"] == "H00300.CSI"
+    assert payload["defaults"]["end"] == "2026-10-14"
     assert {"name", "direction"} <= set(payload["factors"][0])
     assert payload["limits"]["trade_days"] > 0
 

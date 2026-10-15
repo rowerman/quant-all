@@ -109,6 +109,7 @@ async function backtestPage(version){
   <form id="backtest-form" class="controls">
     <label>策略<select name="strategy_id">${opts.strategies.map(row=>`<option value="${esc(row.strategy_id)}">${esc(row.name)} · v${row.current_version}</option>`).join('')}</select></label>
     <label>股票池<select name="universe">${opts.universes.map(item=>`<option value="${esc(item.key)}">${esc(item.label)}</option>`).join('')}</select></label>
+    <label>基准<select name="benchmark">${opts.benchmarks.map(item=>`<option value="${esc(item.code)}" ${item.code===d.benchmark?'selected':''}>${esc(item.label)}</option>`).join('')}</select></label>
     <label>开始日期<input type="date" name="start" value="${esc(d.start)}" required></label>
     <label>结束日期<input type="date" name="end" value="${esc(d.end)}" required></label>
     <label>初始资金<input type="number" name="init_cash" value="${d.init_cash}" min="10000" step="10000" required></label>
@@ -128,7 +129,7 @@ async function backtestPage(version){
       await consumeStream('/api/backtests/stream?'+query,local.signal,(stage,payload)=>{
         if(stage==='queued')return void(status.textContent='已进入回测队列，等待运行名额…');
         if(stage==='error')throw new Error(`${payload.message} [${payload.code}] 请求 ${payload.request_id}`);
-        if(stage==='meta')return void(status.textContent=`策略 ${payload.name} v${payload.version} · 池 ${payload.universe} · 因子 ${payload.factors.join(' + ')}`);
+        if(stage==='meta')return void(status.textContent=`策略 ${payload.name} v${payload.version} · 池 ${payload.universe} · 基准 ${payload.benchmark||'无'} · 因子 ${payload.factors.join(' + ')}`);
         if(stage==='load')return void(status.textContent=`数据就绪：${payload.trading_days} 个交易日 × ${payload.stocks} 只股票`);
         if(stage==='signals')return void(status.textContent=`信号完成：${payload.rebalance_days} 个调仓日`);
         if(stage==='probe')return void(status.textContent=`探针运行完成：${payload.probe_orders} 笔成交，开始规则过滤与费用校准`);
@@ -202,6 +203,7 @@ async function runPage(runId,version){
   table(app.querySelector('#run-info'),[{
     策略:metadata.strategy?metadata.strategy.name:run.strategy_id,版本:run.strategy_version,
     策略哈希:metadata.strategy_hash,股票池:metadata.universe,
+    基准:metadata.benchmark?`${metadata.benchmark.name}（${metadata.benchmark.return_type==='total_return'?'全收益':'价格'}）`:'无',
     起始:params.start,截止:params.end,初始资金:params.init_cash,
     交易日:metadata.panel?metadata.panel.trading_days:null,
     股票数:metadata.panel?metadata.panel.stocks:null,

@@ -29,7 +29,7 @@
 
 回测接口：
 
-- `GET /api/backtest/options`：回测页可选策略、股票池、因子与资源上限；
+- `GET /api/backtest/options`：回测页可选策略、股票池、基准、因子与资源上限；
 - `POST /api/strategies`：创建策略版本；`GET /api/strategies[/{id}]` 读取策略；
 - `GET /api/backtests`：历史运行列表；`POST /api/backtests` 同步运行一次回测；
 - `GET /api/backtests/stream`：流式运行，按阶段推送进度（独立调度器，默认 1 运行 / 2 等待）；
