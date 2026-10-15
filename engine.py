@@ -1,10 +1,15 @@
 """基于 VectorBT 的回测执行器。
 
-一次回测跑两遍 VectorBT：
+一次回测跑三遍 VectorBT：
 
 1. **探针**：无规则、无费用，只为拿到每格的买卖方向和真实成交额；
-2. **最终**：把规则拦住的格子置空，并按探针成交额写入佣金、卖出印花税和
-   最低佣金差额，得到权威的现金、持仓、费用与净值。
+2. **基准**：规则照过滤、费用照收，按 ``1 - cash_buffer`` 的目标百分比下单，
+   它的逐日现金与持股数用来算「执行日开盘时刻的组合价值」，也就是资金分配的预算；
+3. **最终**：按分配出的目标股数（交易单位整数倍）下单，得到权威的现金、持仓、
+   费用与净值。
+
+分配预算必须来自带费用的基准遍：探针一遍是免费的，累计费用拖累会让它的净值
+系统性偏高，直接拿来当预算会超买。
 """
 
 from __future__ import annotations
@@ -16,6 +21,8 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
+from backtest.allocation import ALLOCATION_STAT_KEYS, execution_budget, execution_price
+from backtest.config import MAX_ALLOCATION_ITERATIONS
 from backtest.data import PRICE_ADJUST, MarketData
 from backtest.errors import ExecutionError
 from backtest.logging_conf import get_logger
@@ -23,9 +30,9 @@ from backtest.metrics import summarize
 from backtest.orders import (
     PROBE_COLUMNS,
     OrderPlan,
+    baseline_inputs,
     build_order_plan,
     execution_targets,
-    probe_matrices,
 )
 from backtest.signals import build_target_weights
 from backtest.specs import BacktestParams, StrategySpec
@@ -37,7 +44,10 @@ Progress = Callable[[str, dict], None]
 
 @dataclass(frozen=True)
 class BacktestResult:
-    """VectorBT 结果和项目标准化输出。"""
+    """VectorBT 结果和项目标准化输出。
+
+    ``allocations`` 是逐格的资金分配明细（目标股数、补一手与未建仓的记录）。
+    """
 
     portfolio: Any
     daily: pd.DataFrame
@@ -49,6 +59,7 @@ class BacktestResult:
     metrics: dict
     metadata: dict
     liquidations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    allocations: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def _notify(progress: Progress | None, stage: str, **payload) -> None:
@@ -65,17 +76,20 @@ def _run_portfolio(
     strategy: StrategySpec,
     fees: pd.DataFrame | None,
     fixed_fees: pd.DataFrame | None,
+    size_type: str = "targetpercent",
 ):
     """调用一次 VectorBT 的 ``from_orders``。
 
     参数:
         data: 回测输入面板。
         valuation: 逐日估值价（停牌日沿用上一有效收盘价）。
-        targets: 目标权重矩阵，``NaN`` 表示当天不下单。
+        targets: 下单矩阵，``NaN`` 表示当天不下单；``size_type`` 为
+            ``targetpercent`` 时是目标权重，为 ``targetamount`` 时是目标股数。
         params: 区间与初始资金。
         strategy: 策略配置。
         fees: 逐格费率；None 表示免费。
         fixed_fees: 逐格固定费用；None 表示没有。
+        size_type: VectorBT 的下单量口径。
     """
     try:
         import vectorbt as vbt
@@ -83,7 +97,7 @@ def _run_portfolio(
         return vbt.Portfolio.from_orders(
             close=valuation,
             size=targets,
-            size_type="targetpercent",
+            size_type=size_type,
             price=data.open,
             fees=0.0 if fees is None else fees,
             fixed_fees=0.0 if fixed_fees is None else fixed_fees,
@@ -100,6 +114,23 @@ def _run_portfolio(
         )
     except Exception as error:  # VectorBT 内部异常统一转成回测错误
         raise ExecutionError(f"VectorBT 执行失败：{error}") from error
+
+
+def _state_frames(portfolio) -> tuple[pd.Series, pd.DataFrame]:
+    """提取逐日现金与逐股持股数，用于重建执行预算。
+
+    参数:
+        portfolio: 基准遍的 VectorBT 组合。
+    """
+    try:
+        cash = portfolio.cash()
+        assets = portfolio.assets()
+    except Exception as error:
+        raise ExecutionError(f"无法提取基准遍的现金与持仓：{error}") from error
+    cash = pd.Series(cash.to_numpy(dtype="float64"), index=pd.DatetimeIndex(cash.index))
+    assets = assets.copy()
+    assets.index = pd.DatetimeIndex(assets.index)
+    return cash, assets.astype("float64")
 
 
 def _order_records(portfolio, label: str) -> pd.DataFrame:
@@ -189,14 +220,12 @@ def _holdings_frame(portfolio) -> pd.DataFrame:
 def _fee_witnesses(
     orders: pd.DataFrame,
     plan: OrderPlan,
-    probe_side: np.ndarray,
 ) -> dict:
     """核对最终成交的费用是否按逐格费率矩阵收准。
 
     参数:
         orders: 最终一遍的成交明细。
-        plan: 订单计划，含费率矩阵。
-        probe_side: 探针方向矩阵，用于统计「探针没记录、走了兜底费率」的笔数。
+        plan: 订单计划，含费率矩阵与成交估计方向。
     """
     if orders.empty:
         return {"final_orders": 0, "fallback_fee_orders": 0, "fee_matrix_max_diff": 0.0}
@@ -214,7 +243,7 @@ def _fee_witnesses(
         "final_orders": int(len(orders)),
         "final_buys": int(orders["Side"].astype(str).str.lower().eq("buy").sum()),
         "final_sells": int(orders["Side"].astype(str).str.lower().eq("sell").sum()),
-        "fallback_fee_orders": int((probe_side[rows, cols] == 0).sum()),
+        "fallback_fee_orders": int((plan.estimate_side[rows, cols] == 0).sum()),
         "fee_matrix_max_diff": float(np.max(np.abs(expected - actual))) if len(actual) else 0.0,
     }
 
@@ -279,6 +308,47 @@ def _liquidation_records(plan: OrderPlan, orders: pd.DataFrame) -> pd.DataFrame:
     return frame[columns]
 
 
+def _same_shares(first: pd.DataFrame, second: pd.DataFrame) -> bool:
+    """比较两次分配的目标股数是否完全一致（``NaN`` 视为同值）。"""
+    if first.shape != second.shape:
+        return False
+    if not first.index.equals(second.index) or not first.columns.equals(second.columns):
+        return False
+    left = first.to_numpy(dtype="float64")
+    right = second.to_numpy(dtype="float64")
+    left_nan, right_nan = np.isnan(left), np.isnan(right)
+    if not np.array_equal(left_nan, right_nan):
+        return False
+    return bool(np.array_equal(left[~left_nan], right[~right_nan]))
+
+
+def _clipped_cells(plan: OrderPlan, portfolio) -> dict:
+    """核对最终一遍的实际持股是否等于分配出的目标股数。
+
+    目标股数是交易单位整数倍、预算又留了现金缓冲，正常情况应当逐格相等；
+    出现差额说明基准遍与最终遍的状态差超出了缓冲，被 VectorBT 按现金裁剪了。
+
+    参数:
+        plan: 订单计划，``shares`` 是分配出的目标股数。
+        portfolio: 最终一遍的 VectorBT 组合。
+    """
+    targets = plan.shares.to_numpy(dtype="float64")
+    rows, cols = np.where(~np.isnan(targets))
+    if not len(rows):
+        return {"cash_clipped_cells": 0, "allocation_gap_max_shares": 0.0}
+    try:
+        realized = portfolio.assets().reindex(
+            index=plan.shares.index, columns=plan.shares.columns
+        )
+    except Exception as error:
+        raise ExecutionError(f"无法提取最终一遍的持股数：{error}") from error
+    gap = np.abs(realized.to_numpy(dtype="float64")[rows, cols] - targets[rows, cols])
+    clipped = int((gap > 1e-9).sum())
+    if clipped:
+        logger.warning("最终一遍有 %d 个格子被现金裁剪，最大差 %.0f 股", clipped, float(gap.max()))
+    return {"cash_clipped_cells": clipped, "allocation_gap_max_shares": float(gap.max())}
+
+
 def run_backtest(
     data: MarketData,
     strategy: StrategySpec,
@@ -316,23 +386,84 @@ def run_backtest(
     targets = execution_targets(target_weights)
     probe = _run_portfolio(data, valuation, targets, params, strategy, None, None)
     probe_orders = _probe_frame(_order_records(probe, "探针运行"))
+    del probe  # 探针只提供成交明细，矩阵尽早释放
     _notify(progress, "probe", probe_orders=int(len(probe_orders)))
 
-    plan = build_order_plan(data, targets, strategy.execution, probe_orders, strategy.costs)
-    _notify(progress, "orders", **plan.plan_stats)
-
-    portfolio = _run_portfolio(
-        data, valuation, plan.target_percent, params, strategy, plan.fees, plan.fixed_fees
+    # 基准遍：规则照过滤、费用照收，只是按留了缓冲的目标百分比下单，用来提供分配预算
+    budget_scale = 1.0 - float(strategy.execution.cash_buffer)
+    baseline_targets, baseline_fees, baseline_fixed = baseline_inputs(
+        data, targets, strategy.execution, probe_orders, strategy.costs
     )
+    baseline = _run_portfolio(
+        data, valuation, baseline_targets * budget_scale, params, strategy,
+        baseline_fees, baseline_fixed,
+    )
+    state_cash, state_shares = _state_frames(baseline)
+    del baseline
+    _notify(
+        progress,
+        "baseline",
+        cash_buffer=float(strategy.execution.cash_buffer),
+        rebalance_days=int((~np.isnan(baseline_targets.to_numpy())).any(axis=1).sum()),
+    )
+
+    # 分配要迭代到自洽：目标股数依赖「执行日开盘时刻的真实持仓与现金」，
+    # 而这份状态只有跑完一遍才拿得到。分配结果与上一遍一致时，上一遍的成交与净值
+    # 就是最终结果（同样的目标股数与费率矩阵必然跑出同样的组合）。
+    price = execution_price(data.open, valuation)
+    previous: pd.DataFrame | None = None
+    plan: OrderPlan | None = None
+    portfolio = None
+    converged = False
+    iteration = 0
+    for iteration in range(1, MAX_ALLOCATION_ITERATIONS + 1):
+        budget = execution_budget(state_cash, state_shares, price, params.init_cash)
+        candidate = build_order_plan(
+            data, targets, strategy.execution, probe_orders, budget, state_shares, strategy.costs
+        )
+        if previous is not None and _same_shares(previous, candidate.shares):
+            converged = True
+            break
+        if iteration == 1:
+            _notify(
+                progress,
+                "orders",
+                **{key: value for key, value in candidate.plan_stats.items()
+                   if key not in ALLOCATION_STAT_KEYS},
+            )
+        portfolio = _run_portfolio(
+            data, valuation, candidate.shares, params, strategy, candidate.fees, candidate.fixed_fees,
+            size_type="targetamount",
+        )
+        state_cash, state_shares = _state_frames(portfolio)
+        plan = candidate
+        previous = candidate.shares
+        _notify(
+            progress,
+            "allocation",
+            iteration=iteration,
+            **{key: candidate.plan_stats[key] for key in ALLOCATION_STAT_KEYS},
+        )
+    else:
+        logger.warning("资金分配 %d 次迭代仍未稳定，使用最后一次结果", MAX_ALLOCATION_ITERATIONS)
+    if plan is None or portfolio is None:
+        raise ExecutionError("资金分配没有产出可执行的目标股数")
+
     orders = _order_records(portfolio, "最终运行")
-    side_matrix, _ = probe_matrices(probe_orders, targets.index, targets.columns)
-    witnesses = _fee_witnesses(orders, plan, side_matrix)
+    witnesses = {**_fee_witnesses(orders, plan), **_clipped_cells(plan, portfolio)}
     _notify(progress, "execute", **witnesses)
 
     daily = _daily_frame(portfolio, orders, data.benchmark)
     holdings = _holdings_frame(portfolio)
     liquidations = _liquidation_records(plan, orders)
-    calibration = {**plan.plan_stats, **witnesses, **_weight_witnesses(plan, holdings)}
+    calibration = {
+        "cash_buffer": float(strategy.execution.cash_buffer),
+        "allocation_iterations": int(iteration),
+        "allocation_converged": bool(converged),
+        **plan.plan_stats,
+        **witnesses,
+        **_weight_witnesses(plan, holdings),
+    }
     metadata = {
         "strategy": strategy.to_dict(),
         "strategy_hash": strategy.config_hash,
@@ -340,6 +471,13 @@ def run_backtest(
         "universe": strategy.universe,
         "benchmark": data.benchmark_info,
         "price_adjust": PRICE_ADJUST,
+        "execution": {
+            "sizing": "target_amount",
+            "cash_buffer": float(strategy.execution.cash_buffer),
+            "lot_size": strategy.execution.lot_size,
+            "allocation_iterations": int(iteration),
+            "allocation_converged": bool(converged),
+        },
         "versions": data.versions,
         "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),
         "panel": {"trading_days": int(len(data.index)), "stocks": int(len(data.columns))},
@@ -367,6 +505,7 @@ def run_backtest(
         metrics=summarize(daily),
         metadata=metadata,
         liquidations=liquidations,
+        allocations=plan.allocation,
     )
 
 

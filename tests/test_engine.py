@@ -56,13 +56,14 @@ def test_engine_produces_lot_sized_orders_and_exact_fees(make_data):
     stages: list[str] = []
     result = run_backtest(data, _strategy(), params, progress=lambda stage, _: stages.append(stage))
 
-    assert stages == ["signals", "probe", "orders", "execute"]
+    assert stages == ["signals", "probe", "baseline", "orders", "allocation", "execute"]
     assert not result.orders.empty
     assert (result.orders["Size"] % 100 == 0).all()
     assert result.metadata["calibration"]["fee_matrix_max_diff"] == pytest.approx(0.0)
     assert result.metadata["calibration"]["fallback_fee_orders"] == 0
-    # 下单当日的实际权重应当贴近目标权重（只受 100 股取整与现金裁剪影响）
-    assert result.metadata["calibration"]["weight_deviation_p95"] < 0.01
+    # 2% 现金缓冲摊到 2 只等权上是每格 1%，其余偏差来自 100 股取整与盘中价格差
+    deviation_p95 = result.metadata["calibration"]["weight_deviation_p95"]
+    assert deviation_p95 <= 0.02 / 2 + 0.005
     assert result.metadata["calibration"]["target_cells"] > 0
     assert result.daily.index.equals(DATES)
     assert result.daily["portfolio_value"].iloc[0] == pytest.approx(100_000.0)
@@ -236,4 +237,76 @@ def test_engine_records_benchmark_metadata(make_data):
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
     result = run_backtest(data, _strategy(), params)
     assert result.metadata["benchmark"] == info
+
+
+def _allocation_panel(make_data, prices, dates=None, cash=100_000.0):
+    """构造「单价分布拉得很开」的面板：部分股票一手金额就超过目标仓位。"""
+    dates = list(DATES if dates is None else dates)
+    stocks = [f"SH6000{position:02d}" for position in range(len(prices))]
+    open_price = pd.DataFrame([prices] * len(dates), index=dates, columns=stocks)
+    score = pd.DataFrame(
+        [list(range(len(prices), 0, -1))] * len(dates), index=dates, columns=stocks
+    )
+    data = make_data(
+        dates=dates, stocks=stocks, open=open_price.astype("float32"),
+        close=(open_price * 1.001).astype("float32"),
+        factors={"MOM_20": score.astype("float32")},
+    )
+    strategy = _strategy(
+        portfolio=PortfolioSpec(top_n=len(prices)), rebalance=RebalanceSpec(frequency="daily")
+    )
+    params = BacktestParams(str(dates[0].date()), str(dates[-1].date()), cash)
+    return data, strategy, params
+
+
+def test_engine_bumps_one_lot_when_target_is_below_a_single_lot(make_data):
+    """目标金额小于一手时用取整余量补到一手，不再整只缺席。"""
+    prices = [130.0, 130.0, 130.0, 130.0, 250.0]
+    data, strategy, params = _allocation_panel(make_data, prices)
+    result = run_backtest(data, strategy, params)
+    calibration = result.metadata["calibration"]
+
+    assert calibration["bumped_one_lot_cells"] >= 1
+    assert calibration["unaffordable_lot_cells"] == 0
+    assert calibration["cash_clipped_cells"] == 0
+    # 250 元那只一手 25000 元，超过 0.2 × 98000 = 19600 元的理想仓位，靠余量补上
+    last_day = result.holdings.loc[result.holdings["trade_date"] == DATES[-1]]
+    assert "SH600004" in set(last_day["stock_code"])
+    bumped = result.allocations.loc[result.allocations["status"] == "bumped"]
+    assert set(bumped["stock_code"]) == {"SH600004"}
+
+
+def test_engine_keeps_lot_boundary_cells_instead_of_dropping_them(make_data):
+    """目标金额恰好压在一手以下时不能整只丢掉（单纯缩放权重会踩这个坑）。"""
+    prices = [333.33] * 30
+    data, strategy, params = _allocation_panel(make_data, prices, cash=1_000_000.0)
+    result = run_backtest(data, strategy, params)
+    calibration = result.metadata["calibration"]
+
+    # 理想仓位 32667 元、一手 33333 元：29 只用取整余量补到一手，最后 1 只放不下；
+    # 日频调仓下每个执行日都重复这个结论
+    execution_days = len(DATES) - 1
+    assert calibration["bumped_one_lot_cells"] == 29 * execution_days
+    assert calibration["unaffordable_lot_cells"] == execution_days
+    assert calibration["cash_clipped_cells"] == 0
+    assert calibration["allocation_gap_max_shares"] == 0.0
+    held = result.holdings.loc[result.holdings["trade_date"] == DATES[-1], "weight"].sum()
+    assert 0.95 < held <= 1.0
+
+
+def test_engine_marks_allocation_table_for_every_target_cell(make_data):
+    """逐格分配明细要能对上目标格数，状态只取约定的几种。"""
+    score, price = _frames()
+    data = make_data(
+        dates=DATES, stocks=STOCKS, open=price.astype("float32"),
+        close=(price + 0.5).astype("float32"), factors={"MOM_20": score.astype("float32")},
+    )
+    params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
+    result = run_backtest(data, _strategy(), params)
+    assert len(result.allocations) == result.metadata["calibration"]["planned_orders"]
+    assert set(result.allocations["status"]) <= {"allocated", "bumped", "unaffordable", "no_price", "flat"}
+    assert result.metadata["execution"] == {
+        "sizing": "target_amount", "cash_buffer": 0.02, "lot_size": 100,
+        "allocation_iterations": 2, "allocation_converged": True,
+    }
 

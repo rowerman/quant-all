@@ -96,9 +96,14 @@ class ExecutionSpec:
 
     ``enforce_t_plus_1`` 在当前执行口径下结构性满足：订单最早在信号日次一交易日
     开盘执行，同一天不会对同一只股票既买又卖，因此该开关不会产生额外拒单。
+
+    ``cash_buffer`` 是执行层预留的现金比例：分配目标股数时按 ``1 - cash_buffer``
+    计算可用预算，用来覆盖费用、滑点与取整余量，避免 VectorBT 按顺序成交时
+    最后处理的格子被整笔裁掉。
     """
 
     lot_size: int = 100
+    cash_buffer: float = 0.02
     reject_suspended: bool = True
     reject_limit_up_buy: bool = True
     reject_limit_down_sell: bool = True
@@ -109,6 +114,10 @@ class ExecutionSpec:
             raise SpecError("execution.lot_size 必须是正整数")
         if self.lot_size != 100:
             raise SpecError("第一版固定使用 100 股交易单位")
+        if not isinstance(self.cash_buffer, (int, float)) or isinstance(self.cash_buffer, bool):
+            raise SpecError("execution.cash_buffer 必须是数字")
+        if not 0.0 <= float(self.cash_buffer) < 0.5:
+            raise SpecError("execution.cash_buffer 必须在 [0, 0.5) 之间")
 
 
 @dataclass(frozen=True)

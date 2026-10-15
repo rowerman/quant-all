@@ -117,6 +117,28 @@ def test_target_weights_and_holdings_are_saved_as_long_tables(store):
     assert holding["weight"] == 0.5
 
 
+def test_allocation_table_is_saved(store):
+    """资金分配明细按逐格落库，供前端与自检查「补一手 / 未建仓」的格子。"""
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-02"))
+    allocations = pd.DataFrame(
+        {
+            "trade_date": [pd.Timestamp("2024-01-02")],
+            "stock_code": ["SH600000"],
+            "target_weight": [0.5],
+            "price": [10.0],
+            "baseline_shares": [0.0],
+            "allocated_shares": [4900.0],
+            "status": ["allocated"],
+        }
+    )
+    store.finish_run(run_id, _result(allocations=allocations))
+    row = store.get_result_table(run_id, "allocation")[0]
+    assert row["stock_code"] == "SH600000"
+    assert row["allocated_shares"] == 4900.0
+    assert row["status"] == "allocated"
+
+
 def test_get_metrics_recomputes_from_daily(store):
     strategy_id, version = store.create_strategy(StrategySpec())
     run_id = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-02"))

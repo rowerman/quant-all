@@ -22,6 +22,11 @@ T+1 在本执行口径下结构性满足：订单最早在信号日次一交易�
 退市持仓单独处理：股票最后一条行情之后价格为空，卖出永远无法成交、仓位会永久留在
 组合里，因此对区间内退市的股票在它最后一条有效行情日强制按开盘价卖出（见
 ``liquidation_cells``），不受停牌与涨跌停规则约束。
+
+最终一遍的下单量不是目标百分比，而是由 :mod:`backtest.allocation` 按执行日开盘时刻的
+真实组合价值算出的**目标股数**：这样下单量天生是交易单位整数倍，也不会因为现金不足
+把排在后面的格子整笔裁掉。基准遍的费率矩阵由 :func:`baseline_inputs` 提供，它不依赖
+分配结果，因此基准遍可以先于分配运行。
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from backtest.allocation import allocate_shares, execution_price
 from backtest.data import MarketData
 from backtest.specs import CostSpec, ExecutionSpec
 
@@ -44,14 +50,20 @@ WEIGHT_EPS = 1e-12
 
 @dataclass(frozen=True)
 class OrderPlan:
-    """VectorBT 订单矩阵、规则拒单与计划期统计。"""
+    """VectorBT 订单矩阵、规则拒单与计划期统计。
+
+    ``shares`` 是最终一遍实际提交的目标股数矩阵，``allocation`` 是它的逐格明细。
+    """
 
     target_percent: pd.DataFrame
+    shares: pd.DataFrame
+    estimate_side: np.ndarray
     fees: pd.DataFrame
     fixed_fees: pd.DataFrame
     rejection: pd.DataFrame
     direction: np.ndarray
     liquidations: pd.DataFrame
+    allocation: pd.DataFrame
     plan_stats: dict
 
 
@@ -267,32 +279,32 @@ def fee_matrices(
     index: pd.Index,
     columns: pd.Index,
     keep: pd.DataFrame,
-    probe_side: np.ndarray,
-    probe_value: np.ndarray,
+    side: np.ndarray,
+    value: np.ndarray,
     direction: np.ndarray,
     costs: CostSpec,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """按探针成交额生成逐格费率与最低佣金差额。
+    """按成交估计生成逐格费率与最低佣金差额。
 
-    VectorBT 的费率是「日期 × 股票」单元格口径，不区分买卖；这里用探针的
+    VectorBT 的费率是「日期 × 股票」单元格口径，不区分买卖；这里用成交估计的
     方向把卖出印花税只加在卖出格子上，最低佣金用 ``fixed_fees`` 补差额。
 
     参数:
         index: 面板日期索引。
         columns: 面板股票列。
         keep: 最终会下单的布尔矩阵。
-        probe_side: 探针方向矩阵。
-        probe_value: 探针成交额矩阵。
-        direction: 意图方向矩阵，探针没有记录时用它判断买卖方向。
+        side: 成交估计方向矩阵，1 买 / -1 卖 / 0 没有估计。
+        value: 成交估计金额矩阵。
+        direction: 意图方向矩阵，没有成交估计时用它判断买卖方向。
         costs: 交易成本参数。
     """
-    # 探针没记录的格子用意图方向判断印花税；成交额未知时只收佣金、不加最低佣金差额
-    known = probe_side != 0
-    sell = np.where(known, probe_side < 0, direction < 0)
+    # 没有成交估计的格子用意图方向判断印花税；成交额未知时只收佣金、不加最低佣金差额
+    known = side != 0
+    sell = np.where(known, side < 0, direction < 0)
     rate = np.where(sell, costs.commission_rate + costs.stamp_tax_rate, costs.commission_rate)
     kept = keep.to_numpy()
     fees = np.where(kept, rate, 0.0).astype("float32")
-    deficiency = np.maximum(0.0, costs.minimum_commission - costs.commission_rate * probe_value)
+    deficiency = np.maximum(0.0, costs.minimum_commission - costs.commission_rate * value)
     fixed = np.where(known & kept, deficiency, 0.0).astype("float32")
     return (
         pd.DataFrame(fees, index=index, columns=columns),
@@ -300,28 +312,82 @@ def fee_matrices(
     )
 
 
-def build_order_plan(
+def baseline_inputs(
     data: MarketData,
     targets: pd.DataFrame,
     execution: ExecutionSpec,
     probe: pd.DataFrame,
     costs: CostSpec | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """给出基准遍需要的输入：规则过滤后的目标权重与逐格费用矩阵。
+
+    基准遍只负责提供执行日的真实现金与持股数（分配预算的来源），费用按状态机
+    意图方向估计即可，因此这一步不依赖分配结果，可以排在分配之前。
+
+    参数:
+        data: 回测输入面板。
+        targets: 已平移到执行日的目标权重。
+        execution: 交易限制。
+        probe: 探针成交明细。
+        costs: 交易成本参数。
+    """
+    costs = costs or CostSpec()
+    side, value = probe_matrices(probe, targets.index, targets.columns)
+    filtered, _, intent, _ = apply_rules(data, targets, execution, liquidation_cells(data))
+    fees, fixed_fees = fee_matrices(
+        targets.index, targets.columns, filtered.notna(), side, value, intent, costs
+    )
+    return filtered, fees, fixed_fees
+
+
+def build_order_plan(
+    data: MarketData,
+    targets: pd.DataFrame,
+    execution: ExecutionSpec,
+    probe: pd.DataFrame,
+    budget: pd.Series,
+    baseline_shares: pd.DataFrame,
+    costs: CostSpec | None = None,
 ) -> OrderPlan:
-    """把探针成交明细变成最终订单计划。
+    """把目标权重、探针成交明细与执行预算变成最终订单计划。
 
     参数:
         data: 回测输入面板。
         targets: 已平移到执行日的目标权重。
         execution: 交易限制。
         probe: 探针成交明细，含 ``trade_date``、``stock_code``、``side``、``value``。
+        budget: 逐日执行预算，来自 :func:`backtest.allocation.execution_budget`。
+        baseline_shares: 基准遍逐日持股数，用于给出实际下单方向。
         costs: 交易成本参数。
     """
     costs = costs or CostSpec()
     side, value = probe_matrices(probe, targets.index, targets.columns)
     liquidations = liquidation_cells(data)
     filtered, rejection, direction, executed = apply_rules(data, targets, execution, liquidations)
+    price = execution_price(data.open, data.close.ffill(axis=0))
+    shares, allocation, allocated_direction, allocation_stats = allocate_shares(
+        filtered, budget, price, baseline_shares, execution.lot_size, execution.cash_buffer
+    )
+    # 成交估计：分配出的股数差最贴近最终一遍的真实成交额（基准遍与最终遍的持仓
+    # 只差一个取整范围）；没有估计的格子退回探针成交额，两者都没有就按意图方向计费。
+    baseline_values = (
+        baseline_shares.reindex(index=targets.index, columns=targets.columns)
+        .to_numpy(dtype="float64")
+    )
+    prices = price.reindex(index=targets.index, columns=targets.columns).to_numpy(dtype="float64")
+    delta = shares.to_numpy(dtype="float64") - np.nan_to_num(baseline_values, nan=0.0)
+    estimated_side = np.where(np.isfinite(delta), np.sign(delta), 0.0).astype("int8")
+    # 估算成交额时按买卖方向带上滑点，和 VectorBT 的实际成交价一致，最低佣金差额才算得准
+    slippage = float(costs.slippage)
+    traded_price = np.where(estimated_side > 0, prices * (1.0 + slippage), prices * (1.0 - slippage))
+    estimated_value = np.where(np.isfinite(delta), np.abs(delta) * traded_price, np.nan)
+    estimated_value = np.nan_to_num(estimated_value, nan=0.0)
+    unknown = estimated_side == 0
+    side_source = np.where(unknown, side, estimated_side).astype("int8")
+    value_source = np.where(unknown, value, estimated_value).astype("float64")
+    mixed = np.where(allocated_direction != 0, allocated_direction, direction).astype("int8")
     fees, fixed_fees = fee_matrices(
-        targets.index, targets.columns, filtered.notna(), side, value, direction, costs
+        targets.index, targets.columns, filtered.notna(), side_source, value_source, mixed, costs
     )
     plan_stats = {
         "probe_orders": int((side != 0).sum()),
@@ -331,14 +397,18 @@ def build_order_plan(
         "rebalance_orders": int(((direction == 0) & filtered.notna().to_numpy()).sum()),
         "rejected_orders": int(len(rejection)),
         "forced_liquidations": int(len(executed)),
+        **allocation_stats,
     }
     return OrderPlan(
         target_percent=filtered,
+        shares=shares,
+        estimate_side=side_source,
         fees=fees,
         fixed_fees=fixed_fees,
         rejection=rejection,
         direction=direction,
         liquidations=executed,
+        allocation=allocation,
         plan_stats=plan_stats,
     )
 

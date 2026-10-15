@@ -194,13 +194,18 @@ def test_build_order_plan_collects_stats(panel):
             "value": [50000.0],
         }
     )
-    plan = build_order_plan(data, targets, ExecutionSpec(), probe)
+    budget = pd.Series(100_000.0, index=INDEX)
+    held = pd.DataFrame(0.0, index=INDEX, columns=COLUMNS)
+    plan = build_order_plan(data, targets, ExecutionSpec(), probe, budget, held)
     assert plan.plan_stats["probe_orders"] == 1
     assert plan.plan_stats["planned_orders"] == 1
     assert plan.plan_stats["rejected_orders"] == 0
     assert plan.plan_stats["forced_liquidations"] == 0
     # 本来就空仓、目标也是 0，不需要下单
     assert np.isnan(plan.target_percent.loc[INDEX[1], "SZ000001"])
+    # 目标 0.5、预算 10 万、缓冲 2%：可用 9.8 万 → 49000 元 → 10 元价 4900 股
+    assert plan.shares.loc[INDEX[1], "SH600000"] == 4900
+    assert plan.plan_stats["allocated_cells"] == 1
 
 
 def _delist_panel(panel, stock: str = "SZ000001", **overrides):

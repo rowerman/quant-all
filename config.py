@@ -27,3 +27,8 @@ LOG_DIR = BACKTEST_ROOT / "logs"
 MAX_TRADE_DAYS = 2700
 MAX_PANEL_CELLS = 8_000_000
 
+# 资金分配的迭代上限：目标股数由「执行日开盘时刻的真实持仓与现金」算出，
+# 而这份状态只有跑完一次才拿得到，因此要迭代到分配结果不再变化为止。
+# 全 A 三年实测第 4 轮才确认收敛（实际只跑了 3 遍），用尽上限时会在元数据里标出来。
+MAX_ALLOCATION_ITERATIONS = 4
+

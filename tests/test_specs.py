@@ -66,6 +66,21 @@ def test_execution_lot_size_is_fixed():
         ExecutionSpec(lot_size=10)
 
 
+def test_execution_cash_buffer_is_configurable_and_bounded():
+    """执行层预留的现金缓冲默认 2%，越界直接报错。"""
+    assert ExecutionSpec().cash_buffer == 0.02
+    assert ExecutionSpec(cash_buffer=0.0).cash_buffer == 0.0
+    with pytest.raises(SpecError, match="cash_buffer"):
+        ExecutionSpec(cash_buffer=0.5)
+    with pytest.raises(SpecError, match="cash_buffer"):
+        ExecutionSpec(cash_buffer=-0.01)
+
+
+def test_cash_buffer_enters_config_hash():
+    """缓冲是执行口径的一部分，必须体现在策略哈希里。"""
+    assert StrategySpec(execution=ExecutionSpec(cash_buffer=0.0)).config_hash != StrategySpec().config_hash
+
+
 def test_default_benchmark_is_total_return():
     """默认超额必须与含分红的组合收益使用同口径基准。"""
     assert BenchmarkSpec().index_code == "H00300.CSI"
