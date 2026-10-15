@@ -9,14 +9,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 
-from backtest.data import MarketData
+from backtest.data import PRICE_ADJUST, MarketData
 from backtest.errors import ExecutionError
 from backtest.logging_conf import get_logger
 from backtest.metrics import summarize
@@ -48,6 +48,7 @@ class BacktestResult:
     rejections: pd.DataFrame
     metrics: dict
     metadata: dict
+    liquidations: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def _notify(progress: Progress | None, stage: str, **payload) -> None:
@@ -249,6 +250,35 @@ def _weight_witnesses(plan: OrderPlan, holdings: pd.DataFrame) -> dict:
     }
 
 
+def _liquidation_records(plan: OrderPlan, orders: pd.DataFrame) -> pd.DataFrame:
+    """把强制清算格与实际成交明细对齐，给出落库用的明细。
+
+    参数:
+        plan: 订单计划，``liquidations`` 是实际提交的清算格。
+        orders: 最终一遍的成交明细。
+    """
+    columns = ["trade_date", "stock_code", "delist_date", "size", "price", "value"]
+    frame = plan.liquidations.copy()
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    frame = frame.rename(columns={"price": "reference_price"})
+    if orders.empty:
+        frame["size"] = np.nan
+        frame["price"] = np.nan
+    else:
+        filled = orders[["trade_date", "stock_code", "Size", "Price"]].rename(
+            columns={"Size": "size", "Price": "price"}
+        )
+        frame = frame.merge(filled, on=["trade_date", "stock_code"], how="left")
+    missing = frame["price"].isna()
+    if missing.any():
+        logger.warning("强制清算有 %d 格没有对应成交，按参考价记账", int(missing.sum()))
+        frame.loc[missing, "price"] = frame.loc[missing, "reference_price"]
+        frame["size"] = frame["size"].fillna(0.0)
+    frame["value"] = frame["size"].abs() * frame["price"].astype("float64")
+    return frame[columns]
+
+
 def run_backtest(
     data: MarketData,
     strategy: StrategySpec,
@@ -301,12 +331,15 @@ def run_backtest(
 
     daily = _daily_frame(portfolio, orders, data.benchmark)
     holdings = _holdings_frame(portfolio)
+    liquidations = _liquidation_records(plan, orders)
     calibration = {**plan.plan_stats, **witnesses, **_weight_witnesses(plan, holdings)}
     metadata = {
         "strategy": strategy.to_dict(),
         "strategy_hash": strategy.config_hash,
         "params": {"start": params.start, "end": params.end, "init_cash": params.init_cash},
         "universe": strategy.universe,
+        "price_adjust": PRICE_ADJUST,
+        "versions": data.versions,
         "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),
         "panel": {"trading_days": int(len(data.index)), "stocks": int(len(data.columns))},
         "rank_rows": int(ranks.notna().sum().sum()),
@@ -314,11 +347,12 @@ def run_backtest(
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
     logger.info(
-        "回测完成：区间=%s~%s 订单=%d 拒单=%d 耗时=%.1fs",
+        "回测完成：区间=%s~%s 订单=%d 拒单=%d 强制清算=%d 耗时=%.1fs",
         params.start,
         params.end,
         len(orders),
         len(plan.rejection),
+        len(liquidations),
         metadata["elapsed_seconds"],
     )
     return BacktestResult(
@@ -331,6 +365,7 @@ def run_backtest(
         rejections=plan.rejection,
         metrics=summarize(daily),
         metadata=metadata,
+        liquidations=liquidations,
     )
 
 

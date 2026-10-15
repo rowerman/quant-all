@@ -13,6 +13,8 @@ PROJECT_ROOT = BACKTEST_ROOT.parent
 
 DB_DIR = PROJECT_ROOT / "db"
 DEFAULT_BACKTEST_DB = DB_DIR / "backtest.duckdb"
+# 因子目录库：只用来读因子版本，回测本身不写因子
+FACTOR_DB = DB_DIR / "factors.duckdb"
 FACTOR_DIR = PROJECT_ROOT / "factor_data"
 
 # 回测模块自己的日志目录，与数据项目的 logs/ 和计算包的 calculate/logs/ 分开

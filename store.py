@@ -17,7 +17,15 @@ from backtest.errors import BacktestError
 from backtest.metrics import summarize
 from backtest.specs import BacktestParams, StrategySpec
 
-RESULT_TABLES = ("daily", "position", "order", "rejection", "target_weight", "holding")
+RESULT_TABLES = (
+    "daily",
+    "position",
+    "order",
+    "rejection",
+    "target_weight",
+    "holding",
+    "liquidation",
+)
 
 
 class BacktestStore:
@@ -277,6 +285,7 @@ class BacktestStore:
         holdings = result.holdings.copy()
         orders = result.orders.copy()
         rejection = result.rejections.copy()
+        liquidation = result.liquidations.copy()
         target_weight = result.target_weights.stack(future_stack=True).dropna().rename("target_weight").reset_index()
         target_weight.columns = ["trade_date", "stock_code", "target_weight"]
         frames = []
@@ -286,6 +295,7 @@ class BacktestStore:
             ("holding", holdings),
             ("order", orders),
             ("rejection", rejection),
+            ("liquidation", liquidation),
             ("target_weight", target_weight),
         ):
             if frame.empty:

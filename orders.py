@@ -18,6 +18,10 @@
 
 T+1 在本执行口径下结构性满足：订单最早在信号日次一交易日开盘执行，
 同一天不会对同一只股票既买又卖，因此不单独产生 T+1 拒单。
+
+退市持仓单独处理：股票最后一条行情之后价格为空，卖出永远无法成交、仓位会永久留在
+组合里，因此对区间内退市的股票在它最后一条有效行情日强制按开盘价卖出（见
+``liquidation_cells``），不受停牌与涨跌停规则约束。
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from backtest.specs import CostSpec, ExecutionSpec
 
 REJECTION_COLUMNS = ["trade_date", "stock_code", "reason"]
 PROBE_COLUMNS = ["trade_date", "stock_code", "side", "value"]
+LIQUIDATION_COLUMNS = ["trade_date", "stock_code", "price", "delist_date"]
 
 # 目标权重与上一个目标视为一致时的比较容差
 WEIGHT_EPS = 1e-12
@@ -46,6 +51,7 @@ class OrderPlan:
     fixed_fees: pd.DataFrame
     rejection: pd.DataFrame
     direction: np.ndarray
+    liquidations: pd.DataFrame
     plan_stats: dict
 
 
@@ -102,22 +108,103 @@ def _rejection_rows(mask: np.ndarray, index: pd.Index, columns: pd.Index, reason
     return pd.DataFrame({"trade_date": index[rows], "stock_code": columns[cols], "reason": reason})
 
 
+def liquidation_cells(data: MarketData) -> pd.DataFrame:
+    """列出退市持仓的强制清算格。
+
+    对回测区间内退市的股票，取它在面板内最后一条有效开盘价所在日作为强卖格；
+    最后一条行情日就是面板最后一天的股票不强卖（它的处置属于区间末的估值口径）。
+
+    参数:
+        data: 回测输入面板。
+    """
+    if data.delist_date is None:
+        return pd.DataFrame(columns=LIQUIDATION_COLUMNS)
+    index = data.index
+    if not len(index):
+        return pd.DataFrame(columns=LIQUIDATION_COLUMNS)
+    delisted = pd.to_datetime(data.delist_date.reindex(data.columns))
+    in_window = delisted.notna().to_numpy() & (delisted.to_numpy() <= index[-1].to_datetime64())
+    prices = data.open.to_numpy(dtype="float64")
+    has_price = ~np.isnan(prices)
+    last_row = np.where(
+        has_price.any(axis=0), len(index) - 1 - np.argmax(has_price[::-1], axis=0), -1
+    )
+    picked = np.flatnonzero(in_window & (last_row >= 0) & (last_row < len(index) - 1))
+    if not len(picked):
+        return pd.DataFrame(columns=LIQUIDATION_COLUMNS)
+    rows = last_row[picked]
+    frame = pd.DataFrame(
+        {
+            "trade_date": index[rows],
+            "stock_code": data.columns[picked],
+            "price": prices[rows, picked],
+            "delist_date": delisted.to_numpy()[picked],
+        }
+    )
+    return frame.sort_values(["trade_date", "stock_code"]).reset_index(drop=True)
+
+
+def _liquidation_positions(
+    frame: pd.DataFrame | None, index: pd.Index, columns: pd.Index
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """把清算明细的日期与股票代码换算成面板下标。"""
+    if frame is None or frame.empty:
+        empty = np.array([], dtype=int)
+        return empty, empty, np.array([], dtype=bool)
+    rows = index.get_indexer(pd.DatetimeIndex(frame["trade_date"]))
+    cols = columns.get_indexer(frame["stock_code"])
+    return rows, cols, (rows >= 0) & (cols >= 0)
+
+
+def _liquidation_matrix(
+    frame: pd.DataFrame | None, index: pd.Index, columns: pd.Index
+) -> np.ndarray:
+    """把清算明细铺成与面板同形的布尔矩阵。"""
+    mask = np.zeros((len(index), len(columns)), dtype=bool)
+    if frame is None or frame.empty:
+        return mask
+    rows, cols, valid = _liquidation_positions(frame, index, columns)
+    mask[rows[valid], cols[valid]] = True
+    return mask
+
+
+def _liquidation_rows(
+    frame: pd.DataFrame | None, mask: np.ndarray, index: pd.Index, columns: pd.Index
+) -> pd.DataFrame:
+    """从清算明细里挑出真正提交的格子。"""
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=LIQUIDATION_COLUMNS)
+    rows, cols, valid = _liquidation_positions(frame, index, columns)
+    positions = np.flatnonzero(valid)
+    positions = positions[mask[rows[valid], cols[valid]]]
+    if not len(positions):
+        return pd.DataFrame(columns=LIQUIDATION_COLUMNS)
+    return frame.iloc[positions].reset_index(drop=True)
+
+
 def apply_rules(
     data: MarketData,
     targets: pd.DataFrame,
     execution: ExecutionSpec,
-) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
+    liquidations: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame]:
     """按 A 股规则过滤订单，被拦住的格子置 ``NaN``（保持原仓位）。
 
     参数:
         data: 回测输入面板。
         targets: 已平移到执行日的目标权重。
         execution: 交易限制。
+        liquidations: 退市强制清算格，来自 :func:`liquidation_cells`；这些格子绕过涨跌停与
+            停牌规则，按最后一条有效行情的开盘价卖出。
 
     返回:
-        ``(过滤后的目标权重, 拒单明细, 意图方向矩阵)``；方向矩阵 1 买 / -1 卖 / 0 再平衡。
+        ``(过滤后的目标权重, 拒单明细, 意图方向矩阵, 实际提交的清算明细)``；
+        方向矩阵 1 买 / -1 卖 / 0 再平衡。
     """
-    planned = targets.to_numpy(dtype="float64")
+    planned = np.array(targets.to_numpy(dtype="float64"), copy=True)
+    force = _liquidation_matrix(liquidations, targets.index, targets.columns)
+    # 清算格的目标一律写 0：状态机认为空仓时自然丢掉，认为持有时判为卖出
+    planned[force] = 0.0
     buy_ok = _shifted_flags(data.can_buy_open_next)
     sell_ok = _shifted_flags(data.can_sell_open_next)
     suspended = data.is_suspended.to_numpy()
@@ -144,15 +231,17 @@ def apply_rules(
         keep_sell = sell_intent & ~stopped_sell & ~stopped
         keep_buy = buy_intent & ~stopped_buy & ~stopped
         keep_rebalance = rebalance & ~stopped & ~stopped_rebalance
-        keep[row] = keep_sell | keep_buy | keep_rebalance
-        direction[row] = np.where(keep_buy, 1, np.where(keep_sell, -1, 0))
-        blocked["suspended"][row] = stopped
-        blocked["limit_up_or_not_buyable"][row] = stopped_buy
-        blocked["limit_down_or_not_sellable"][row] = stopped_sell
+        # 退市强卖只看状态机是否认为持仓，不受停牌与涨跌停约束
+        forced_cell = force[row] & held
+        keep[row] = keep_sell | keep_buy | keep_rebalance | forced_cell
+        direction[row] = np.where(keep_buy, 1, np.where(keep_sell | forced_cell, -1, 0))
+        blocked["suspended"][row] = stopped & ~forced_cell
+        blocked["limit_up_or_not_buyable"][row] = stopped_buy & ~forced_cell
+        blocked["limit_down_or_not_sellable"][row] = stopped_sell & ~forced_cell
         # 被拦下的格子状态不变，下一次调仓会重新尝试
-        held[keep_sell] = False
+        held[keep_sell | forced_cell] = False
         held[keep_buy | keep_rebalance] = True
-        shadow[keep_sell] = desired[keep_sell]
+        shadow[keep_sell | forced_cell] = 0.0
         shadow[keep_buy | keep_rebalance] = desired[keep_buy | keep_rebalance]
 
     filtered = pd.DataFrame(
@@ -170,7 +259,8 @@ def apply_rules(
     )
     if len(rejection):
         rejection = rejection.sort_values(["trade_date", "stock_code"]).reset_index(drop=True)
-    return filtered, rejection, direction
+    executed = _liquidation_rows(liquidations, keep & force, targets.index, targets.columns)
+    return filtered, rejection, direction, executed
 
 
 def fee_matrices(
@@ -228,7 +318,8 @@ def build_order_plan(
     """
     costs = costs or CostSpec()
     side, value = probe_matrices(probe, targets.index, targets.columns)
-    filtered, rejection, direction = apply_rules(data, targets, execution)
+    liquidations = liquidation_cells(data)
+    filtered, rejection, direction, executed = apply_rules(data, targets, execution, liquidations)
     fees, fixed_fees = fee_matrices(
         targets.index, targets.columns, filtered.notna(), side, value, direction, costs
     )
@@ -239,6 +330,7 @@ def build_order_plan(
         "planned_orders": int(filtered.notna().to_numpy().sum()),
         "rebalance_orders": int(((direction == 0) & filtered.notna().to_numpy()).sum()),
         "rejected_orders": int(len(rejection)),
+        "forced_liquidations": int(len(executed)),
     }
     return OrderPlan(
         target_percent=filtered,
@@ -246,6 +338,7 @@ def build_order_plan(
         fixed_fees=fixed_fees,
         rejection=rejection,
         direction=direction,
+        liquidations=executed,
         plan_stats=plan_stats,
     )
 

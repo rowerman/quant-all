@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from backtest.data import load_market_data
 from backtest.engine import run_backtest
 from backtest.errors import DataAlignmentError, ExecutionError
 from backtest.specs import (
@@ -156,4 +157,65 @@ def test_execution_switches_off_keeps_orders(make_data):
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
     result = run_backtest(data, _strategy(execution=ExecutionSpec(reject_suspended=False)), params)
     assert result.rejections.empty
+
+
+def _delist_inputs():
+    """SZ000001 在 DATES[2] 退市：之后没有行情、也没有因子值。"""
+    score, price = _frames()
+    open_panel = price.copy()
+    close_panel = (price + 0.5).copy()
+    for date in DATES[3:]:
+        open_panel.loc[date, "SZ000001"] = np.nan
+        close_panel.loc[date, "SZ000001"] = np.nan
+    score.loc[DATES[2]:, "SZ000001"] = np.nan
+    delist = pd.Series(pd.NaT, index=STOCKS)
+    delist["SZ000001"] = DATES[2]
+    return score, open_panel, close_panel, delist
+
+
+def test_engine_liquidates_delisted_holding(make_data):
+    """持有中的股票退市后必须被清掉，不能靠 ffill 永远留在净值里。"""
+    score, open_panel, close_panel, delist = _delist_inputs()
+    data = make_data(
+        dates=DATES, stocks=STOCKS,
+        open=open_panel.astype("float32"), close=close_panel.astype("float32"),
+        factors={"MOM_20": score.astype("float32")}, delist_date=delist,
+    )
+    params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
+    result = run_backtest(data, _strategy(), params)
+
+    assert result.metadata["calibration"]["forced_liquidations"] == 1
+    record = result.liquidations.iloc[0]
+    assert record["stock_code"] == "SZ000001"
+    assert record["trade_date"] == DATES[2]
+    assert record["size"] > 0
+    assert record["value"] == pytest.approx(record["size"] * record["price"])
+    sell = result.orders.loc[
+        (result.orders["stock_code"] == "SZ000001") & (result.orders["trade_date"] == DATES[2])
+    ]
+    assert len(sell) == 1
+    assert str(sell.iloc[0]["Side"]).lower() == "sell"
+    last = result.holdings.loc[result.holdings["trade_date"] == DATES[-1]]
+    assert "SZ000001" not in set(last["stock_code"])
+
+
+def test_engine_is_reproducible():
+    """同一份输入与同一份策略跑两次，订单、净值、指标与自检逐位一致。"""
+    data = load_market_data(
+        "2026-06-01", "2026-09-28", ["MOM_20"], universe="index:000300.SH"
+    )
+    params = BacktestParams("2026-06-01", "2026-09-28", 1_000_000.0)
+    first = run_backtest(data, StrategySpec(), params)
+    second = run_backtest(data, StrategySpec(), params)
+
+    assert len(first.orders) > 0
+    pd.testing.assert_frame_equal(first.orders, second.orders, check_exact=True)
+    pd.testing.assert_frame_equal(first.daily, second.daily, check_exact=True)
+    pd.testing.assert_frame_equal(first.holdings, second.holdings, check_exact=True)
+    pd.testing.assert_frame_equal(first.rejections, second.rejections, check_exact=True)
+    pd.testing.assert_frame_equal(
+        first.target_weights, second.target_weights, check_exact=True
+    )
+    assert first.metrics == second.metrics
+    assert first.metadata["calibration"] == second.metadata["calibration"]
 

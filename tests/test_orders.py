@@ -4,11 +4,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import quant
 from backtest.orders import (
     apply_rules,
     build_order_plan,
     execution_targets,
     fee_matrices,
+    liquidation_cells,
     probe_matrices,
 )
 from backtest.specs import CostSpec, ExecutionSpec
@@ -62,7 +64,7 @@ def test_suspended_execution_day_is_blocked(panel):
     suspended.loc[INDEX[1], "SH600000"] = True
     data = panel(is_suspended=suspended)
     targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
-    filtered, rejection, direction = apply_rules(data, targets, ExecutionSpec())
+    filtered, rejection, direction, _ = apply_rules(data, targets, ExecutionSpec())
     assert filtered.notna().sum().sum() == 0
     assert rejection.to_dict("records") == [
         {"trade_date": INDEX[1], "stock_code": "SH600000", "reason": "suspended"}
@@ -75,7 +77,7 @@ def test_limit_up_blocks_buy_and_keeps_position(panel):
     can_buy.loc[INDEX[0], "SH600000"] = False  # 信号日次一交易日开盘涨停
     data = panel(can_buy_open_next=can_buy)
     targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
-    filtered, rejection, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, rejection, _, _ = apply_rules(data, targets, ExecutionSpec())
     assert filtered.loc[INDEX[1], "SH600000"] != filtered.loc[INDEX[1], "SH600000"]  # NaN
     assert rejection.iloc[0]["reason"] == "limit_up_or_not_buyable"
 
@@ -87,7 +89,7 @@ def test_limit_down_blocks_sell_only(panel):
     targets = _targets(
         [[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [0.0, np.nan]]
     )
-    filtered, rejection, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, rejection, _, _ = apply_rules(data, targets, ExecutionSpec())
     assert filtered.loc[INDEX[1], "SH600000"] == 0.5
     assert np.isnan(filtered.loc[INDEX[3], "SH600000"])
     assert rejection.iloc[0]["reason"] == "limit_down_or_not_sellable"
@@ -98,7 +100,7 @@ def test_rule_switches_can_be_turned_off(panel):
     data = panel(can_buy_open_next=can_buy)
     targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
     execution = ExecutionSpec(reject_limit_up_buy=False)
-    filtered, rejection, _ = apply_rules(data, targets, execution)
+    filtered, rejection, _, _ = apply_rules(data, targets, execution)
     assert filtered.loc[INDEX[1], "SH600000"] == 0.5
     assert rejection.empty
 
@@ -111,7 +113,7 @@ def test_blocked_sell_is_retried_on_the_next_rebalance(panel):
     targets = _targets(
         [[np.nan, np.nan], [0.5, np.nan], [0.0, np.nan], [0.0, np.nan]]
     )
-    filtered, rejection, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, rejection, _, _ = apply_rules(data, targets, ExecutionSpec())
     assert rejection.iloc[0]["reason"] == "limit_down_or_not_sellable"
     assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
     # 状态仍为持有，目标一直是 0，所以下一个调仓日会重新提交卖出
@@ -124,7 +126,7 @@ def test_rebalance_cell_is_skipped_when_a_side_is_blocked(panel):
     can_sell.loc[INDEX[1], "SH600000"] = False  # INDEX[2] 的再平衡一侧受限
     data = panel(can_sell_open_next=can_sell)
     targets = _targets([[np.nan, np.nan], [0.5, np.nan], [0.5, np.nan], [0.5, np.nan]])
-    filtered, _, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, _, _, _ = apply_rules(data, targets, ExecutionSpec())
     assert filtered.loc[INDEX[1], "SH600000"] == 0.5
     assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
     # INDEX[2] 的信号日两侧都正常，再平衡可以提交
@@ -134,7 +136,7 @@ def test_rebalance_cell_is_skipped_when_a_side_is_blocked(panel):
 def test_flat_position_with_zero_target_is_not_submitted(panel):
     data = panel()
     targets = _targets([[np.nan, np.nan], [0.5, 0.5], [np.nan, np.nan], [np.nan, np.nan]])
-    filtered, rejection, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, rejection, _, _ = apply_rules(data, targets, ExecutionSpec())
     assert filtered.notna().sum().sum() == 2
     assert rejection.empty
 
@@ -196,6 +198,89 @@ def test_build_order_plan_collects_stats(panel):
     assert plan.plan_stats["probe_orders"] == 1
     assert plan.plan_stats["planned_orders"] == 1
     assert plan.plan_stats["rejected_orders"] == 0
+    assert plan.plan_stats["forced_liquidations"] == 0
     # 本来就空仓、目标也是 0，不需要下单
     assert np.isnan(plan.target_percent.loc[INDEX[1], "SZ000001"])
+
+
+def _delist_panel(panel, stock: str = "SZ000001", **overrides):
+    """构造一只股票在窗口内退市的面板：最后一条行情在 INDEX[2]。"""
+    prices = pd.DataFrame(10.0, index=INDEX, columns=COLUMNS)
+    prices.loc[INDEX[3], stock] = np.nan
+    delist = pd.Series(pd.NaT, index=COLUMNS)
+    delist[stock] = INDEX[2]
+    return panel(open=prices.astype("float32"), delist_date=delist, **overrides)
+
+
+def test_liquidation_cells_pick_last_bar_before_window_end(panel):
+    data = _delist_panel(panel, "SZ000001")
+    cells = liquidation_cells(data)
+    assert list(cells.columns) == ["trade_date", "stock_code", "price", "delist_date"]
+    assert cells["stock_code"].tolist() == ["SZ000001"]
+    assert cells["trade_date"].tolist() == [INDEX[2]]
+    assert cells["price"].tolist() == [pytest.approx(10.0)]
+    assert cells["delist_date"].tolist() == [INDEX[2]]
+
+
+def test_liquidation_cells_skip_delist_on_window_end(panel):
+    """退市日等于面板最后一天时不强卖，避免动到区间末的估值口径。"""
+    delist = pd.Series(pd.NaT, index=COLUMNS)
+    delist["SZ000001"] = INDEX[3]
+    assert liquidation_cells(panel(delist_date=delist)).empty
+    # 没有退市日序列时整体不生效
+    assert liquidation_cells(panel()).empty
+
+
+def test_delisted_position_is_sold_on_last_bar(panel):
+    data = _delist_panel(panel, "SZ000001")
+    targets = _targets([[np.nan, np.nan], [0.5, 0.5], [np.nan, np.nan], [np.nan, np.nan]])
+    liquidations = liquidation_cells(data)
+    filtered, rejection, direction, executed = apply_rules(
+        data, targets, ExecutionSpec(), liquidations
+    )
+    assert filtered.loc[INDEX[2], "SZ000001"] == 0.0
+    assert direction[2, 1] == -1
+    assert executed["stock_code"].tolist() == ["SZ000001"]
+    assert rejection.empty
+
+
+def test_forced_liquidation_bypasses_limit_down(panel):
+    """退市强卖不受跌停/停牌规则约束，也不写拒单。"""
+    can_sell = pd.DataFrame(True, index=INDEX, columns=COLUMNS)
+    can_sell.loc[INDEX[1], "SZ000001"] = False  # INDEX[2] 执行日跌停卖不掉
+    suspended = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
+    suspended.loc[INDEX[2], "SZ000001"] = True
+    data = _delist_panel(panel, can_sell_open_next=can_sell, is_suspended=suspended)
+    targets = _targets([[np.nan, np.nan], [0.5, 0.5], [np.nan, np.nan], [np.nan, np.nan]])
+    filtered, rejection, _, executed = apply_rules(
+        data, targets, ExecutionSpec(), liquidation_cells(data)
+    )
+    assert filtered.loc[INDEX[2], "SZ000001"] == 0.0
+    assert len(executed) == 1
+    assert rejection.empty
+
+
+def test_liquidation_cells_follow_real_delist_date(make_data):
+    """真实退市股：强卖格落在它最后一条有价的行情日。
+
+    退市整理期结束前就停牌的股票（如 SH600193 一直停到退市日）最后一条有价行情在退市日之前，
+    强卖格取的是那一天而不是退市日，这也是唯一能真正卖出的时点。
+    """
+    codes = ["SZ002898", "SZ000004", "SH600193"]
+    start, end = "2026-06-01", "2026-07-31"
+    frame = quant.load_panel(
+        start=start, end=end, fields=["open"], adjust="raw", stocks=codes
+    )
+    wide = frame.pivot(index="trade_date", columns="stock_code", values="open")
+    wide.index = pd.DatetimeIndex(wide.index)
+    basic = quant.load_stock_basic().set_index("stock_code")
+    delist = pd.to_datetime(basic["delist_date"]).reindex(wide.columns)
+    data = make_data(dates=wide.index, stocks=wide.columns, open=wide, delist_date=delist)
+    cells = liquidation_cells(data)
+    assert set(cells["stock_code"]) == set(codes)
+    for row in cells.to_dict("records"):
+        last_bar = wide[row["stock_code"]].dropna().index[-1]
+        assert row["trade_date"] == last_bar
+        assert pd.Timestamp(row["delist_date"]) >= last_bar
+        assert row["price"] == pytest.approx(float(wide.loc[last_bar, row["stock_code"]]))
 
