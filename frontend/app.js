@@ -8,7 +8,7 @@ let backtestOptions=null;
 const rateKeys=new Set(['total_return','annual_return','annual_volatility','max_drawdown','daily_win_rate','monthly_win_rate','benchmark_total_return','benchmark_annual_return','excess_annual_return','excess_win_rate']);
 // 规则拒单原因与执行校准字段的中文名
 const reasonLabels={suspended:'停牌不能交易',limit_up_or_not_buyable:'涨停或开盘不可买',limit_down_or_not_sellable:'跌停或开盘不可卖'};
-const calibrationLabels={cash_buffer:'现金缓冲（执行层预留）',allocation_iterations:'资金分配迭代次数',allocation_converged:'资金分配是否收敛',probe_orders:'探针成交笔数',probe_buys:'探针买入笔数',probe_sells:'探针卖出笔数',planned_orders:'计划下单格数',rebalance_orders:'其中再平衡格数',rejected_orders:'规则拒单笔数',forced_liquidations:'退市强制清算笔数',allocated_cells:'分配出目标股数的格数',bumped_one_lot_cells:'用取整余量补到一手的格数',unaffordable_lot_cells:'一手金额超出预算、未能建仓的格数',no_price_cells:'缺执行价、未下单的格数',final_orders:'最终成交笔数',final_buys:'最终买入笔数',final_sells:'最终卖出笔数',fallback_fee_orders:'没有成交估计、按意图方向计费笔数',fee_matrix_max_diff:'费用矩阵核对最大偏差（元）',cash_clipped_cells:'被现金裁剪的格数',allocation_gap_max_shares:'实际持股与目标股数的最大差额（股）',target_cells:'目标下单格数',weight_deviation_median:'权重偏差中位数',weight_deviation_p95:'权重偏差 95 分位',weight_deviation_max:'权重偏差最大值',weight_deviation_over_1pct:'权重偏差超 1% 的格数'};
+const calibrationLabels={cash_buffer:'现金缓冲（执行层预留）',allocation_iterations:'资金分配迭代次数',allocation_converged:'资金分配是否收敛',probe_orders:'探针成交笔数',probe_buys:'探针买入笔数',probe_sells:'探针卖出笔数',planned_orders:'计划下单格数',rebalance_orders:'其中再平衡格数',rejected_orders:'规则拒单笔数',forced_liquidations:'退市强制清算笔数',retry_attempts:'被拦交易的重试尝试次数',retried_filled_cells:'非调仓日补单成交格数',pending_at_end_cells:'区间末仍未解决的待重试格数',allocated_cells:'分配出目标股数的格数',bumped_one_lot_cells:'用取整余量补到一手的格数',unaffordable_lot_cells:'一手金额超出预算、未能建仓的格数',no_price_cells:'缺执行价、未下单的格数',final_orders:'最终成交笔数',final_buys:'最终买入笔数',final_sells:'最终卖出笔数',fallback_fee_orders:'没有成交估计、按意图方向计费笔数',fee_matrix_max_diff:'费用矩阵核对最大偏差（元）',cash_clipped_cells:'被现金裁剪的格数',allocation_gap_max_shares:'实际持股与目标股数的最大差额（股）',target_cells:'目标下单格数',weight_deviation_median:'权重偏差中位数',weight_deviation_p95:'权重偏差 95 分位',weight_deviation_max:'权重偏差最大值',weight_deviation_over_1pct:'权重偏差超 1% 的格数'};
 // 需要按百分比展示的执行校准字段
 const calibrationRates=new Set(['cash_buffer','weight_deviation_median','weight_deviation_p95','weight_deviation_max']);
 
@@ -161,8 +161,8 @@ function renderRuns(runs){
   const node=app.querySelector('#run-list');if(!node)return;
   if(!runs.length){node.innerHTML='<p class="muted">还没有运行记录，先在上面选好参数运行一次。</p>';return;}
   const cell=value=>value===null||value===undefined?'—':pct(value);
-  node.innerHTML='<div class="table-wrap"><table><thead><tr><th>运行</th><th>策略版本</th><th>区间</th><th>股票池</th><th>状态</th><th>累计收益</th><th>年化</th><th>最大回撤</th><th>耗时（秒）</th></tr></thead><tbody>'+
-    runs.map(row=>`<tr><td><a href="#/backtest/${encodeURIComponent(row.run_id)}">${esc(String(row.run_id).slice(0,8))}</a></td><td>${esc(row.strategy_id)} · v${esc(row.strategy_version)}</td><td>${esc(String(row.start_date).slice(0,10))} ~ ${esc(String(row.end_date).slice(0,10))}</td><td>${esc(row.universe||'—')}</td><td>${esc(row.status)}</td>`+
+  node.innerHTML='<div class="table-wrap"><table><thead><tr><th>运行</th><th>策略版本</th><th>区间</th><th>股票池</th><th>基准</th><th>状态</th><th>累计收益</th><th>年化</th><th>最大回撤</th><th>耗时（秒）</th></tr></thead><tbody>'+
+    runs.map(row=>`<tr><td><a href="#/backtest/${encodeURIComponent(row.run_id)}">${esc(String(row.run_id).slice(0,8))}</a></td><td>${esc(row.strategy_id)} · v${esc(row.strategy_version)}</td><td>${esc(String(row.start_date).slice(0,10))} ~ ${esc(String(row.end_date).slice(0,10))}</td><td>${esc(row.universe||'—')}</td><td>${esc(row.benchmark||'—')}</td><td>${esc(row.status)}</td>`+
       ['total_return','annual_return','max_drawdown'].map(key=>`<td>${cell(row.metrics?row.metrics[key]:null)}</td>`).join('')+
       `<td>${row.elapsed_seconds==null?'—':fmt(row.elapsed_seconds)}</td></tr>`).join('')+'</tbody></table></div>';
 }

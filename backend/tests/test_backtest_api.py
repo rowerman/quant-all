@@ -53,7 +53,10 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
 
 def test_run_tables_and_metrics_are_readable(client, store):
     strategy_id, version = store.create_strategy(StrategySpec())
-    run_id = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-05"))
+    run_id = store.start_run(
+        strategy_id, version, BacktestParams("2024-01-01", "2024-01-05"),
+        universe="index:000905.SH", benchmark="H00905.CSI",
+    )
     daily = pd.DataFrame(
         {
             "portfolio_value": [1_000_000.0, 1_020_000.0],
@@ -100,7 +103,8 @@ def test_run_tables_and_metrics_are_readable(client, store):
 
     runs = client.get("/api/backtests").json()
     assert runs[0]["run_id"] == run_id
-    assert runs[0]["universe"] == "all_a"
+    assert runs[0]["universe"] == "index:000905.SH"
+    assert runs[0]["benchmark"] == "H00905.CSI"
 
     detail = client.get(f"/api/backtests/{run_id}").json()
     assert detail["status"] == "success"
