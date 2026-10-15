@@ -1,5 +1,8 @@
 """策略版本与回测结果的落库行为。"""
 
+import json
+
+import duckdb
 import pandas as pd
 import pytest
 
@@ -74,6 +77,44 @@ def test_run_lifecycle_reports_status_and_list(store):
     assert runs[0]["run_id"] == run_id
     assert runs[0]["strategy_hash"] == "abc"
     assert runs[0]["metrics"] == {"total_return": 0.01}
+
+
+def test_run_records_universe_and_benchmark(store):
+    """股票池与基准要落成列，SQL 里能直接筛。"""
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(
+        strategy_id, version, BacktestParams("2024-01-01", "2024-01-05"),
+        universe="index:000905.SH", benchmark="H00905.CSI",
+    )
+    record = store.get_run(run_id)
+    assert record["universe"] == "index:000905.SH"
+    assert record["benchmark"] == "H00905.CSI"
+    listed = store.list_runs()[0]
+    assert listed["universe"] == "index:000905.SH"
+    assert listed["benchmark"] == "H00905.CSI"
+
+
+def test_legacy_run_table_gets_new_columns(tmp_path):
+    """老库的 bt.run 没有这两列：打开时自动补列，列表回落到元数据。"""
+    path = tmp_path / "legacy.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute("CREATE SCHEMA IF NOT EXISTS bt")
+        conn.execute(
+            """CREATE TABLE bt.run (
+                run_id VARCHAR PRIMARY KEY, strategy_id VARCHAR, strategy_version INTEGER,
+                start_date DATE, end_date DATE, init_cash DOUBLE, status VARCHAR,
+                metadata_json VARCHAR, error_message VARCHAR, started_at TIMESTAMP,
+                finished_at TIMESTAMP
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO bt.run VALUES ('legacy', 'sid', 1, '2024-01-01', '2024-01-05', 100000.0, "
+            "'success', ?, NULL, '2024-01-06 00:00:00', '2024-01-06 00:01:00')",
+            [json.dumps({"universe": "all_a", "benchmark": {"code": "H00300.CSI"}})],
+        )
+    listed = BacktestStore(path).list_runs()[0]
+    assert listed["universe"] == "all_a"
+    assert listed["benchmark"] == "H00300.CSI"
 
 
 def test_failed_and_cancelled_runs_are_recorded(store):

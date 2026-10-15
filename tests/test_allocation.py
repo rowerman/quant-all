@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.allocation import allocate_shares, execution_budget, execution_price
+from backtest.allocation import allocate_shares, execution_budget, execution_cash, execution_price
 from backtest.errors import ExecutionError
 
 DATES = pd.date_range("2024-01-29", periods=3, freq="B")
@@ -15,11 +15,12 @@ def _frame(values, columns, index=DATES):
     return pd.DataFrame(np.asarray(values, dtype="float64"), index=index, columns=columns)
 
 
-def _allocate(targets, budgets, prices, columns, baseline=None, buffer=0.0):
-    """跑一次分配，返回 ``(股数, 明细, 统计)``。"""
+def _allocate(targets, budgets, prices, columns, baseline=None, buffer=0.0, cash=None):
+    """跑一次分配，返回 ``(股数, 明细, 统计)``；开盘现金默认与预算同值。"""
     shares, records, _, stats = allocate_shares(
         _frame(targets, columns),
         pd.Series(budgets, index=DATES),
+        pd.Series(budgets if cash is None else cash, index=DATES),
         _frame(prices, columns),
         _frame(baseline, columns) if baseline is not None else _frame([[0.0] * len(columns)] * 3, columns),
         100,
@@ -49,6 +50,12 @@ def test_execution_budget_falls_back_to_valuation_when_open_missing():
     valuation = _frame([[10.0], [11.0], [11.0]], columns)
     budget = execution_budget(cash, assets, execution_price(open_price, valuation), 50_000.0)
     assert budget.iloc[1] == pytest.approx(50_000.0 + 1_000.0 * 11.0)
+
+
+def test_execution_cash_uses_previous_close_and_initial_cash():
+    cash = pd.Series([10_000.0, 20_000.0, 30_000.0], index=DATES)
+    values = execution_cash(cash, 100_000.0)
+    assert values.tolist() == [100_000.0, 10_000.0, 20_000.0]
 
 
 def test_allocate_shares_floors_to_lot_and_keeps_cash_buffer():
@@ -119,11 +126,39 @@ def test_allocate_shares_excludes_blocked_holdings_from_budget():
     weights = [[np.nan, np.nan], [np.nan, 1.0], [np.nan, np.nan]]
     prices = [[50.0, 50.0]] * 3
     shares, records, stats = _allocate(
-        weights, [100_000.0, 100_000.0, 100_000.0], prices, ["A", "B"], baseline=baseline
+        weights, [100_000.0, 100_000.0, 100_000.0], prices, ["A", "B"], baseline=baseline,
+        cash=[0.0, 0.0, 0.0],
     )
     assert shares.loc[DATES[1], "B"] == 0.0
     assert stats["unaffordable_lot_cells"] == 1
     assert records.loc[records["status"] == "unaffordable"].iloc[0]["stock_code"] == "B"
+
+
+def test_allocate_shares_keeps_full_weight_on_retry_row():
+    """重试日只有少数格子下单，目标仍按整个组合价值算，不按这些格子自己的市值缩小。"""
+    # 组合价值 10 万 = 现金 5 万 + B 持仓 5 万；A 没持仓，只有 A 有目标权重 0.5
+    baseline = [[0.0, 0.0], [0.0, 5_000.0], [0.0, 5_000.0]]
+    weights = [[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan]]
+    prices = [[10.0, 10.0]] * 3
+    shares, records, _ = _allocate(
+        weights, [100_000.0] * 3, prices, ["A", "B"], baseline=baseline, buffer=0.02
+    )
+    # 0.98 × 10 万 × 0.5 = 4.9 万，10 元价 -> 4900 股
+    assert shares.loc[DATES[1], "A"] == 4900.0
+    assert records.loc[records["stock_code"] == "A"].iloc[0]["target_weight"] == pytest.approx(0.5)
+
+
+def test_allocate_shares_caps_buys_by_open_cash():
+    """买单按开盘现金限制：参考持仓是上一遍的执行后持仓，不能当成已有的钱。"""
+    # 目标 0.5 × 10 万 = 4.9 万，但开盘只有 2 万现金，且没有可卖出的持仓
+    baseline = [[0.0], [4_900.0], [4_900.0]]
+    weights = [[np.nan], [0.5], [np.nan]]
+    prices = [[10.0]] * 3
+    shares, _, _ = _allocate(
+        weights, [100_000.0] * 3, prices, ["A"], baseline=baseline, buffer=0.02,
+        cash=[0.0, 20_000.0, 20_000.0],
+    )
+    assert shares.loc[DATES[1], "A"] == 2_000.0
 
 
 def test_allocate_shares_handles_empty_budget_and_missing_price():
@@ -142,6 +177,7 @@ def test_allocate_shares_rejects_impossible_buffer():
     with pytest.raises(ExecutionError, match="现金缓冲"):
         allocate_shares(
             _frame([[np.nan], [1.0], [np.nan]], columns),
+            pd.Series(10_000.0, index=DATES),
             pd.Series(10_000.0, index=DATES),
             _frame([[10.0]] * 3, columns),
             _frame([[0.0]] * 3, columns),

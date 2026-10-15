@@ -90,7 +90,10 @@ def iter_run(
     """
     spec = effective_spec(store.get_version(request.strategy_id, request.version), request)
     params = request.params
-    run_id = store.start_run(request.strategy_id, spec.version, params)
+    run_id = store.start_run(
+        request.strategy_id, spec.version, params,
+        universe=spec.universe, benchmark=spec.benchmark.index_code,
+    )
     logger.info("运行 %s：策略=%s 区间=%s~%s", run_id, spec.name, params.start, params.end)
     yield (
         "meta",

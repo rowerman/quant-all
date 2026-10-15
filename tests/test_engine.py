@@ -104,6 +104,35 @@ def test_engine_records_limit_up_rejection(make_data):
     assert result.metadata["calibration"]["rejected_orders"] == len(result.rejections)
 
 
+def test_engine_retries_blocked_buy_on_next_trading_day(make_data):
+    """月频调仓被涨停挡下的买入，下一个交易日补单，费率估计不退回兜底口径。"""
+    score, price = _frames()
+    can_buy = pd.DataFrame(True, index=DATES, columns=STOCKS)
+    can_buy.loc[DATES[2], "SH600000"] = False  # 1 月 31 日信号对应的 2 月 1 日执行日涨停
+    data = make_data(
+        dates=DATES, stocks=STOCKS, open=price.astype("float32"),
+        close=(price + 0.5).astype("float32"), can_buy_open_next=can_buy,
+        factors={"MOM_20": score.astype("float32")},
+    )
+    strategy = _strategy(rebalance=RebalanceSpec(frequency="monthly"))
+    params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 1_000_000.0)
+    result = run_backtest(data, strategy, params)
+    calibration = result.metadata["calibration"]
+
+    assert len(result.rejections) == 1
+    assert result.rejections.iloc[0]["trade_date"] == DATES[3]
+    assert calibration["rejected_orders"] == 1
+    # 2 月 2 日没有新目标，补单只能来自每日重试
+    filled = result.orders[result.orders["stock_code"] == "SH600000"]
+    assert set(filled["trade_date"]) == {DATES[4]}
+    assert calibration["retry_attempts"] == 1
+    assert calibration["retried_filled_cells"] == 1
+    assert calibration["pending_at_end_cells"] == 0
+    # 补单那一笔的费率估计来自股数差，不落到兜底口径
+    assert calibration["fallback_fee_orders"] == 0
+    assert calibration["fee_matrix_max_diff"] == pytest.approx(0.0)
+
+
 def test_engine_reports_missing_membership(make_data):
     score, price = _frames()
     data = make_data(

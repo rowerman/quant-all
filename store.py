@@ -30,6 +30,13 @@ RESULT_TABLES = (
 )
 
 
+def benchmark_code(value) -> str | None:
+    """从运行元数据里的基准信息取出指数代码。"""
+    if isinstance(value, dict):
+        return value.get("code")
+    return value
+
+
 class BacktestStore:
     """管理策略不可变版本和回测运行产物。"""
 
@@ -81,9 +88,14 @@ class BacktestStore:
                 metadata_json VARCHAR,
                 error_message VARCHAR,
                 started_at TIMESTAMP,
-                finished_at TIMESTAMP
+                finished_at TIMESTAMP,
+                universe VARCHAR,
+                benchmark VARCHAR
             )"""
         )
+        # 老库没有这两列：股票池与基准原来只在 metadata_json 里，SQL 里筛不了
+        conn.execute("ALTER TABLE bt.run ADD COLUMN IF NOT EXISTS universe VARCHAR")
+        conn.execute("ALTER TABLE bt.run ADD COLUMN IF NOT EXISTS benchmark VARCHAR")
         for table in RESULT_TABLES:
             conn.execute(f"CREATE TABLE IF NOT EXISTS bt.{table} (run_id VARCHAR)")
 
@@ -207,7 +219,8 @@ class BacktestStore:
         with self._connect() as conn:
             frame = conn.execute(
                 "SELECT run_id, strategy_id, strategy_version, start_date, end_date, init_cash, "
-                "status, started_at, finished_at, error_message, metadata_json FROM bt.run "
+                "status, started_at, finished_at, error_message, universe, benchmark, metadata_json "
+                "FROM bt.run "
                 "ORDER BY started_at DESC NULLS LAST LIMIT ?",
                 [int(limit)],
             ).df()
@@ -215,7 +228,9 @@ class BacktestStore:
         for record in records:
             metadata = json.loads(record.pop("metadata_json")) if record.get("metadata_json") else {}
             record["strategy_hash"] = metadata.get("strategy_hash")
-            record["universe"] = metadata.get("universe")
+            # 老运行只在元数据里有这两项，取不到就留空
+            record["universe"] = record.get("universe") or metadata.get("universe")
+            record["benchmark"] = record.get("benchmark") or benchmark_code(metadata.get("benchmark"))
             record["elapsed_seconds"] = metadata.get("elapsed_seconds")
             record["metrics"] = metadata.get("metrics")
         return records
@@ -265,13 +280,32 @@ class BacktestStore:
             raise BacktestError(f"策略版本不存在：{strategy_id} v{version}")
         return replace(StrategySpec.from_dict(json.loads(row[0])), version=version)
 
-    def start_run(self, strategy_id: str, version: int, params: BacktestParams) -> str:
-        """登记一次运行。"""
+    def start_run(
+        self,
+        strategy_id: str,
+        version: int,
+        params: BacktestParams,
+        universe: str | None = None,
+        benchmark: str | None = None,
+    ) -> str:
+        """登记一次运行，记录本次实际使用的股票池与基准。"""
         run_id = uuid.uuid4().hex
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO bt.run VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL)",
-                [run_id, strategy_id, version, params.start, params.end, params.init_cash, "running", self._now()],
+                "INSERT INTO bt.run (run_id, strategy_id, strategy_version, start_date, end_date, "
+                "init_cash, status, universe, benchmark, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    run_id,
+                    strategy_id,
+                    version,
+                    params.start,
+                    params.end,
+                    params.init_cash,
+                    "running",
+                    universe,
+                    benchmark,
+                    self._now(),
+                ],
             )
         return run_id
 

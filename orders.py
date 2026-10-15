@@ -5,16 +5,19 @@
 
 方向判断用一个**持仓状态机**，只看调仓目标和可交易性，不看现金：
 
-- 目标是 0 且状态为持有 → 卖出；卖出被拦下时状态保持持有，下次调仓继续卖；
-- 目标是正数且状态为空仓 → 买入；买入被拦下时状态保持空仓，下次调仓继续买；
+- 目标是 0 且状态为持有 → 卖出；卖出被拦下时状态保持持有，下一个交易日继续卖；
+- 目标是正数且状态为空仓 → 买入；买入被拦下时状态保持空仓，下一个交易日继续买；
 - 目标是正数且状态为持有 → 与上一个目标比较：变大算买入、变小算卖出、
   完全一致算「再平衡」（方向未知，两侧任一被封就整格不下单）；
 
 状态机保证被规则拦下的交易不会永久丢失：这一点很关键，否则一次停牌错过的
-卖出会让这只股票一直留在组合里。
+卖出会让这只股票一直留在组合里。被拦下的格子进入「待重试」状态，之后**每个
+交易日**都尝试一次，直到成交或者下一个调仓执行日的目标把它覆盖；拒单明细只在
+事件首日记录一条，尝试过程记在重试统计里。
 
-佣金、卖出印花税和最低佣金仍然按一遍**探针运行**（同目标、无费用）的真实
-成交额校准；探针没有记录的格子用保守费率兜底，笔数计入报告。
+佣金、卖出印花税和最低佣金按**成交估计**校准：目标股数减去上一交易日收盘的目标持股
+就是这一笔的方向与金额（最终一遍每笔成交都恰好补齐到目标）。估计缺失时依次退回
+探针成交与意图方向，这类笔数计入 ``fallback_fee_orders``。
 
 T+1 在本执行口径下结构性满足：订单最早在信号日次一交易日开盘执行，
 同一天不会对同一只股票既买又卖，因此不单独产生 T+1 拒单。
@@ -199,8 +202,11 @@ def apply_rules(
     targets: pd.DataFrame,
     execution: ExecutionSpec,
     liquidations: pd.DataFrame | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame, dict]:
     """按 A 股规则过滤订单，被拦住的格子置 ``NaN``（保持原仓位）。
+
+    被拦下的格子不会丢状态：它进入待重试，之后每个交易日尝试一次，直到成交或者
+    下一个调仓执行日的目标把它覆盖。拒单明细只在事件首日记一条。
 
     参数:
         data: 回测输入面板。
@@ -210,8 +216,10 @@ def apply_rules(
             停牌规则，按最后一条有效行情的开盘价卖出。
 
     返回:
-        ``(过滤后的目标权重, 拒单明细, 意图方向矩阵, 实际提交的清算明细)``；
-        方向矩阵 1 买 / -1 卖 / 0 再平衡。
+        ``(提交的目标权重, 拒单明细, 意图方向矩阵, 实际提交的清算明细, 重试统计)``；
+        方向矩阵 1 买 / -1 卖 / 0 再平衡；重试统计含 ``retry_attempts``（非首日的
+        尝试次数）、``retried_filled_cells``（非调仓日补单成功格数）、
+        ``pending_at_end_cells``（区间末仍未解决格数）。
     """
     planned = np.array(targets.to_numpy(dtype="float64"), copy=True)
     force = _liquidation_matrix(liquidations, targets.index, targets.columns)
@@ -220,15 +228,27 @@ def apply_rules(
     buy_ok = _shifted_flags(data.can_buy_open_next)
     sell_ok = _shifted_flags(data.can_sell_open_next)
     suspended = data.is_suspended.to_numpy()
-    keep = np.zeros(planned.shape, dtype=bool)
+    submitted = np.full(planned.shape, np.nan, dtype="float64")
     direction = np.zeros(planned.shape, dtype="int8")
     blocked = {reason: np.zeros(planned.shape, dtype=bool) for reason in
                ("suspended", "limit_up_or_not_buyable", "limit_down_or_not_sellable")}
+    has_target_row = ~np.isnan(planned).all(axis=1)
     held = np.zeros(planned.shape[1], dtype=bool)
     shadow = np.zeros(planned.shape[1], dtype="float64")
-    for row in np.flatnonzero(~np.isnan(planned).all(axis=1)):
-        desired = planned[row]
+    # 待重试的目标权重：被拦下的格子在这里等下一天；调仓目标行整行有值，会覆盖旧事件
+    pending = np.full(planned.shape[1], np.nan, dtype="float64")
+    pending_count = 0
+    retry_attempts = 0
+    retried_filled = 0
+    for row in range(len(planned)):
+        if not (has_target_row[row] or pending_count):
+            continue
+        current = planned[row]
+        retried = np.isnan(current) & ~np.isnan(pending)
+        desired = np.where(retried, pending, current)
         has = ~np.isnan(desired)
+        if not has.any():
+            continue
         positive = has & (desired > 0)
         sell_intent = has & held & ((desired == 0) | (desired < shadow - WEIGHT_EPS))
         buy_intent = positive & (~held | (desired > shadow + WEIGHT_EPS))
@@ -245,19 +265,30 @@ def apply_rules(
         keep_rebalance = rebalance & ~stopped & ~stopped_rebalance
         # 退市强卖只看状态机是否认为持仓，不受停牌与涨跌停约束
         forced_cell = force[row] & held
-        keep[row] = keep_sell | keep_buy | keep_rebalance | forced_cell
+        keep = keep_sell | keep_buy | keep_rebalance | forced_cell
         direction[row] = np.where(keep_buy, 1, np.where(keep_sell | forced_cell, -1, 0))
-        blocked["suspended"][row] = stopped & ~forced_cell
-        blocked["limit_up_or_not_buyable"][row] = stopped_buy & ~forced_cell
-        blocked["limit_down_or_not_sellable"][row] = stopped_sell & ~forced_cell
-        # 被拦下的格子状态不变，下一次调仓会重新尝试
+        # 一事一条：只有本行自己的目标被拦下才算新事件，重试期间的失败不再重复记录
+        fresh = ~retried
+        blocked["suspended"][row] = stopped & ~forced_cell & fresh
+        blocked["limit_up_or_not_buyable"][row] = stopped_buy & ~forced_cell & fresh
+        blocked["limit_down_or_not_sellable"][row] = stopped_sell & ~forced_cell & fresh
+        # 被拦下的格子状态不变，下一个交易日继续尝试
         held[keep_sell | forced_cell] = False
         held[keep_buy | keep_rebalance] = True
         shadow[keep_sell | forced_cell] = 0.0
         shadow[keep_buy | keep_rebalance] = desired[keep_buy | keep_rebalance]
+        submitted[row] = np.where(keep, desired, np.nan)
+        # 成交的格子清空待重试；仍被拦下的格子把目标权重留给下一个交易日
+        intent = sell_intent | buy_intent | rebalance
+        still_blocked = has & ~keep & intent
+        pending[still_blocked] = desired[still_blocked]
+        pending[keep | (has & ~intent)] = np.nan
+        pending_count = int(np.count_nonzero(~np.isnan(pending)))
+        retry_attempts += int(np.count_nonzero(retried & has))
+        retried_filled += int(np.count_nonzero(retried & keep))
 
     filtered = pd.DataFrame(
-        np.where(keep, planned, np.nan), index=targets.index, columns=targets.columns
+        submitted, index=targets.index, columns=targets.columns
     )
     frames = [
         _rejection_rows(blocked[reason], targets.index, targets.columns, reason)
@@ -271,8 +302,13 @@ def apply_rules(
     )
     if len(rejection):
         rejection = rejection.sort_values(["trade_date", "stock_code"]).reset_index(drop=True)
-    executed = _liquidation_rows(liquidations, keep & force, targets.index, targets.columns)
-    return filtered, rejection, direction, executed
+    executed = _liquidation_rows(liquidations, ~np.isnan(submitted) & force, targets.index, targets.columns)
+    stats = {
+        "retry_attempts": int(retry_attempts),
+        "retried_filled_cells": int(retried_filled),
+        "pending_at_end_cells": int(np.count_nonzero(~np.isnan(pending))),
+    }
+    return filtered, rejection, direction, executed, stats
 
 
 def fee_matrices(
@@ -333,7 +369,7 @@ def baseline_inputs(
     """
     costs = costs or CostSpec()
     side, value = probe_matrices(probe, targets.index, targets.columns)
-    filtered, _, intent, _ = apply_rules(data, targets, execution, liquidation_cells(data))
+    filtered, _, intent, _, _ = apply_rules(data, targets, execution, liquidation_cells(data))
     fees, fixed_fees = fee_matrices(
         targets.index, targets.columns, filtered.notna(), side, value, intent, costs
     )
@@ -346,6 +382,7 @@ def build_order_plan(
     execution: ExecutionSpec,
     probe: pd.DataFrame,
     budget: pd.Series,
+    cash_open: pd.Series,
     baseline_shares: pd.DataFrame,
     costs: CostSpec | None = None,
 ) -> OrderPlan:
@@ -357,25 +394,28 @@ def build_order_plan(
         execution: 交易限制。
         probe: 探针成交明细，含 ``trade_date``、``stock_code``、``side``、``value``。
         budget: 逐日执行预算，来自 :func:`backtest.allocation.execution_budget`。
+        cash_open: 逐日开盘可用现金，来自 :func:`backtest.allocation.execution_cash`。
         baseline_shares: 基准遍逐日持股数，用于给出实际下单方向。
         costs: 交易成本参数。
     """
     costs = costs or CostSpec()
     side, value = probe_matrices(probe, targets.index, targets.columns)
     liquidations = liquidation_cells(data)
-    filtered, rejection, direction, executed = apply_rules(data, targets, execution, liquidations)
+    filtered, rejection, direction, executed, rule_stats = apply_rules(
+        data, targets, execution, liquidations
+    )
     price = execution_price(data.open, data.close.ffill(axis=0))
     shares, allocation, allocated_direction, allocation_stats = allocate_shares(
-        filtered, budget, price, baseline_shares, execution.lot_size, execution.cash_buffer
+        filtered, budget, cash_open, price, baseline_shares, execution.lot_size,
+        execution.cash_buffer,
     )
-    # 成交估计：分配出的股数差最贴近最终一遍的真实成交额（基准遍与最终遍的持仓
-    # 只差一个取整范围）；没有估计的格子退回探针成交额，两者都没有就按意图方向计费。
-    baseline_values = (
-        baseline_shares.reindex(index=targets.index, columns=targets.columns)
-        .to_numpy(dtype="float64")
-    )
+    # 成交估计：最终一遍每笔成交都恰好把持仓补齐到目标股数，因此「目标股数 -
+    # 上一交易日收盘的目标持股」就是这一笔的真实方向与金额；用基准遍的当日收盘
+    # 持股会错位一天（那边已经是执行后的持仓），股数差会系统性变成 0。
+    # 没有估计的格子退回探针成交额，两者都没有就按意图方向计费。
+    previous_shares = shares.ffill(axis=0).shift(1).fillna(0.0)
     prices = price.reindex(index=targets.index, columns=targets.columns).to_numpy(dtype="float64")
-    delta = shares.to_numpy(dtype="float64") - np.nan_to_num(baseline_values, nan=0.0)
+    delta = shares.to_numpy(dtype="float64") - previous_shares.to_numpy(dtype="float64")
     estimated_side = np.where(np.isfinite(delta), np.sign(delta), 0.0).astype("int8")
     # 估算成交额时按买卖方向带上滑点，和 VectorBT 的实际成交价一致，最低佣金差额才算得准
     slippage = float(costs.slippage)
@@ -397,6 +437,7 @@ def build_order_plan(
         "rebalance_orders": int(((direction == 0) & filtered.notna().to_numpy()).sum()),
         "rejected_orders": int(len(rejection)),
         "forced_liquidations": int(len(executed)),
+        **rule_stats,
         **allocation_stats,
     }
     return OrderPlan(

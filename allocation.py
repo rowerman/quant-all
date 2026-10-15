@@ -8,6 +8,9 @@
 「现金 + 各持仓按执行价估值」就是本次调仓可用的总预算。探针一遍是免费的，
 累计费用会让它的净值偏高，因此不能用它当预算。
 
+目标权重按这份总预算解释（再乘 ``1 - cash_buffer``）：重试日只有少数格子下单，
+它们的权重仍然是「占整个组合的比例」，不能拿这些格子自身的市值当基准。
+
 目标金额不足一手的格子用预算内的取整余量补到一手；余量不够时保持 0 股并记为
 ``unaffordable``，不剔除也不超配。
 """
@@ -83,9 +86,24 @@ def execution_budget(
     return pd.Series(previous_cash + values, index=index)
 
 
+def execution_cash(cash: pd.Series, init_cash: float) -> pd.Series:
+    """给出每个交易日开盘时刻可用的现金：上一交易日收盘现金，首日用初始资金。
+
+    参数:
+        cash: 基准遍逐日收盘现金。
+        init_cash: 初始资金。
+    """
+    index = pd.DatetimeIndex(cash.index)
+    values = cash.shift(1).to_numpy(dtype="float64", copy=True)
+    if len(index):
+        values[0] = float(init_cash)
+    return pd.Series(values, index=index)
+
+
 def allocate_shares(
     targets: pd.DataFrame,
     budget: pd.Series,
+    open_cash: pd.Series,
     price: pd.DataFrame,
     baseline_shares: pd.DataFrame,
     lot_size: int,
@@ -96,6 +114,7 @@ def allocate_shares(
     参数:
         targets: 规则过滤后的目标权重，``NaN`` 表示当天不下单、``0`` 表示清仓。
         budget: 逐日执行预算，来自 :func:`execution_budget`。
+        open_cash: 逐日开盘可用现金，来自 :func:`execution_cash`。
         price: 执行价宽表，来自 :func:`execution_price`。
         baseline_shares: 基准遍逐日持股数，用于给出实际下单方向。
         lot_size: 交易单位（股）。
@@ -108,6 +127,10 @@ def allocate_shares(
     prices = price.reindex(index=index, columns=columns).to_numpy(dtype="float64")
     base = baseline_shares.reindex(index=index, columns=columns).to_numpy(dtype="float64")
     budgets = budget.reindex(index=index).to_numpy(dtype="float64")
+    cashes = open_cash.reindex(index=index).to_numpy(dtype="float64")
+    # 上一交易日收盘持股 = 执行日开盘时刻的真实持股（首日为空仓）
+    previous = np.zeros_like(np.nan_to_num(base, nan=0.0))
+    previous[1:] = np.nan_to_num(base, nan=0.0)[:-1]
     weights = targets.to_numpy(dtype="float64")
     shares = np.full(weights.shape, np.nan, dtype="float64")
     direction = np.zeros(weights.shape, dtype="int8")
@@ -123,13 +146,12 @@ def allocate_shares(
         if not len(cells):
             continue
         held = np.nan_to_num(base[row, cells], nan=0.0)
-        # 被规则拦下的持仓当天卖不掉，它的市值不能算进可动用现金，否则平价进货会买空
-        stranded = float((np.nan_to_num(base[row], nan=0.0) * np.nan_to_num(prices[row], nan=0.0)).sum())
-        available_cash = max(budgets[row] - stranded, 0.0)
-        tradable_value = float((held * np.nan_to_num(prices[row, cells], nan=0.0)).sum())
-        usable = (available_cash + tradable_value) * (1.0 - float(cash_buffer))
+        # 目标权重按「执行日开盘时刻的组合价值」解释：重试日只有少数格子下单，
+        # 若拿这些格子自己的市值当基准，补单量会被压成目标的一个零头。
+        usable = budgets[row] * (1.0 - float(cash_buffer))
         if not np.isfinite(usable) or usable <= 0:
             usable = 0.0
+        cash_open = max(float(cashes[row]), 0.0)
         cell_price = prices[row, cells]
         tradable = np.isfinite(cell_price) & (cell_price > 0)
         cell_weight = weights[row, cells]
@@ -142,9 +164,29 @@ def allocate_shares(
         kept_lots = np.trunc((ideal - held) / lot_size)
         cell_shares = np.where(held > 0, held + np.nan_to_num(kept_lots) * lot_size, opened)
         cell_shares = np.where(tradable, np.maximum(cell_shares, 0.0), 0.0)
+        # 现金约束：本行买单总额不能超过「开盘现金 + 本行卖出所得」，超了就等比缩小买单。
+        # 口径用执行日开盘时刻的真实持股（上一交易日收盘），被规则拦下的持仓卖不掉，
+        # 它的市值换不到现金，只能少买。
+        tradable_price = np.where(tradable, cell_price, 0.0)
+        previous_held = previous[row, cells]
+        previous_value = previous_held * tradable_price
+        target_value = cell_shares * tradable_price
+        buy_need = float(np.sum(np.maximum(target_value - previous_value, 0.0)))
+        sell_funds = float(np.sum(np.maximum(previous_value - target_value, 0.0)))
+        funds = cash_open + sell_funds
+        if buy_need > funds:
+            scale = max(funds, 0.0) / buy_need
+            buying = target_value > previous_value
+            scaled = previous_value + (target_value - previous_value) * scale
+            with np.errstate(divide="ignore", invalid="ignore"):
+                scaled_shares = np.floor(scaled / np.where(tradable, cell_price, 1.0) / lot_size) * lot_size
+            cell_shares = np.where(buying, np.maximum(scaled_shares, 0.0), cell_shares)
+            target_value = cell_shares * tradable_price
         bumpable = positive & (cell_shares == 0)
-        used = float((cell_shares * np.where(tradable, cell_price, 0.0)).sum())
-        leftover = max(usable - used, 0.0)
+        used = float(target_value.sum())
+        # 补一手的余量同样受资金约束：不超过「开盘现金 + 本行持仓市值」，也不超过可用预算
+        capacity = cash_open + float(previous_value.sum())
+        leftover = max(min(usable, capacity) - used, 0.0)
         # 余量补一手：按一手金额从小到大，用预算内的取整余量把没建仓的格子补到一手
         bump = np.zeros(len(cells), dtype=bool)
         for cell in np.flatnonzero(bumpable)[np.argsort(

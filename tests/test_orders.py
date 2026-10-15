@@ -59,17 +59,20 @@ def test_probe_matrices_scatter_order_records(panel):
     assert side.sum() == 0
 
 
-def test_suspended_execution_day_is_blocked(panel):
+def test_suspended_execution_day_is_retried_next_day(panel):
+    """停牌当天不下单、只记一条拒单，下一个交易日自动补单。"""
     suspended = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
     suspended.loc[INDEX[1], "SH600000"] = True
     data = panel(is_suspended=suspended)
     targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
-    filtered, rejection, direction, _ = apply_rules(data, targets, ExecutionSpec())
-    assert filtered.notna().sum().sum() == 0
+    filtered, rejection, direction, _, stats = apply_rules(data, targets, ExecutionSpec())
+    assert np.isnan(filtered.loc[INDEX[1], "SH600000"])
+    assert filtered.loc[INDEX[2], "SH600000"] == 0.5
     assert rejection.to_dict("records") == [
         {"trade_date": INDEX[1], "stock_code": "SH600000", "reason": "suspended"}
     ]
     assert direction[1, 0] == 0 or direction[1, 0] == 1
+    assert stats == {"retry_attempts": 1, "retried_filled_cells": 1, "pending_at_end_cells": 0}
 
 
 def test_limit_up_blocks_buy_and_keeps_position(panel):
@@ -77,9 +80,12 @@ def test_limit_up_blocks_buy_and_keeps_position(panel):
     can_buy.loc[INDEX[0], "SH600000"] = False  # 信号日次一交易日开盘涨停
     data = panel(can_buy_open_next=can_buy)
     targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
-    filtered, rejection, _, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec())
     assert filtered.loc[INDEX[1], "SH600000"] != filtered.loc[INDEX[1], "SH600000"]  # NaN
     assert rejection.iloc[0]["reason"] == "limit_up_or_not_buyable"
+    # 涨停只挡一天，次日开盘恢复可买时补单
+    assert filtered.loc[INDEX[2], "SH600000"] == 0.5
+    assert stats["retried_filled_cells"] == 1
 
 
 def test_limit_down_blocks_sell_only(panel):
@@ -89,10 +95,12 @@ def test_limit_down_blocks_sell_only(panel):
     targets = _targets(
         [[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [0.0, np.nan]]
     )
-    filtered, rejection, _, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec())
     assert filtered.loc[INDEX[1], "SH600000"] == 0.5
     assert np.isnan(filtered.loc[INDEX[3], "SH600000"])
     assert rejection.iloc[0]["reason"] == "limit_down_or_not_sellable"
+    # 区间最后一个交易日仍卖不掉，格子留在待重试状态里
+    assert stats == {"retry_attempts": 0, "retried_filled_cells": 0, "pending_at_end_cells": 1}
 
 
 def test_rule_switches_can_be_turned_off(panel):
@@ -100,24 +108,69 @@ def test_rule_switches_can_be_turned_off(panel):
     data = panel(can_buy_open_next=can_buy)
     targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
     execution = ExecutionSpec(reject_limit_up_buy=False)
-    filtered, rejection, _, _ = apply_rules(data, targets, execution)
+    filtered, rejection, _, _, _ = apply_rules(data, targets, execution)
     assert filtered.loc[INDEX[1], "SH600000"] == 0.5
     assert rejection.empty
 
 
-def test_blocked_sell_is_retried_on_the_next_rebalance(panel):
-    """被拦下的卖出必须在下一个调仓日重试，否则仓位会永久留在组合里。"""
+def test_blocked_sell_is_retried_every_day_until_filled(panel):
+    """被拦下的卖出在每个交易日重试，直到卖掉为止，仓位不会永久留在组合里。"""
     can_sell = pd.DataFrame(True, index=INDEX, columns=COLUMNS)
-    can_sell.loc[INDEX[1], "SH600000"] = False  # INDEX[2] 执行日卖不掉
+    can_sell.loc[INDEX[1], "SH600000"] = False  # INDEX[2] 执行日跌停卖不掉
     data = panel(can_sell_open_next=can_sell)
     targets = _targets(
         [[np.nan, np.nan], [0.5, np.nan], [0.0, np.nan], [0.0, np.nan]]
     )
-    filtered, rejection, _, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec())
     assert rejection.iloc[0]["reason"] == "limit_down_or_not_sellable"
     assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
-    # 状态仍为持有，目标一直是 0，所以下一个调仓日会重新提交卖出
+    # INDEX[3] 自己也有清仓目标，属于新事件而不是重试
     assert filtered.loc[INDEX[3], "SH600000"] == 0.0
+    assert len(rejection) == 1
+
+
+def test_pending_sell_is_retried_on_a_day_without_new_target(panel):
+    """调仓执行日之后没有新目标时，待重试的卖出靠每日重试补上。"""
+    can_sell = pd.DataFrame(True, index=INDEX, columns=COLUMNS)
+    can_sell.loc[INDEX[1], "SH600000"] = False  # INDEX[2] 执行日跌停卖不掉
+    data = panel(can_sell_open_next=can_sell)
+    targets = _targets([[np.nan, np.nan], [0.5, np.nan], [0.0, np.nan], [np.nan, np.nan]])
+    filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec())
+    assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
+    assert filtered.loc[INDEX[3], "SH600000"] == 0.0
+    assert stats == {"retry_attempts": 1, "retried_filled_cells": 1, "pending_at_end_cells": 0}
+
+
+def test_repeatedly_blocked_cell_writes_single_rejection(panel):
+    """同一事件的多次重试失败不再重复写拒单，只计尝试次数。"""
+    suspended = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
+    suspended.loc[INDEX[1], "SH600000"] = True
+    suspended.loc[INDEX[2], "SH600000"] = True
+    data = panel(is_suspended=suspended)
+    targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
+    filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec())
+    assert len(rejection) == 1
+    assert rejection.iloc[0]["trade_date"] == INDEX[1]
+    assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
+    assert filtered.loc[INDEX[3], "SH600000"] == 0.5
+    assert stats == {"retry_attempts": 2, "retried_filled_cells": 1, "pending_at_end_cells": 0}
+
+
+def test_new_rebalance_target_replaces_pending_retry(panel):
+    """待重试的买入被新一期目标覆盖：股票始终没买进，不会再补单。"""
+    can_buy = pd.DataFrame(True, index=INDEX, columns=COLUMNS)
+    can_buy.loc[INDEX[0], "SH600000"] = False  # INDEX[1] 执行日涨停买不到
+    can_buy.loc[INDEX[1], "SH600000"] = False  # 次日的重试仍然涨停
+    data = panel(can_buy_open_next=can_buy)
+    targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [0.0, np.nan]])
+    filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec())
+    assert np.isnan(filtered.loc[INDEX[1], "SH600000"])
+    assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
+    # INDEX[3] 的新目标是不持有，本来就空仓，因此没有订单也不留待重试
+    assert np.isnan(filtered.loc[INDEX[3], "SH600000"])
+    assert set(rejection["reason"]) == {"limit_up_or_not_buyable"}
+    assert len(rejection) == 1
+    assert stats == {"retry_attempts": 1, "retried_filled_cells": 0, "pending_at_end_cells": 0}
 
 
 def test_rebalance_cell_is_skipped_when_a_side_is_blocked(panel):
@@ -126,7 +179,7 @@ def test_rebalance_cell_is_skipped_when_a_side_is_blocked(panel):
     can_sell.loc[INDEX[1], "SH600000"] = False  # INDEX[2] 的再平衡一侧受限
     data = panel(can_sell_open_next=can_sell)
     targets = _targets([[np.nan, np.nan], [0.5, np.nan], [0.5, np.nan], [0.5, np.nan]])
-    filtered, _, _, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, _, _, _, _ = apply_rules(data, targets, ExecutionSpec())
     assert filtered.loc[INDEX[1], "SH600000"] == 0.5
     assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
     # INDEX[2] 的信号日两侧都正常，再平衡可以提交
@@ -136,7 +189,7 @@ def test_rebalance_cell_is_skipped_when_a_side_is_blocked(panel):
 def test_flat_position_with_zero_target_is_not_submitted(panel):
     data = panel()
     targets = _targets([[np.nan, np.nan], [0.5, 0.5], [np.nan, np.nan], [np.nan, np.nan]])
-    filtered, rejection, _, _ = apply_rules(data, targets, ExecutionSpec())
+    filtered, rejection, _, _, _ = apply_rules(data, targets, ExecutionSpec())
     assert filtered.notna().sum().sum() == 2
     assert rejection.empty
 
@@ -196,7 +249,7 @@ def test_build_order_plan_collects_stats(panel):
     )
     budget = pd.Series(100_000.0, index=INDEX)
     held = pd.DataFrame(0.0, index=INDEX, columns=COLUMNS)
-    plan = build_order_plan(data, targets, ExecutionSpec(), probe, budget, held)
+    plan = build_order_plan(data, targets, ExecutionSpec(), probe, budget, budget, held)
     assert plan.plan_stats["probe_orders"] == 1
     assert plan.plan_stats["planned_orders"] == 1
     assert plan.plan_stats["rejected_orders"] == 0
@@ -206,6 +259,25 @@ def test_build_order_plan_collects_stats(panel):
     # 目标 0.5、预算 10 万、缓冲 2%：可用 9.8 万 → 49000 元 → 10 元价 4900 股
     assert plan.shares.loc[INDEX[1], "SH600000"] == 4900
     assert plan.plan_stats["allocated_cells"] == 1
+
+
+def test_fee_estimate_uses_previous_close_shares(panel):
+    """费率估计的参考持股取「上一交易日收盘的目标持股」。
+
+    基准遍执行完当天，它的持股数就等于最终一遍要下的目标股数；如果拿这份当日收盘持股
+    算股数差，差会系统性变成 0，费率又退回兜底口径（A5）。
+    """
+    data = panel()
+    targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
+    budget = pd.Series(100_000.0, index=INDEX)
+    baseline = pd.DataFrame(0.0, index=INDEX, columns=COLUMNS)
+    baseline.loc[INDEX[1], "SH600000"] = 4900.0
+    probe = pd.DataFrame(columns=["trade_date", "stock_code", "side", "value"])
+    plan = build_order_plan(data, targets, ExecutionSpec(), probe, budget, budget, baseline)
+    assert plan.shares.loc[INDEX[1], "SH600000"] == 4900
+    # 目标股数 - 上一交易日收盘持股 = 4900 - 0，方向是买入；下一日没有订单
+    assert plan.estimate_side[1, 0] == 1
+    assert plan.estimate_side[2, 0] == 0
 
 
 def _delist_panel(panel, stock: str = "SZ000001", **overrides):
@@ -240,7 +312,7 @@ def test_delisted_position_is_sold_on_last_bar(panel):
     data = _delist_panel(panel, "SZ000001")
     targets = _targets([[np.nan, np.nan], [0.5, 0.5], [np.nan, np.nan], [np.nan, np.nan]])
     liquidations = liquidation_cells(data)
-    filtered, rejection, direction, executed = apply_rules(
+    filtered, rejection, direction, executed, _ = apply_rules(
         data, targets, ExecutionSpec(), liquidations
     )
     assert filtered.loc[INDEX[2], "SZ000001"] == 0.0
@@ -257,7 +329,7 @@ def test_forced_liquidation_bypasses_limit_down(panel):
     suspended.loc[INDEX[2], "SZ000001"] = True
     data = _delist_panel(panel, can_sell_open_next=can_sell, is_suspended=suspended)
     targets = _targets([[np.nan, np.nan], [0.5, 0.5], [np.nan, np.nan], [np.nan, np.nan]])
-    filtered, rejection, _, executed = apply_rules(
+    filtered, rejection, _, executed, _ = apply_rules(
         data, targets, ExecutionSpec(), liquidation_cells(data)
     )
     assert filtered.loc[INDEX[2], "SZ000001"] == 0.0

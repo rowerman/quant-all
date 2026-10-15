@@ -21,7 +21,12 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
-from backtest.allocation import ALLOCATION_STAT_KEYS, execution_budget, execution_price
+from backtest.allocation import (
+    ALLOCATION_STAT_KEYS,
+    execution_budget,
+    execution_cash,
+    execution_price,
+)
 from backtest.config import MAX_ALLOCATION_ITERATIONS
 from backtest.data import PRICE_ADJUST, MarketData
 from backtest.errors import ExecutionError
@@ -418,8 +423,10 @@ def run_backtest(
     iteration = 0
     for iteration in range(1, MAX_ALLOCATION_ITERATIONS + 1):
         budget = execution_budget(state_cash, state_shares, price, params.init_cash)
+        cash_open = execution_cash(state_cash, params.init_cash)
         candidate = build_order_plan(
-            data, targets, strategy.execution, probe_orders, budget, state_shares, strategy.costs
+            data, targets, strategy.execution, probe_orders, budget, cash_open, state_shares,
+            strategy.costs,
         )
         if previous is not None and _same_shares(previous, candidate.shares):
             converged = True
