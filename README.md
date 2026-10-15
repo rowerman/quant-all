@@ -136,8 +136,8 @@ print(zscore(mad_winsorize([1., 2., 3., 100.])))
 
 ```
 calculate/   计算包：只算，自带配置、错误码与日志     ← 本目录
-backend/     后端：接口、任务调度、流式输出（待实现）
-frontend/    前端：纯 HTML/JS + ECharts（待实现）
+total_front_back/backend/    后端：接口、任务调度、流式输出
+total_front_back/frontend/   前端：纯 HTML/JS + ECharts
 ```
 
 计算包对数据侧只有三个依赖：`db/quant.duckdb`（行情、标签、指数与成分）、
@@ -291,7 +291,8 @@ for stage, payload in evaluate("MOM_20", params, stages=["overview", "ic_series"
 （模块名里的点换成下划线，与数据项目的日志命名规则一致）。
 
 目录约定与后续安排见 `AiRecord/plans/20261011-1.md`（项目拆分）；
-前后端代码会分别落在 `backend/` 与 `frontend/`，本包只提供纯函数式的计算与流式 stage。
+前后端代码落在 `total_front_back/backend/` 与 `total_front_back/frontend/`，
+本包只提供纯函数式的计算与流式 stage。
 
 ## 完整可调用函数参考
 
