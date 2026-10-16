@@ -4,7 +4,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.allocation import allocate_shares, execution_budget, execution_cash, execution_price
+from backtest.allocation import (
+    allocate_shares,
+    cash_carry,
+    cash_retry_filled,
+    execution_budget,
+    execution_cash,
+    execution_price,
+    extend_carry,
+)
 from backtest.errors import ExecutionError
 
 DATES = pd.date_range("2024-01-29", periods=3, freq="B")
@@ -149,16 +157,47 @@ def test_allocate_shares_keeps_full_weight_on_retry_row():
 
 
 def test_allocate_shares_caps_buys_by_open_cash():
-    """买单按开盘现金限制：参考持仓是上一遍的执行后持仓，不能当成已有的钱。"""
+    """买单按开盘现金限制，缩水到目标两成以上的格子进补回。"""
     # 目标 0.5 × 10 万 = 4.9 万，但开盘只有 2 万现金，且没有可卖出的持仓
     baseline = [[0.0], [4_900.0], [4_900.0]]
     weights = [[np.nan], [0.5], [np.nan]]
     prices = [[10.0]] * 3
-    shares, _, _ = _allocate(
+    shares, records, stats = _allocate(
         weights, [100_000.0] * 3, prices, ["A"], baseline=baseline, buffer=0.02,
         cash=[0.0, 20_000.0, 20_000.0],
     )
     assert shares.loc[DATES[1], "A"] == 2_000.0
+    # 从 4900 股缩到 2000 股：建仓只到目标的 41%，进补回
+    assert stats["cash_shrunk_cells"] == 1
+    assert stats["cash_limited_cells"] == 1
+    assert stats["cash_limited_value"] == pytest.approx(29_000.0)
+    assert bool(records.iloc[0]["cash_limited"])
+    assert records.iloc[0]["cash_shrunk_shares"] == pytest.approx(2_900.0)
+
+
+def test_allocate_shares_skips_immaterial_shrinkage():
+    """一手两手的残差不进补回：现金不会因为重试而变多，补了只是每天空跑。"""
+    # 目标 0.49 × 10 万 = 4.9 万，开盘 4.8 万现金：只差 100 股（目标的 2%）
+    weights = [[np.nan], [0.49], [np.nan]]
+    shares, records, stats = _allocate(
+        weights, [100_000.0] * 3, [[10.0]] * 3, ["A"], cash=[0.0, 48_000.0, 48_000.0],
+    )
+    assert shares.loc[DATES[1], "A"] == 4_800.0
+    assert stats["cash_shrunk_cells"] == 1
+    assert stats["cash_limited_cells"] == 0
+    assert stats["cash_limited_value"] == 0.0
+    assert not records.iloc[0]["cash_limited"]
+    assert records.iloc[0]["cash_shrunk_shares"] == pytest.approx(100.0)
+
+
+def test_allocate_shares_without_cash_pressure_marks_nothing():
+    weights = [[np.nan], [0.5], [np.nan]]
+    _, records, stats = _allocate(weights, [100_000.0] * 3, [[10.0]] * 3, ["A"], buffer=0.02)
+    assert stats["cash_shrunk_cells"] == 0
+    assert stats["cash_limited_cells"] == 0
+    assert stats["cash_limited_value"] == 0.0
+    assert not records["cash_limited"].any()
+    assert not records["cash_shrunk_shares"].any()
 
 
 def test_allocate_shares_handles_empty_budget_and_missing_price():
@@ -170,6 +209,76 @@ def test_allocate_shares_handles_empty_budget_and_missing_price():
     assert stats["no_price_cells"] == 1
     assert stats["unaffordable_lot_cells"] == 1
     assert set(records["status"]) == {"no_price", "unaffordable"}
+
+
+def test_cash_carry_moves_limited_buys_to_the_next_day():
+    """被现金缩小的买单落到下一交易日，权重沿用当天的目标权重。"""
+    columns = ["A", "B"]
+    allocation = pd.DataFrame(
+        {
+            "trade_date": [DATES[0], DATES[0]],
+            "stock_code": ["A", "B"],
+            "target_weight": [0.3, 0.4],
+            "cash_limited": [True, False],
+            "cash_shrunk_shares": [500.0, 0.0],
+            "allocated_shares": [100.0, 4_000.0],
+        }
+    )
+    targets = _frame([[np.nan, np.nan]] * 3, columns)
+    carry = cash_carry(allocation, targets)
+    assert carry.loc[DATES[1], "A"] == pytest.approx(0.3)
+    assert np.isnan(carry.loc[DATES[1], "B"])
+    assert carry.iloc[0].isna().all() and carry.iloc[2].isna().all()
+    assert cash_carry(None, targets).isna().to_numpy().all()
+
+
+def test_cash_carry_yields_to_real_target_and_drops_last_day():
+    """下一交易日有真实调仓目标时补回让位；末日被缩小的格子没有下一交易日。"""
+    columns = ["A"]
+    allocation = pd.DataFrame(
+        {
+            "trade_date": [DATES[0], DATES[-1]],
+            "stock_code": ["A", "A"],
+            "target_weight": [0.3, 0.3],
+            "cash_limited": [True, True],
+            "cash_shrunk_shares": [500.0, 500.0],
+        }
+    )
+    targets = _frame([[np.nan], [0.25], [np.nan]], columns)
+    carry = cash_carry(allocation, targets)
+    assert carry.isna().to_numpy().all()
+
+
+def test_extend_carry_keeps_retrying_until_the_next_target():
+    """现金没到账的日子要天天补，种子把补回目标铺到下一次真实调仓之前。"""
+    columns = ["A"]
+    carry = _frame([[np.nan], [0.3], [np.nan]], columns)
+    # 第 2 天有真实调仓目标：补回到此为止
+    extended = extend_carry(carry, _frame([[np.nan], [np.nan], [0.2]], columns))
+    assert extended.loc[DATES[1], "A"] == pytest.approx(0.3)
+    assert np.isnan(extended.loc[DATES[2], "A"])
+    # 第 2 天没有真实目标：补回继续铺下去
+    extended = extend_carry(carry, _frame([[np.nan]] * 3, columns))
+    assert extended.loc[DATES[2], "A"] == pytest.approx(0.3)
+    assert np.isnan(extended.loc[DATES[0], "A"])
+
+
+def test_cash_retry_filled_counts_only_topped_up_cells():
+    """真正补齐要求当天拿到仓位且没有再被现金缩小。"""
+    columns = ["A", "B", "C"]
+    carry = _frame([[0.3, 0.3, 0.3]] * 3, columns)
+    allocation = pd.DataFrame(
+        {
+            "trade_date": [DATES[1], DATES[1]],
+            "stock_code": ["A", "B"],
+            "cash_limited": [False, True],
+            "allocated_shares": [1_000.0, 200.0],
+        }
+    )
+    # A 补齐；B 有仓位但又被缩小，只能算尝试；C 当天没有分配明细（被规则拦下）
+    assert cash_retry_filled(carry, allocation) == 1
+    empty = _frame([[np.nan] * 3] * 3, columns)
+    assert cash_retry_filled(empty, allocation) == 0
 
 
 def test_allocate_shares_rejects_impossible_buffer():

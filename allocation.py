@@ -13,6 +13,12 @@
 
 目标金额不足一手的格子用预算内的取整余量补到一手；余量不够时保持 0 股并记为
 ``unaffordable``，不剔除也不超配。
+
+买单还受资金约束：本行买单总额不能超过「开盘现金 + 本行卖出所得」，超了就等比缩小，
+被缩小的格子记 ``cash_shrunk_cells``。缩水到目标 20% 以上的才算「建仓没建起来」，
+记 ``cash_limited`` 并经 :func:`cash_carry` 变成下一交易日的补回目标，由规则层按
+「待重试」处理；一手两手的残差是取整与预算的结构性缺口，现金不会因为重试而变多，
+只记缩水量供对照。
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from backtest.config import MATERIAL_SHORTFALL_RATIO
 from backtest.errors import ExecutionError
 
 # 逐格分配状态：正常分配 / 余量补到一手 / 一手都装不下 / 缺执行价不下单 / 目标 0
@@ -37,6 +44,8 @@ ALLOCATION_COLUMNS = [
     "baseline_shares",
     "allocated_shares",
     "status",
+    "cash_limited",
+    "cash_shrunk_shares",
 ]
 
 # 分配统计的键名，引擎按它把「资金分配」阶段的进度事件单独报出来
@@ -45,6 +54,9 @@ ALLOCATION_STAT_KEYS = (
     "bumped_one_lot_cells",
     "unaffordable_lot_cells",
     "no_price_cells",
+    "cash_shrunk_cells",
+    "cash_limited_cells",
+    "cash_limited_value",
 )
 
 
@@ -140,6 +152,9 @@ def allocate_shares(
         "bumped_one_lot_cells": 0,
         "unaffordable_lot_cells": 0,
         "no_price_cells": 0,
+        "cash_shrunk_cells": 0,
+        "cash_limited_cells": 0,
+        "cash_limited_value": 0.0,
     }
     for row in np.flatnonzero(~np.isnan(weights).all(axis=1)):
         cells = np.flatnonzero(~np.isnan(weights[row]))
@@ -174,6 +189,9 @@ def allocate_shares(
         buy_need = float(np.sum(np.maximum(target_value - previous_value, 0.0)))
         sell_funds = float(np.sum(np.maximum(previous_value - target_value, 0.0)))
         funds = cash_open + sell_funds
+        # 缩小前的目标股数，用来判断哪些买单被现金限制、差多少股
+        intended = cell_shares.copy()
+        buying = np.zeros(len(cells), dtype=bool)
         if buy_need > funds:
             scale = max(funds, 0.0) / buy_need
             buying = target_value > previous_value
@@ -197,6 +215,11 @@ def allocate_shares(
                 cell_shares[cell] = lot_size
                 leftover -= lot_value
                 bump[cell] = True
+        # 被现金缩小的买单：补一手之后仍未达到缩小前的目标股数。股数总是交易单位的
+        # 整数倍，因此用半个交易单位判断「有没有被缩小」，用目标的两成判断「够不够大」。
+        shortfall = np.where(buying, intended - cell_shares, 0.0)
+        shrunk = buying & (shortfall >= lot_size * 0.5)
+        cash_limited = shrunk & (shortfall >= MATERIAL_SHORTFALL_RATIO * np.maximum(intended, 0.0))
         shares[row, cells[tradable]] = cell_shares[tradable]
         direction[row, cells[tradable]] = np.sign(
             cell_shares[tradable] - held[tradable]
@@ -205,6 +228,11 @@ def allocate_shares(
         stats["bumped_one_lot_cells"] += int(bump.sum())
         stats["unaffordable_lot_cells"] += int((bumpable & ~bump).sum())
         stats["no_price_cells"] += int((~tradable).sum())
+        stats["cash_shrunk_cells"] += int(shrunk.sum())
+        stats["cash_limited_cells"] += int(cash_limited.sum())
+        stats["cash_limited_value"] += float(
+            np.sum(np.where(cash_limited, shortfall * tradable_price, 0.0))
+        )
         for position, cell in enumerate(cells):
             if not tradable[position]:
                 status = STATUS_NO_PRICE
@@ -225,6 +253,8 @@ def allocate_shares(
                     "baseline_shares": float(held[position]),
                     "allocated_shares": float(cell_shares[position]),
                     "status": status,
+                    "cash_limited": bool(cash_limited[position]),
+                    "cash_shrunk_shares": float(shortfall[position]),
                 }
             )
     records = (
@@ -238,3 +268,89 @@ def allocate_shares(
         direction,
         stats,
     )
+
+
+def cash_carry(allocation: pd.DataFrame | None, targets: pd.DataFrame) -> pd.DataFrame:
+    """把被现金缩小的买单铺成下一交易日的补回目标。
+
+    补回目标是该格被缩小当天的目标权重（占整个组合的比例），由下一次分配按当时的
+    预算与现金重新换算成股数，因此现金还没到账时会继续留在待重试状态。
+    原始调仓目标存在的格子以原始目标为准（新目标覆盖补单），落在面板之外的
+    继承不到下一交易日，作为区间末遗留。
+
+    参数:
+        allocation: 逐格分配明细，含 ``trade_date``、``stock_code``、``target_weight``、
+            ``cash_limited``；None 表示还没有分配结果。
+        targets: 执行日的原始目标权重矩阵（不含补回目标）。
+    """
+    carry = pd.DataFrame(np.nan, index=targets.index, columns=targets.columns, dtype="float64")
+    if allocation is None or allocation.empty or not len(targets.index):
+        return carry
+    limited = allocation[allocation["cash_limited"].astype(bool)]
+    if limited.empty:
+        return carry
+    rows = targets.index.get_indexer(pd.DatetimeIndex(limited["trade_date"]))
+    columns = targets.columns.get_indexer(limited["stock_code"])
+    valid = (rows >= 0) & (columns >= 0)
+    rows, columns = rows[valid], columns[valid]
+    weights = limited["target_weight"].to_numpy(dtype="float64")[valid]
+    # 补回落在下一交易日；末日被缩小的格子没有下一交易日
+    in_window = rows + 1 < len(targets.index)
+    rows, columns, weights = rows[in_window] + 1, columns[in_window], weights[in_window]
+    values = targets.to_numpy(dtype="float64")
+    # 原始调仓目标出现时以它为准，补单让位
+    free = np.isnan(values[rows, columns])
+    rows, columns, weights = rows[free], columns[free], weights[free]
+    if len(rows):
+        carry_values = carry.to_numpy(dtype="float64")
+        carry_values[rows, columns] = weights
+        carry = pd.DataFrame(carry_values, index=targets.index, columns=targets.columns)
+    return carry
+
+
+def cash_retry_filled(carry: pd.DataFrame, allocation: pd.DataFrame | None) -> int:
+    """数出补回目标真正补齐的格数。
+
+    补齐指当天有分配明细、拿到了仓位，并且没有再被现金缩小；被规则拦下或者
+    又被缩小的格子只是「尝试过」，要留在待重试状态里。
+
+    参数:
+        carry: 本轮使用的补回目标矩阵，来自 :func:`cash_carry`。
+        allocation: 本轮最终一遍的逐格分配明细。
+    """
+    carried = ~np.isnan(carry.to_numpy(dtype="float64"))
+    if allocation is None or allocation.empty or not carried.any():
+        return 0
+    rows = carry.index.get_indexer(pd.DatetimeIndex(allocation["trade_date"]))
+    columns = carry.columns.get_indexer(allocation["stock_code"])
+    filled = (
+        (rows >= 0)
+        & (columns >= 0)
+        & ~allocation["cash_limited"].astype(bool).to_numpy()
+        & (allocation["allocated_shares"].to_numpy(dtype="float64") > 0)
+    )
+    return int(carried[rows[filled], columns[filled]].sum())
+
+
+def extend_carry(carry: pd.DataFrame, targets: pd.DataFrame) -> pd.DataFrame:
+    """把补回目标延续到下一次真实调仓目标之前。
+
+    现金没到账时每天都得试一次，但补回目标依赖分配结果、分配结果又依赖补回目标，
+    一轮只能推后一个交易日。用「一直补到下次调仓」当第一轮的种子，可以让整条链
+    一轮铺开，之后几轮再按分配结果收敛回真正需要补的日子。
+
+    参数:
+        carry: 由分配结果派生出的补回目标。
+        targets: 执行日的原始目标权重矩阵（不含补回目标）。
+    """
+    values = targets.to_numpy(dtype="float64")
+    extended = carry.to_numpy(dtype="float64").copy()
+    for row in range(1, len(extended)):
+        # 上一行还在补回、本行既没有真实目标也没有补回目标的格子：继续补
+        moving = (
+            ~np.isnan(extended[row - 1])
+            & np.isnan(extended[row])
+            & np.isnan(values[row])
+        )
+        extended[row] = np.where(moving, extended[row - 1], extended[row])
+    return pd.DataFrame(extended, index=carry.index, columns=carry.columns)

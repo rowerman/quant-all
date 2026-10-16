@@ -10,6 +10,12 @@
 
 分配预算必须来自带费用的基准遍：探针一遍是免费的，累计费用拖累会让它的净值
 系统性偏高，直接拿来当预算会超买。
+
+被现金缩小的买单会变成下一交易日的补回目标，因此「分配 → 最终」还要再迭代一轮：
+用上一轮最终遍的真实状态重新分配，直到「本轮用的补回目标」与「由分配结果派生出的
+补回目标」一致为止，两层共用 ``MAX_ALLOCATION_ITERATIONS``。首轮用「一直补到下次
+调仓」当种子把整条链铺开，避免链条长时一轮只推后一个交易日。没有这类格子的运行
+一轮就收敛，耗时与原来相同。
 """
 
 from __future__ import annotations
@@ -23,9 +29,12 @@ import pandas as pd
 
 from backtest.allocation import (
     ALLOCATION_STAT_KEYS,
+    cash_carry,
+    cash_retry_filled,
     execution_budget,
     execution_cash,
     execution_price,
+    extend_carry,
 )
 from backtest.config import MAX_ALLOCATION_ITERATIONS
 from backtest.data import PRICE_ADJUST, MarketData
@@ -313,8 +322,8 @@ def _liquidation_records(plan: OrderPlan, orders: pd.DataFrame) -> pd.DataFrame:
     return frame[columns]
 
 
-def _same_shares(first: pd.DataFrame, second: pd.DataFrame) -> bool:
-    """比较两次分配的目标股数是否完全一致（``NaN`` 视为同值）。"""
+def _same_matrix(first: pd.DataFrame, second: pd.DataFrame) -> bool:
+    """比较两个同形矩阵是否完全一致（``NaN`` 视为同值）。"""
     if first.shape != second.shape:
         return False
     if not first.index.equals(second.index) or not first.columns.equals(second.columns):
@@ -413,22 +422,34 @@ def run_backtest(
     )
 
     # 分配要迭代到自洽：目标股数依赖「执行日开盘时刻的真实持仓与现金」，
-    # 而这份状态只有跑完一遍才拿得到。分配结果与上一遍一致时，上一遍的成交与净值
-    # 就是最终结果（同样的目标股数与费率矩阵必然跑出同样的组合）。
+    # 而这份状态只有跑完一遍才拿得到。目标股数与补回目标都不再变化时，
+    # 上一遍的成交与净值就是最终结果（同样的目标股数与费率矩阵必然跑出同样的组合）。
+    #
+    # 被现金缩小的买单是下一交易日的补回目标，而补回目标又依赖分配结果，
+    # 因此两层一起迭代：首轮用「一直补到下次调仓」当种子把整条链铺开，
+    # 之后按分配结果收敛回真正需要补的日子。
     price = execution_price(data.open, valuation)
-    previous: pd.DataFrame | None = None
+    carry = cash_carry(None, targets)
     plan: OrderPlan | None = None
     portfolio = None
-    converged = False
+    previous_shares: pd.DataFrame | None = None
+    previous_carry: pd.DataFrame | None = None
+    carry_iterations = 0
+    carry_converged = False
     iteration = 0
+    converged = False
     for iteration in range(1, MAX_ALLOCATION_ITERATIONS + 1):
         budget = execution_budget(state_cash, state_shares, price, params.init_cash)
         cash_open = execution_cash(state_cash, params.init_cash)
         candidate = build_order_plan(
             data, targets, strategy.execution, probe_orders, budget, cash_open, state_shares,
-            strategy.costs,
+            strategy.costs, carry,
         )
-        if previous is not None and _same_shares(previous, candidate.shares):
+        if (
+            previous_shares is not None
+            and _same_matrix(previous_shares, candidate.shares)
+            and _same_matrix(previous_carry, carry)
+        ):
             converged = True
             break
         if iteration == 1:
@@ -439,22 +460,31 @@ def run_backtest(
                    if key not in ALLOCATION_STAT_KEYS},
             )
         portfolio = _run_portfolio(
-            data, valuation, candidate.shares, params, strategy, candidate.fees, candidate.fixed_fees,
-            size_type="targetamount",
+            data, valuation, candidate.shares, params, strategy, candidate.fees,
+            candidate.fixed_fees, size_type="targetamount",
         )
         state_cash, state_shares = _state_frames(portfolio)
         plan = candidate
-        previous = candidate.shares
+        previous_shares = candidate.shares
+        previous_carry = carry
+        next_carry = cash_carry(plan.allocation, targets)
+        if iteration == 1:
+            next_carry = extend_carry(next_carry, targets)
+        if not _same_matrix(next_carry, carry):
+            carry_iterations += 1
+        carry = next_carry
         _notify(
             progress,
             "allocation",
             iteration=iteration,
+            carry_iterations=carry_iterations,
             **{key: candidate.plan_stats[key] for key in ALLOCATION_STAT_KEYS},
         )
     else:
         logger.warning("资金分配 %d 次迭代仍未稳定，使用最后一次结果", MAX_ALLOCATION_ITERATIONS)
     if plan is None or portfolio is None:
         raise ExecutionError("资金分配没有产出可执行的目标股数")
+    carry_converged = _same_matrix(carry, cash_carry(plan.allocation, targets))
 
     orders = _order_records(portfolio, "最终运行")
     witnesses = {**_fee_witnesses(orders, plan), **_clipped_cells(plan, portfolio)}
@@ -463,10 +493,17 @@ def run_backtest(
     daily = _daily_frame(portfolio, orders, data.benchmark)
     holdings = _holdings_frame(portfolio)
     liquidations = _liquidation_records(plan, orders)
+    # 区间末仍被现金限制、来不及补回的格子（末日的补回目标没有下一交易日可落）
+    limited = plan.allocation["cash_limited"].to_numpy(dtype=bool)
+    on_last_day = pd.DatetimeIndex(plan.allocation["trade_date"]).to_numpy() == targets.index[-1].to_datetime64()
     calibration = {
         "cash_buffer": float(strategy.execution.cash_buffer),
         "allocation_iterations": int(iteration),
         "allocation_converged": bool(converged),
+        "carry_iterations": int(carry_iterations),
+        "carry_converged": bool(carry_converged),
+        "cash_retry_filled_cells": cash_retry_filled(carry, plan.allocation),
+        "cash_pending_at_end_cells": int((limited & on_last_day).sum()),
         **plan.plan_stats,
         **witnesses,
         **_weight_witnesses(plan, holdings),
@@ -484,6 +521,8 @@ def run_backtest(
             "lot_size": strategy.execution.lot_size,
             "allocation_iterations": int(iteration),
             "allocation_converged": bool(converged),
+            "carry_iterations": int(carry_iterations),
+            "carry_converged": bool(carry_converged),
         },
         "versions": data.versions,
         "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),

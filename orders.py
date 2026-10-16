@@ -15,6 +15,9 @@
 交易日**都尝试一次，直到成交或者下一个调仓执行日的目标把它覆盖；拒单明细只在
 事件首日记录一条，尝试过程记在重试统计里。
 
+被现金缩小的买单（见 :mod:`backtest.allocation`）走同一套重试口径：补回目标由
+``carry`` 传进来，之后每个交易日尝试一次，直到补齐或被下一次调仓目标覆盖。
+
 佣金、卖出印花税和最低佣金按**成交估计**校准：目标股数减去上一交易日收盘的目标持股
 就是这一笔的方向与金额（最终一遍每笔成交都恰好补齐到目标）。估计缺失时依次退回
 探针成交与意图方向，这类笔数计入 ``fallback_fee_orders``。
@@ -202,11 +205,16 @@ def apply_rules(
     targets: pd.DataFrame,
     execution: ExecutionSpec,
     liquidations: pd.DataFrame | None = None,
+    carry: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame, dict]:
     """按 A 股规则过滤订单，被拦住的格子置 ``NaN``（保持原仓位）。
 
     被拦下的格子不会丢状态：它进入待重试，之后每个交易日尝试一次，直到成交或者
     下一个调仓执行日的目标把它覆盖。拒单明细只在事件首日记一条。
+
+    补回目标（``carry``）来自 :func:`backtest.allocation.cash_carry`：被现金缩小的买单
+    也按同样的重试口径处理，优先级是「本行真实目标 > 补回目标 > 规则待重试」，
+    补回目标被拦下时同样不写新的拒单行。
 
     参数:
         data: 回测输入面板。
@@ -214,14 +222,27 @@ def apply_rules(
         execution: 交易限制。
         liquidations: 退市强制清算格，来自 :func:`liquidation_cells`；这些格子绕过涨跌停与
             停牌规则，按最后一条有效行情的开盘价卖出。
+        carry: 被现金缩小的买单在下一交易日的补回目标，来自
+            :func:`backtest.allocation.cash_carry`；None 表示没有补回目标。
 
     返回:
         ``(提交的目标权重, 拒单明细, 意图方向矩阵, 实际提交的清算明细, 重试统计)``；
         方向矩阵 1 买 / -1 卖 / 0 再平衡；重试统计含 ``retry_attempts``（非首日的
         尝试次数）、``retried_filled_cells``（非调仓日补单成功格数）、
-        ``pending_at_end_cells``（区间末仍未解决格数）。
+        ``pending_at_end_cells``（区间末仍未解决格数）、``cash_retry_attempts``
+        （现金补回的尝试格次；真正补齐的格数由 :func:`backtest.allocation.cash_retry_filled`
+        按分配结果数出来）。
     """
     planned = np.array(targets.to_numpy(dtype="float64"), copy=True)
+    if carry is None:
+        carried_values = np.full(planned.shape, np.nan, dtype="float64")
+    else:
+        carried_values = (
+            carry.reindex(index=targets.index, columns=targets.columns)
+            .astype("float64")
+            .to_numpy(dtype="float64")
+        )
+    has_carry_row = ~np.isnan(carried_values).all(axis=1)
     force = _liquidation_matrix(liquidations, targets.index, targets.columns)
     # 清算格的目标一律写 0：状态机认为空仓时自然丢掉，认为持有时判为卖出
     planned[force] = 0.0
@@ -240,19 +261,24 @@ def apply_rules(
     pending_count = 0
     retry_attempts = 0
     retried_filled = 0
+    cash_retry_attempts = 0
     for row in range(len(planned)):
-        if not (has_target_row[row] or pending_count):
+        if not (has_target_row[row] or pending_count or has_carry_row[row]):
             continue
         current = planned[row]
-        retried = np.isnan(current) & ~np.isnan(pending)
-        desired = np.where(retried, pending, current)
+        # 补回目标与规则待重试都算「重试」：只有本行自己的目标被拦下才算新事件
+        carried = np.isnan(current) & ~np.isnan(carried_values[row])
+        retried = np.isnan(current) & ~carried & ~np.isnan(pending)
+        desired = np.where(carried, carried_values[row], np.where(retried, pending, current))
         has = ~np.isnan(desired)
         if not has.any():
             continue
         positive = has & (desired > 0)
         sell_intent = has & held & ((desired == 0) | (desired < shadow - WEIGHT_EPS))
-        buy_intent = positive & (~held | (desired > shadow + WEIGHT_EPS))
-        rebalance = positive & held & (np.abs(desired - shadow) <= WEIGHT_EPS)
+        # 补回目标缺的只可能是「买回来」（上一笔被现金缩小），因此按买入意图处理：
+        # 涨停买不到就明天再补，卖不卖得掉不影响这一笔。
+        buy_intent = positive & (~held | (desired > shadow + WEIGHT_EPS) | carried)
+        rebalance = positive & held & (np.abs(desired - shadow) <= WEIGHT_EPS) & ~carried
         suspended_row = suspended[row]
         # 停牌当天一律不下单：价格为空，VectorBT 也不会成交，先按规则记下来
         stopped = (sell_intent | buy_intent | rebalance) & suspended_row & execution.reject_suspended
@@ -268,7 +294,7 @@ def apply_rules(
         keep = keep_sell | keep_buy | keep_rebalance | forced_cell
         direction[row] = np.where(keep_buy, 1, np.where(keep_sell | forced_cell, -1, 0))
         # 一事一条：只有本行自己的目标被拦下才算新事件，重试期间的失败不再重复记录
-        fresh = ~retried
+        fresh = ~(retried | carried)
         blocked["suspended"][row] = stopped & ~forced_cell & fresh
         blocked["limit_up_or_not_buyable"][row] = stopped_buy & ~forced_cell & fresh
         blocked["limit_down_or_not_sellable"][row] = stopped_sell & ~forced_cell & fresh
@@ -286,6 +312,7 @@ def apply_rules(
         pending_count = int(np.count_nonzero(~np.isnan(pending)))
         retry_attempts += int(np.count_nonzero(retried & has))
         retried_filled += int(np.count_nonzero(retried & keep))
+        cash_retry_attempts += int(np.count_nonzero(carried & has))
 
     filtered = pd.DataFrame(
         submitted, index=targets.index, columns=targets.columns
@@ -307,6 +334,7 @@ def apply_rules(
         "retry_attempts": int(retry_attempts),
         "retried_filled_cells": int(retried_filled),
         "pending_at_end_cells": int(np.count_nonzero(~np.isnan(pending))),
+        "cash_retry_attempts": int(cash_retry_attempts),
     }
     return filtered, rejection, direction, executed, stats
 
@@ -385,6 +413,7 @@ def build_order_plan(
     cash_open: pd.Series,
     baseline_shares: pd.DataFrame,
     costs: CostSpec | None = None,
+    carry: pd.DataFrame | None = None,
 ) -> OrderPlan:
     """把目标权重、探针成交明细与执行预算变成最终订单计划。
 
@@ -397,12 +426,14 @@ def build_order_plan(
         cash_open: 逐日开盘可用现金，来自 :func:`backtest.allocation.execution_cash`。
         baseline_shares: 基准遍逐日持股数，用于给出实际下单方向。
         costs: 交易成本参数。
+        carry: 被现金缩小的买单在下一交易日的补回目标，来自
+            :func:`backtest.allocation.cash_carry`；None 表示没有补回目标。
     """
     costs = costs or CostSpec()
     side, value = probe_matrices(probe, targets.index, targets.columns)
     liquidations = liquidation_cells(data)
     filtered, rejection, direction, executed, rule_stats = apply_rules(
-        data, targets, execution, liquidations
+        data, targets, execution, liquidations, carry
     )
     price = execution_price(data.open, data.close.ffill(axis=0))
     shares, allocation, allocated_direction, allocation_stats = allocate_shares(

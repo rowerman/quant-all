@@ -337,5 +337,80 @@ def test_engine_marks_allocation_table_for_every_target_cell(make_data):
     assert result.metadata["execution"] == {
         "sizing": "target_amount", "cash_buffer": 0.02, "lot_size": 100,
         "allocation_iterations": 2, "allocation_converged": True,
+        "carry_iterations": 0, "carry_converged": True,
     }
 
+
+
+# 周频调仓的现金补回用例：13 个交易日跨三个自然周，信号落在每个自然周最后一个交易日
+WEEK_DATES = pd.date_range("2024-01-29", periods=13, freq="B")
+
+
+def _weekly_panel(make_data, *, sell_blocked_rows=()):
+    """构造周频面板：第一周选 SH600000+SZ000001，第二周换成 SH600000+SZ000002。"""
+    stocks = list(STOCKS)
+    score = pd.DataFrame(
+        {"SH600000": 3.0, "SZ000001": 2.0, "SZ000002": 1.0}, index=WEEK_DATES
+    )
+    score.loc[WEEK_DATES[5]:, ["SZ000001", "SZ000002"]] = [1.0, 2.0]
+    can_sell = pd.DataFrame(True, index=WEEK_DATES, columns=stocks)
+    for row in sell_blocked_rows:
+        can_sell.loc[WEEK_DATES[row]] = False
+    price = pd.DataFrame(10.0, index=WEEK_DATES, columns=stocks)
+    data = make_data(
+        dates=WEEK_DATES, stocks=stocks, open=price.astype("float32"),
+        close=(price + 0.5).astype("float32"), factors={"MOM_20": score.astype("float32")},
+        can_sell_open_next=can_sell,
+    )
+    params = BacktestParams(
+        str(WEEK_DATES[0].date()), str(WEEK_DATES[-1].date()), 100_000.0
+    )
+    strategy = _strategy(rebalance=RebalanceSpec(frequency="weekly"))
+    return data, strategy, params
+
+
+def test_engine_refills_cash_limited_buy_after_cash_arrives(make_data):
+    """调仓日卖不掉导致现金不够时买单被缩小，次日卖出成交后按日补回。"""
+    # WEEK_DATES[9] 是第二周的信号日：次一交易日 WEEK_DATES[10] 执行，当天卖出被拦下
+    data, strategy, params = _weekly_panel(make_data, sell_blocked_rows=[9])
+    result = run_backtest(data, strategy, params)
+    calibration = result.metadata["calibration"]
+
+    assert calibration["cash_limited_cells"] >= 1
+    assert calibration["cash_retry_attempts"] >= 1
+    assert calibration["cash_retry_filled_cells"] == 1
+    assert calibration["cash_pending_at_end_cells"] == 0
+    assert calibration["carry_converged"] is True
+    assert calibration["cash_clipped_cells"] == 0
+
+    # 被缩小的是替换进来的 SZ000002：调仓日只买到零头，次日补回到目标
+    execution_day, retry_day = WEEK_DATES[10], WEEK_DATES[11]
+    scaled = result.allocations.loc[
+        (result.allocations["trade_date"] == execution_day)
+        & (result.allocations["stock_code"] == "SZ000002")
+    ].iloc[0]
+    assert bool(scaled["cash_limited"]) and scaled["cash_shrunk_shares"] > 0
+    buys = result.orders.loc[
+        (result.orders["trade_date"] == retry_day)
+        & result.orders["Side"].astype(str).str.lower().eq("buy")
+    ]
+    assert set(buys["stock_code"]) == {"SZ000002"}
+    # 卖不掉的旧持仓在次日正常卖出，补回靠的就是这笔现金
+    sells = result.orders.loc[
+        (result.orders["trade_date"] == retry_day)
+        & result.orders["Side"].astype(str).str.lower().eq("sell")
+    ]
+    assert set(sells["stock_code"]) == {"SZ000001"}
+
+
+def test_engine_keeps_cash_limited_cell_until_the_end(make_data):
+    """现金一直没到账时补回目标留在待重试状态，并记入区间末遗留。"""
+    data, strategy, params = _weekly_panel(make_data, sell_blocked_rows=[9, 10, 11])
+    result = run_backtest(data, strategy, params)
+    calibration = result.metadata["calibration"]
+
+    assert calibration["cash_limited_cells"] >= 1
+    assert calibration["cash_retry_attempts"] >= 1
+    assert calibration["cash_retry_filled_cells"] == 0
+    assert calibration["cash_pending_at_end_cells"] >= 1
+    assert calibration["carry_converged"] is True

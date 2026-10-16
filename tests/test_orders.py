@@ -72,7 +72,10 @@ def test_suspended_execution_day_is_retried_next_day(panel):
         {"trade_date": INDEX[1], "stock_code": "SH600000", "reason": "suspended"}
     ]
     assert direction[1, 0] == 0 or direction[1, 0] == 1
-    assert stats == {"retry_attempts": 1, "retried_filled_cells": 1, "pending_at_end_cells": 0}
+    assert stats == {
+        "retry_attempts": 1, "retried_filled_cells": 1, "pending_at_end_cells": 0,
+        "cash_retry_attempts": 0,
+    }
 
 
 def test_limit_up_blocks_buy_and_keeps_position(panel):
@@ -100,7 +103,10 @@ def test_limit_down_blocks_sell_only(panel):
     assert np.isnan(filtered.loc[INDEX[3], "SH600000"])
     assert rejection.iloc[0]["reason"] == "limit_down_or_not_sellable"
     # 区间最后一个交易日仍卖不掉，格子留在待重试状态里
-    assert stats == {"retry_attempts": 0, "retried_filled_cells": 0, "pending_at_end_cells": 1}
+    assert stats == {
+        "retry_attempts": 0, "retried_filled_cells": 0, "pending_at_end_cells": 1,
+        "cash_retry_attempts": 0,
+    }
 
 
 def test_rule_switches_can_be_turned_off(panel):
@@ -138,7 +144,10 @@ def test_pending_sell_is_retried_on_a_day_without_new_target(panel):
     filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec())
     assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
     assert filtered.loc[INDEX[3], "SH600000"] == 0.0
-    assert stats == {"retry_attempts": 1, "retried_filled_cells": 1, "pending_at_end_cells": 0}
+    assert stats == {
+        "retry_attempts": 1, "retried_filled_cells": 1, "pending_at_end_cells": 0,
+        "cash_retry_attempts": 0,
+    }
 
 
 def test_repeatedly_blocked_cell_writes_single_rejection(panel):
@@ -153,7 +162,10 @@ def test_repeatedly_blocked_cell_writes_single_rejection(panel):
     assert rejection.iloc[0]["trade_date"] == INDEX[1]
     assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
     assert filtered.loc[INDEX[3], "SH600000"] == 0.5
-    assert stats == {"retry_attempts": 2, "retried_filled_cells": 1, "pending_at_end_cells": 0}
+    assert stats == {
+        "retry_attempts": 2, "retried_filled_cells": 1, "pending_at_end_cells": 0,
+        "cash_retry_attempts": 0,
+    }
 
 
 def test_new_rebalance_target_replaces_pending_retry(panel):
@@ -170,7 +182,10 @@ def test_new_rebalance_target_replaces_pending_retry(panel):
     assert np.isnan(filtered.loc[INDEX[3], "SH600000"])
     assert set(rejection["reason"]) == {"limit_up_or_not_buyable"}
     assert len(rejection) == 1
-    assert stats == {"retry_attempts": 1, "retried_filled_cells": 0, "pending_at_end_cells": 0}
+    assert stats == {
+        "retry_attempts": 1, "retried_filled_cells": 0, "pending_at_end_cells": 0,
+        "cash_retry_attempts": 0,
+    }
 
 
 def test_rebalance_cell_is_skipped_when_a_side_is_blocked(panel):
@@ -192,6 +207,51 @@ def test_flat_position_with_zero_target_is_not_submitted(panel):
     filtered, rejection, _, _, _ = apply_rules(data, targets, ExecutionSpec())
     assert filtered.notna().sum().sum() == 2
     assert rejection.empty
+
+
+def _carry(values):
+    """构造补回目标矩阵，``None`` 表示 NaN。"""
+    return pd.DataFrame(values, index=INDEX, columns=COLUMNS, dtype="float64")
+
+
+def test_cash_carry_cell_is_submitted_on_the_retry_day(panel):
+    """被现金缩小的买单靠补回目标在后续交易日下单，不产生新的拒单行。"""
+    data = panel()
+    targets = _targets([[np.nan, np.nan]] * 4)
+    carry = _carry([[np.nan, np.nan], [np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan]])
+    filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec(), None, carry)
+    assert rejection.empty
+    assert filtered.loc[INDEX[2], "SH600000"] == 0.5
+    assert stats["cash_retry_attempts"] == 1
+    assert stats["pending_at_end_cells"] == 0
+
+
+def test_blocked_cash_carry_cell_writes_no_new_rejection(panel):
+    """补回目标被停牌拦下时算重试：不写新拒单，回到规则层的待重试状态。"""
+    suspended = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
+    suspended.loc[INDEX[2], "SH600000"] = True  # 补回当天停牌
+    data = panel(is_suspended=suspended)
+    targets = _targets([[np.nan, np.nan]] * 4)
+    carry = _carry([[np.nan, np.nan], [np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan]])
+    filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec(), None, carry)
+    assert rejection.empty
+    assert np.isnan(filtered.loc[INDEX[2], "SH600000"])
+    # 次日沿用同一条待重试状态补上，但已经不算现金补回的尝试
+    assert filtered.loc[INDEX[3], "SH600000"] == 0.5
+    assert stats["cash_retry_attempts"] == 1
+    assert stats["retry_attempts"] == 1
+    assert stats["retried_filled_cells"] == 1
+
+
+def test_real_target_wins_over_cash_carry(panel):
+    """同一天既有真实调仓目标又有补回目标时，以真实目标为准。"""
+    data = panel()
+    targets = _targets([[np.nan, np.nan], [np.nan, np.nan], [0.25, np.nan], [np.nan, np.nan]])
+    carry = _carry([[np.nan, np.nan], [np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan]])
+    filtered, rejection, _, _, stats = apply_rules(data, targets, ExecutionSpec(), None, carry)
+    assert filtered.loc[INDEX[2], "SH600000"] == 0.25
+    assert rejection.empty
+    assert stats["cash_retry_attempts"] == 0
 
 
 def test_fee_matrix_charges_stamp_tax_on_sell_only(panel):
