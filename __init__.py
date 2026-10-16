@@ -22,6 +22,7 @@ from backtest.specs import (
     ExecutionSpec,
     PortfolioSpec,
     RebalanceSpec,
+    RiskSpec,
     SignalSpec,
     StrategySpec,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "OrderPlan",
     "PortfolioSpec",
     "RebalanceSpec",
+    "RiskSpec",
     "ResourceLimitError",
     "RunCancelled",
     "RunRequest",

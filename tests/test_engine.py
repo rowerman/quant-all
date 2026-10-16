@@ -13,6 +13,7 @@ from backtest.specs import (
     ExecutionSpec,
     PortfolioSpec,
     RebalanceSpec,
+    RiskSpec,
     SignalSpec,
     StrategySpec,
 )
@@ -90,6 +91,37 @@ def test_engine_produces_lot_sized_orders_and_exact_fees(make_data):
     assert result.daily["portfolio_value"].iloc[0] == pytest.approx(100_000.0)
     assert {"cost", "turnover", "drawdown", "nav"} <= set(result.daily.columns)
     assert result.metrics["trading_days"] == len(DATES)
+
+
+def test_engine_applies_single_cap_and_turnover_before_allocation(make_data):
+    score = pd.DataFrame(
+        {
+            "SH600000": [3.0, 3.0, 3.0, 1.0, 1.0, 1.0],
+            "SZ000001": [1.0, 1.0, 1.0, 3.0, 3.0, 3.0],
+            "SZ000002": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        index=DATES,
+    )
+    price = pd.DataFrame(10.0, index=DATES, columns=STOCKS)
+    data = make_data(
+        dates=DATES,
+        stocks=STOCKS,
+        open=price.astype("float32"),
+        close=price.astype("float32"),
+        factors={"MOM_20": score.astype("float32")},
+    )
+    strategy = _strategy(
+        portfolio=PortfolioSpec(top_n=2),
+        risk=RiskSpec(max_single_weight=0.4, max_one_way_turnover=0.25),
+    )
+    result = run_backtest(
+        data, strategy, BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
+    )
+    calibration = result.metadata["calibration"]
+    assert calibration["single_cap_max_weight"] <= 0.4 + 1e-9
+    assert calibration["turnover_limited_days"] > 0
+    assert calibration["turnover_limit_error_max"] == pytest.approx(0.0)
+    assert calibration["cash_clipped_cells"] == 0
 
 
 def test_engine_holdings_match_target_weights(make_data):

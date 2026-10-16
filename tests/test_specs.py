@@ -7,6 +7,7 @@ from backtest.specs import (
     BenchmarkSpec,
     ExecutionSpec,
     PortfolioSpec,
+    RiskSpec,
     SpecError,
     StrategySpec,
 )
@@ -18,6 +19,21 @@ def test_strategy_json_round_trip_is_stable():
     restored = StrategySpec.from_dict(json.loads(spec.to_json()))
     assert restored == spec
     assert restored.config_hash == spec.config_hash
+
+
+def test_default_risk_does_not_change_legacy_strategy_hash():
+    assert StrategySpec().config_hash == "3525956267b90e92"
+    assert "risk" not in StrategySpec().to_dict()
+
+
+def test_risk_configuration_round_trip_and_bounds():
+    spec = StrategySpec(risk=RiskSpec(max_single_weight=0.1, max_one_way_turnover=0.3))
+    restored = StrategySpec.from_dict(json.loads(spec.to_json()))
+    assert restored == spec
+    with pytest.raises(SpecError, match="max_single_weight"):
+        RiskSpec(max_single_weight=0.0)
+    with pytest.raises(SpecError, match="max_one_way_turnover"):
+        RiskSpec(max_one_way_turnover=1.1)
 
 
 def test_strategy_rejects_unknown_field():

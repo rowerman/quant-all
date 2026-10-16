@@ -149,6 +149,45 @@ class BenchmarkSpec:
 
 
 @dataclass(frozen=True)
+class RiskSpec:
+    """组合风险约束。
+
+    ``None`` 表示对应约束关闭。单股上限作用于目标权重；单边换手上限
+    包含现金权重变化，执行时按当前组合到目标组合整体缩放。
+    """
+
+    max_single_weight: float | None = None
+    max_one_way_turnover: float | None = None
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("risk.max_single_weight", self.max_single_weight),
+            ("risk.max_one_way_turnover", self.max_one_way_turnover),
+        ):
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise SpecError(f"{name} 必须是数字或 None")
+            value = float(value)
+            if name.endswith("max_single_weight") and not 0.0 < value <= 1.0:
+                raise SpecError("risk.max_single_weight 必须在 (0, 1] 之间")
+            if name.endswith("max_one_way_turnover") and not 0.0 <= value <= 1.0:
+                raise SpecError("risk.max_one_way_turnover 必须在 [0, 1] 之间")
+
+    @property
+    def disabled(self) -> bool:
+        """返回是否没有启用任何风险约束。"""
+        return self.max_single_weight is None and self.max_one_way_turnover is None
+
+    def to_dict(self) -> dict[str, float | None]:
+        """转换为稳定的风险配置字典。"""
+        return {
+            "max_single_weight": self.max_single_weight,
+            "max_one_way_turnover": self.max_one_way_turnover,
+        }
+
+
+@dataclass(frozen=True)
 class StrategySpec:
     """可复现的策略定义。"""
 
@@ -161,6 +200,7 @@ class StrategySpec:
     execution: ExecutionSpec = field(default_factory=ExecutionSpec)
     costs: CostSpec = field(default_factory=CostSpec)
     benchmark: BenchmarkSpec = field(default_factory=BenchmarkSpec)
+    risk: RiskSpec = field(default_factory=RiskSpec)
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -172,7 +212,10 @@ class StrategySpec:
 
     def to_dict(self) -> dict[str, Any]:
         """转换为稳定的嵌套字典。"""
-        return asdict(self)
+        payload = asdict(self)
+        if self.risk.disabled:
+            payload.pop("risk", None)
+        return payload
 
     def to_json(self) -> str:
         """序列化为稳定 JSON。"""
@@ -188,7 +231,7 @@ class StrategySpec:
         """从嵌套字典恢复策略。"""
         if not isinstance(payload, dict):
             raise SpecError("策略配置必须是对象")
-        known = {"name", "version", "universe", "signal", "portfolio", "rebalance", "execution", "costs", "benchmark"}
+        known = {"name", "version", "universe", "signal", "portfolio", "rebalance", "execution", "costs", "benchmark", "risk"}
         unknown = set(payload) - known
         if unknown:
             raise SpecError(f"策略配置包含未知字段：{sorted(unknown)}")
@@ -213,6 +256,7 @@ class StrategySpec:
             execution=section("execution", ExecutionSpec),
             costs=section("costs", CostSpec),
             benchmark=section("benchmark", BenchmarkSpec),
+            risk=section("risk", RiskSpec),
         )
 
 

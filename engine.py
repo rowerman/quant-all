@@ -48,6 +48,7 @@ from backtest.orders import (
     build_order_plan,
     execution_targets,
 )
+from backtest.risk import cap_single_weights, constrain_one_way_turnover
 from backtest.signals import build_target_weights
 from backtest.specs import BacktestParams, StrategySpec
 
@@ -437,11 +438,15 @@ def run_backtest(
     target_weights, ranks = build_target_weights(
         data, strategy.signal, strategy.portfolio, strategy.rebalance
     )
+    target_weights, single_cap_stats = cap_single_weights(
+        target_weights, strategy.risk.max_single_weight
+    )
     _notify(
         progress,
         "signals",
         rebalance_days=int(target_weights.notna().any(axis=1).sum()),
         tradable_cells=int(ranks.notna().sum().sum()),
+        **single_cap_stats,
     )
 
     targets = execution_targets(target_weights)
@@ -481,25 +486,45 @@ def run_backtest(
     portfolio = None
     previous_shares: pd.DataFrame | None = None
     previous_carry: pd.DataFrame | None = None
+    previous_effective_targets: pd.DataFrame | None = None
     carry_iterations = 0
     carry_converged = False
     iteration = 0
     converged = False
-    seen_states: dict[tuple[tuple[int, ...], bytes, tuple[tuple[int, ...], bytes]], int] = {}
+    seen_states: dict[
+        tuple[
+            tuple[tuple[int, ...], bytes],
+            tuple[tuple[int, ...], bytes],
+            tuple[tuple[int, ...], bytes],
+        ],
+        int,
+    ] = {}
     last_plan_carry: pd.DataFrame | None = None
     previous_cash_events: tuple[tuple[str, str], ...] | None = None
     original_target_mask = ~np.isnan(targets.to_numpy(dtype="float64"))
+    effective_targets = targets
+    risk_stats = dict(single_cap_stats)
     for iteration in range(1, MAX_ALLOCATION_ITERATIONS + 1):
         budget = execution_budget(state_cash, state_shares, price, params.init_cash)
         cash_open = execution_cash(state_cash, params.init_cash)
+        effective_targets, turnover_stats = constrain_one_way_turnover(
+            targets,
+            budget,
+            cash_open,
+            price,
+            state_shares,
+            strategy.risk.max_one_way_turnover,
+        )
+        risk_stats = {**single_cap_stats, **turnover_stats}
         candidate = build_order_plan(
-            data, targets, strategy.execution, probe_orders, budget, cash_open, state_shares,
+            data, effective_targets, strategy.execution, probe_orders, budget, cash_open, state_shares,
             strategy.costs, carry,
         )
         if (
             previous_shares is not None
             and _same_matrix(previous_shares, candidate.shares)
             and _same_matrix(previous_carry, carry)
+            and _same_matrix(previous_effective_targets, effective_targets)
         ):
             converged = True
             break
@@ -519,18 +544,20 @@ def run_backtest(
         last_plan_carry = carry
         previous_shares = candidate.shares
         previous_carry = carry
-        next_carry = cash_carry(plan.allocation, targets, carry)
+        previous_effective_targets = effective_targets
+        next_carry = cash_carry(plan.allocation, effective_targets, carry)
         if iteration == 1:
-            next_carry = extend_carry(next_carry, targets)
+            next_carry = extend_carry(next_carry, effective_targets)
         if not _same_matrix(next_carry, carry):
             carry_iterations += 1
         carry = next_carry
         cash_events = _cash_event_signature(candidate.allocation)
         allocation_witnesses = _clipped_cells(candidate, portfolio)
-        no_pending = _cash_pending_on_last_day(candidate.allocation, targets.index[-1]) == 0
+        no_pending = _cash_pending_on_last_day(candidate.allocation, effective_targets.index[-1]) == 0
         state_key = (
             _matrix_signature(candidate.shares),
             _matrix_signature(carry),
+            _matrix_signature(effective_targets),
         )
         prior_iteration = seen_states.get(state_key)
         if prior_iteration is not None and prior_iteration < iteration - 1:
@@ -567,7 +594,7 @@ def run_backtest(
         raise ExecutionError("资金分配没有产出可执行的目标股数")
     carry_converged = _same_matrix(
         carry,
-        cash_carry(plan.allocation, targets, last_plan_carry),
+        cash_carry(plan.allocation, effective_targets, last_plan_carry),
     )
 
     orders = _order_records(portfolio, "最终运行")
@@ -579,7 +606,7 @@ def run_backtest(
     liquidations = _liquidation_records(plan, orders)
     # 区间末仍被现金限制、来不及补回的格子（末日的补回目标没有下一交易日可落）
     last_allocations = plan.allocation.loc[
-        pd.DatetimeIndex(plan.allocation["trade_date"]) == targets.index[-1]
+        pd.DatetimeIndex(plan.allocation["trade_date"]) == effective_targets.index[-1]
     ]
     if "cash_shrunk_shares" in last_allocations:
         pending_at_end = int(
@@ -595,6 +622,7 @@ def run_backtest(
         "carry_converged": bool(carry_converged),
         "cash_retry_filled_cells": cash_retry_filled(carry, plan.allocation),
         "cash_pending_at_end_cells": pending_at_end,
+        **risk_stats,
         **plan.plan_stats,
         **witnesses,
         **_weight_witnesses(plan, holdings),
@@ -607,6 +635,7 @@ def run_backtest(
         "benchmark": data.benchmark_info,
         "price_adjust": PRICE_ADJUST,
         "cash_retry_policy": "all_cash_shortfall_event",
+        "risk": strategy.risk.to_dict(),
         "execution": {
             "sizing": "target_amount",
             "cash_buffer": float(strategy.execution.cash_buffer),
