@@ -38,6 +38,60 @@ def test_strategy_api_round_trip(client):
     assert client.get(f"/api/strategies/{strategy_id}?version=99").status_code == 400
 
 
+def test_strategy_api_accepts_complete_supported_configuration(client):
+    payload = {
+        "description": "完整配置接口测试",
+        "spec": {
+            "name": "周频双因子",
+            "universe": "index:000905.SH",
+            "signal": {
+                "factors": ["MOM_20", "VOL_20"],
+                "weights": [1.0, -0.5],
+                "winsorize": True,
+                "standardize": False,
+            },
+            "portfolio": {"selection": "top_n", "top_n": 20, "weighting": "market_cap", "long_only": True},
+            "rebalance": {"frequency": "weekly", "signal_at": "close", "execute_at": "next_open"},
+            "execution": {
+                "lot_size": 100,
+                "cash_buffer": 0.03,
+                "reject_suspended": True,
+                "reject_limit_up_buy": True,
+                "reject_limit_down_sell": False,
+                "enforce_t_plus_1": True,
+            },
+            "costs": {
+                "commission_rate": 0.0002,
+                "minimum_commission": 3.0,
+                "stamp_tax_rate": 0.0005,
+                "slippage": 0.0008,
+            },
+            "benchmark": {"index_code": "H00905.CSI"},
+        },
+    }
+    created = client.post("/api/strategies", json=payload)
+    assert created.status_code == 200
+    detail = client.get(f"/api/strategies/{created.json()['strategy_id']}").json()
+    assert detail["spec"]["signal"]["weights"] == [1.0, -0.5]
+    assert detail["spec"]["rebalance"]["frequency"] == "weekly"
+    assert detail["spec"]["costs"]["slippage"] == pytest.approx(0.0008)
+
+
+def test_strategy_api_rejects_invalid_weights_and_costs(client):
+    mismatch = client.post(
+        "/api/strategies",
+        json={"name": "坏权重", "signal": {"factors": ["MOM_20", "VOL_20"], "weights": [1.0]}},
+    )
+    assert mismatch.status_code == 400
+    assert "数量必须" in mismatch.json()["message"]
+    negative = client.post(
+        "/api/strategies",
+        json={"name": "坏成本", "costs": {"commission_rate": -0.1}},
+    )
+    assert negative.status_code == 400
+    assert "不能为负数" in negative.json()["message"]
+
+
 def test_backtest_options_expose_strategies_universes_and_limits(client):
     payload = client.get("/api/backtest/options").json()
     assert {row["strategy_id"] for row in payload["strategies"]} >= {MOM20_ID}
@@ -121,7 +175,114 @@ def test_run_tables_and_metrics_are_readable(client, store):
     assert forced[0]["stock_code"] == "SZ000001"
     assert forced[0]["value"] == pytest.approx(48975.5)
     assert client.get(f"/api/backtests/{run_id}/unknown").status_code == 400
-    assert client.get("/api/backtests/missing-run").status_code == 400
+    assert client.get("/api/backtests/missing-run").status_code == 404
+
+
+def _finish_run(store, strategy_id, version, start, dates, nav, excess):
+    """创建一条带可对比日结果的成功运行。"""
+    run_id = store.start_run(
+        strategy_id,
+        version,
+        BacktestParams(start, str(pd.Timestamp(dates[-1]).date())),
+        universe="all_a",
+        benchmark="H00300.CSI",
+    )
+    daily = pd.DataFrame(
+        {
+            "portfolio_value": [1_000_000.0 * item for item in nav],
+            "cash": [0.0] * len(dates),
+            "nav": nav,
+            "return": [0.0] + [nav[index] / nav[index - 1] - 1.0 for index in range(1, len(nav))],
+            "drawdown": [0.0] * len(dates),
+            "cost": [0.0] * len(dates),
+            "turnover": [0.0] * len(dates),
+            "benchmark_return": [0.0] * len(dates),
+            "benchmark_nav": [1.0] * len(dates),
+            "excess_return": excess,
+        },
+        index=pd.to_datetime(dates),
+    )
+    result = BacktestResult(
+        portfolio=object(),
+        daily=daily,
+        orders=pd.DataFrame(),
+        positions=pd.DataFrame(),
+        holdings=pd.DataFrame(),
+        target_weights=pd.DataFrame(),
+        rejections=pd.DataFrame(),
+        metrics={"total_return": nav[-1] / nav[0] - 1.0},
+        metadata={
+            "strategy": {"name": "测试策略"},
+            "strategy_hash": "hash",
+            "universe": "all_a",
+            "benchmark": {"code": "H00300.CSI"},
+        },
+    )
+    store.finish_run(run_id, result)
+    return run_id
+
+
+def test_backtest_compare_uses_common_dates_and_normalized_curves(client, store):
+    strategy_id, version = store.create_strategy(StrategySpec())
+    first = _finish_run(
+        store, strategy_id, version, "2024-01-01",
+        ["2024-01-01", "2024-01-02", "2024-01-03"], [1.0, 1.1, 1.21], [0.0, 0.01, 0.02],
+    )
+    second = _finish_run(
+        store, strategy_id, version, "2024-01-02",
+        ["2024-01-02", "2024-01-03", "2024-01-04"], [2.0, 2.1, 2.2], [0.0, 0.03, 0.04],
+    )
+
+    response = client.get("/api/backtests/compare", params={"run_ids": f"{first},{second}"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dates"] == ["2024-01-02", "2024-01-03"]
+    assert [row["run_id"] for row in payload["runs"]] == [first, second]
+    assert payload["runs"][0]["nav"] == pytest.approx([1.0, 1.1])
+    assert payload["runs"][0]["cumulative_excess"] == pytest.approx([0.0, 0.02])
+    assert payload["runs"][1]["cumulative_excess"] == pytest.approx([0.0, 0.03])
+
+
+def test_backtest_compare_validates_selection(client, store):
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = _finish_run(
+        store, strategy_id, version, "2024-01-01",
+        ["2024-01-01", "2024-01-02"], [1.0, 1.01], [0.0, 0.01],
+    )
+    assert client.get("/api/backtests/compare", params={"run_ids": run_id}).status_code == 400
+    assert client.get("/api/backtests/compare", params={"run_ids": f"{run_id},{run_id}"}).status_code == 400
+    assert client.get("/api/backtests/compare", params={"run_ids": "a,b,c,d,e"}).status_code == 400
+
+    running = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-02"))
+    response = client.get("/api/backtests/compare", params={"run_ids": f"{run_id},{running}"})
+    assert response.status_code == 400
+    assert "只有成功运行" in response.json()["message"]
+
+    disjoint = _finish_run(
+        store, strategy_id, version, "2025-01-01",
+        ["2025-01-01", "2025-01-02"], [1.0, 1.01], [0.0, 0.01],
+    )
+    response = client.get("/api/backtests/compare", params={"run_ids": f"{run_id},{disjoint}"})
+    assert response.status_code == 400
+    assert "共同交易日不足" in response.json()["message"]
+
+
+def test_delete_backtest_api_removes_finished_but_rejects_running(client, store):
+    strategy_id, version = store.create_strategy(StrategySpec())
+    finished = _finish_run(
+        store, strategy_id, version, "2024-01-01",
+        ["2024-01-01", "2024-01-02"], [1.0, 1.01], [0.0, 0.01],
+    )
+    response = client.delete(f"/api/backtests/{finished}")
+    assert response.status_code == 200
+    assert response.json() == {"run_id": finished, "deleted": True}
+    assert client.get(f"/api/backtests/{finished}").status_code == 404
+
+    running = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-02"))
+    response = client.delete(f"/api/backtests/{running}")
+    assert response.status_code == 409
+    assert response.json()["code"] == "BT-602"
+    assert client.delete("/api/backtests/missing").status_code == 404
 
 
 def test_backtest_stream_pushes_stage_events(client, monkeypatch):

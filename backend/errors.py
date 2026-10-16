@@ -1,7 +1,7 @@
 """接口错误类型及 HTTP 映射。"""
 
 from calculate.errors import CalculateError, EvalFactorError
-from backtest.errors import BacktestError
+from backtest.errors import BacktestError, RunConflictError, RunNotFoundError
 
 
 class MonitorError(Exception):
@@ -21,6 +21,10 @@ def error_payload(error, request_id):
         code, message = error.code, error.message
     elif isinstance(error, FileNotFoundError):
         status, code, message = 503, 'MONITOR-103', '数据产物缺失，请检查启动预检与服务日志'
+    elif isinstance(error, RunNotFoundError):
+        status, code, message = 404, error.code, error.message
+    elif isinstance(error, RunConflictError):
+        status, code, message = 409, error.code, error.message
     elif isinstance(error, BacktestError):
         status, code, message = 400, error.code, error.message
     else:

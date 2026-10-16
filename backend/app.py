@@ -96,6 +96,12 @@ def create_app():
         """列出历史回测运行。"""
         return json_safe(await asyncio.to_thread(backtest_service.list_runs, limit))
 
+    @app.get('/api/backtests/compare')
+    async def compare_backtests(run_ids: str):
+        """按共同交易日对比 2～4 次成功运行。"""
+        chosen = [item.strip() for item in run_ids.split(',') if item.strip()]
+        return json_safe(await asyncio.to_thread(backtest_service.compare_runs, chosen))
+
     @app.post('/api/backtests')
     async def run_backtest(payload: dict):
         """提交一次回测并保存结果。"""
@@ -153,6 +159,11 @@ def create_app():
     async def get_backtest(run_id: str):
         """读取回测运行状态。"""
         return json_safe(await asyncio.to_thread(backtest_service.get_run, run_id))
+
+    @app.delete('/api/backtests/{run_id}')
+    async def delete_backtest(run_id: str):
+        """删除一次已结束回测及其全部结果。"""
+        return json_safe(await asyncio.to_thread(backtest_service.delete_run, run_id))
 
     @app.get('/api/backtests/{run_id}/metrics')
     async def get_backtest_metrics(run_id: str):

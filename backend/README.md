@@ -32,7 +32,9 @@
 - `GET /api/backtest/options`：回测页可选策略、股票池、基准、因子与资源上限；
 - `POST /api/strategies`：创建策略版本；`GET /api/strategies[/{id}]` 读取策略；
 - `GET /api/backtests`：历史运行列表；`POST /api/backtests` 同步运行一次回测；
+- `GET /api/backtests/compare?run_ids=`：按共同交易日对比 2～4 次成功运行；
 - `GET /api/backtests/stream`：流式运行，按阶段推送进度（独立调度器，默认 1 运行 / 2 等待）；
+- `DELETE /api/backtests/{run_id}`：事务删除已结束运行及全部结果，运行中返回 409；
 - `GET /api/backtests/{run_id}`：运行状态与元数据；`/metrics` 绩效指标；
 - `GET /api/backtests/{run_id}/daily|holding|order|rejection|liquidation|target_weight`：标准化结果。
 

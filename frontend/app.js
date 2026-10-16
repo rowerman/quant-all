@@ -4,7 +4,7 @@ import {consumeStream} from './stream.js';
 const app=document.querySelector('#app');let options,factors,controller=null;let routeVersion=0;
 const labels={start:'开始日期',end:'结束日期',universe:'股票池',horizon:'标签周期',price:'价格通道',quantiles:'分位数',mode:'分析模式'};
 // 回测页状态：可选参数只取一次；需要按百分比展示的绩效指标
-let backtestOptions=null;
+let backtestOptions=null,preferredStrategyId=null;const selectedRuns=new Set();
 const rateKeys=new Set(['total_return','annual_return','annual_volatility','max_drawdown','daily_win_rate','monthly_win_rate','benchmark_total_return','benchmark_annual_return','excess_annual_return','excess_win_rate']);
 // 规则拒单原因与执行校准字段的中文名
 const reasonLabels={suspended:'停牌不能交易',limit_up_or_not_buyable:'涨停或开盘不可买',limit_down_or_not_sellable:'跌停或开盘不可卖'};
@@ -13,7 +13,8 @@ const calibrationLabels={cash_buffer:'现金缓冲（执行层预留）',allocat
 const calibrationRates=new Set(['cash_buffer','weight_deviation_median','weight_deviation_p95','weight_deviation_max']);
 
 // 读取JSON接口，错误显示服务端提供的原因。
-async function get(url){const r=await fetch(url);const data=await r.json();if(!r.ok)throw new Error(data.message||'接口请求失败');return data;}
+async function request(url,init){const r=await fetch(url,init);const data=await r.json();if(!r.ok)throw new Error(data.message||'接口请求失败');return data;}
+async function get(url){return request(url);}
 
 // 渲染日期、股票池、周期、分组和模式控件。
 function controls(){
@@ -94,6 +95,8 @@ catch(error){app.innerHTML=`<p role="alert">${esc(error.message)}</p>`;}
 // ===== 回测：列表页、详情页与历史运行 =====
 // 回测路由：运行详情页或列表页。
 async function backtestRoute(hash,version){
+  if(hash==='#/backtest/new')return strategyPage(version);
+  if(hash.startsWith('#/backtest/compare'))return compareRunsPage(hash,version);
   if(hash.startsWith('#/backtest/'))return runPage(decodeURIComponent(hash.slice('#/backtest/'.length)),version);
   return backtestPage(version);
 }
@@ -106,10 +109,9 @@ async function backtestPage(version){
   const opts=await loadBacktestOptions();if(version!==routeVersion)return;
   const runs=await get('/api/backtests');if(version!==routeVersion)return;
   const d=opts.defaults;
-  app.innerHTML=`<h1>策略回测</h1>
-  <p class="intro muted">VectorBT 负责组合执行与账本，项目负责 A 股规则与成本：T 日收盘生成信号、次一交易日开盘执行；停牌不下单、涨停不能买、跌停不能卖；100 股取整；佣金、最低佣金、卖出印花税与滑点全部计入。下单量由 VectorBT 按目标百分比换算，费用按一遍探针运行的真实成交额校准，目标权重合计 1.0，买不满的部分由 VectorBT 按可用现金裁剪。</p>
+  app.innerHTML=`<div class="page-heading"><div><h1>策略回测</h1><p class="intro muted">VectorBT 负责组合执行与账本，项目负责 A 股规则与成本。目标权重在执行日按真实现金与持仓分配成 100 股整数倍的目标股数，并预留现金缓冲；被规则拦下或受现金限制的订单会按交易日继续补回。</p></div><a class="button-link" href="#/backtest/new">新建策略</a></div>
   <form id="backtest-form" class="controls">
-    <label>策略<select name="strategy_id">${opts.strategies.map(row=>`<option value="${esc(row.strategy_id)}">${esc(row.name)} · v${row.current_version}</option>`).join('')}</select></label>
+    <label>策略<select name="strategy_id">${opts.strategies.map(row=>`<option value="${esc(row.strategy_id)}" ${row.strategy_id===preferredStrategyId?'selected':''}>${esc(row.name)} · v${row.current_version}</option>`).join('')}</select></label>
     <label>股票池<select name="universe">${opts.universes.map(item=>`<option value="${esc(item.key)}">${esc(item.label)}</option>`).join('')}</select></label>
     <label>基准<select name="benchmark">${opts.benchmarks.map(item=>`<option value="${esc(item.code)}" ${item.code===d.benchmark?'selected':''}>${esc(item.label)}</option>`).join('')}</select></label>
     <label>开始日期<input type="date" name="start" value="${esc(d.start)}" required></label>
@@ -119,8 +121,9 @@ async function backtestPage(version){
     <button type="button" id="backtest-cancel" class="secondary" disabled>取消</button>
   </form>
   <div id="backtest-status" class="muted">默认成本：佣金 ${opts.costs.commission_rate}、最低佣金 ${opts.costs.minimum_commission} 元、卖出印花税 ${opts.costs.stamp_tax_rate}、滑点 ${opts.costs.slippage}。上限 ${opts.limits.trade_days} 个交易日 / ${(opts.limits.panel_cells/1e6).toFixed(0)} 百万单元格；十年全 A 约需三到四分钟，回测默认串行执行。</div>
-  <section class="card"><h2>历史运行</h2><div id="run-list"></div></section>`;
+  <section class="card"><div class="card-header"><h2>历史运行</h2><button type="button" id="compare-runs" class="secondary" disabled>对比所选运行</button></div><div id="run-list"></div></section>`;
   renderRuns(runs);
+  preferredStrategyId=null;
   const form=app.querySelector('#backtest-form'),status=app.querySelector('#backtest-status'),cancel=app.querySelector('#backtest-cancel');
   form.addEventListener('submit',async event=>{
     event.preventDefault();const local=new AbortController();controller=local;
@@ -159,12 +162,100 @@ async function loadRuns(){
 // 渲染历史运行表，运行编号可点进详情。
 function renderRuns(runs){
   const node=app.querySelector('#run-list');if(!node)return;
-  if(!runs.length){node.innerHTML='<p class="muted">还没有运行记录，先在上面选好参数运行一次。</p>';return;}
+  const compare=app.querySelector('#compare-runs');
+  if(!runs.length){selectedRuns.clear();if(compare)compare.disabled=true;node.innerHTML='<p class="muted">还没有运行记录，先在上面选好参数运行一次。</p>';return;}
+  const eligible=new Set(runs.filter(row=>row.status==='success').map(row=>row.run_id));
+  for(const runId of [...selectedRuns])if(!eligible.has(runId))selectedRuns.delete(runId);
   const cell=value=>value===null||value===undefined?'—':pct(value);
-  node.innerHTML='<div class="table-wrap"><table><thead><tr><th>运行</th><th>策略版本</th><th>区间</th><th>股票池</th><th>基准</th><th>状态</th><th>累计收益</th><th>年化</th><th>最大回撤</th><th>耗时（秒）</th></tr></thead><tbody>'+
-    runs.map(row=>`<tr><td><a href="#/backtest/${encodeURIComponent(row.run_id)}">${esc(String(row.run_id).slice(0,8))}</a></td><td>${esc(row.strategy_id)} · v${esc(row.strategy_version)}</td><td>${esc(String(row.start_date).slice(0,10))} ~ ${esc(String(row.end_date).slice(0,10))}</td><td>${esc(row.universe||'—')}</td><td>${esc(row.benchmark||'—')}</td><td>${esc(row.status)}</td>`+
+  node.innerHTML='<div class="table-wrap"><table><thead><tr><th>选择</th><th>运行</th><th>策略版本</th><th>区间</th><th>股票池</th><th>基准</th><th>状态</th><th>累计收益</th><th>年化</th><th>最大回撤</th><th>耗时（秒）</th><th>操作</th></tr></thead><tbody>'+
+    runs.map(row=>`<tr><td><input class="run-choice" type="checkbox" value="${esc(row.run_id)}" aria-label="选择运行 ${esc(String(row.run_id).slice(0,8))}" ${row.status==='success'?'':'disabled'} ${selectedRuns.has(row.run_id)?'checked':''}></td><td><a href="#/backtest/${encodeURIComponent(row.run_id)}">${esc(String(row.run_id).slice(0,8))}</a></td><td>${esc(row.strategy_id)} · v${esc(row.strategy_version)}</td><td>${esc(String(row.start_date).slice(0,10))} ~ ${esc(String(row.end_date).slice(0,10))}</td><td>${esc(row.universe||'—')}</td><td>${esc(row.benchmark||'—')}</td><td>${esc(row.status)}</td>`+
       ['total_return','annual_return','max_drawdown'].map(key=>`<td>${cell(row.metrics?row.metrics[key]:null)}</td>`).join('')+
-      `<td>${row.elapsed_seconds==null?'—':fmt(row.elapsed_seconds)}</td></tr>`).join('')+'</tbody></table></div>';
+      `<td>${row.elapsed_seconds==null?'—':fmt(row.elapsed_seconds)}</td><td><button type="button" class="table-command delete-run" data-run="${esc(row.run_id)}" ${row.status==='running'?'disabled':''}>删除</button></td></tr>`).join('')+'</tbody></table></div>';
+  const syncCompare=()=>{if(compare){compare.disabled=selectedRuns.size<2||selectedRuns.size>4;compare.textContent=selectedRuns.size?`对比所选运行（${selectedRuns.size}）`:'对比所选运行';}};
+  node.querySelectorAll('.run-choice').forEach(input=>input.addEventListener('change',()=>{
+    const status=app.querySelector('#backtest-status');
+    if(input.checked&&selectedRuns.size>=4){input.checked=false;if(status){status.className='error';status.textContent='最多同时对比 4 次运行';}return;}
+    if(input.checked)selectedRuns.add(input.value);else selectedRuns.delete(input.value);syncCompare();
+  }));
+  node.querySelectorAll('.delete-run').forEach(button=>button.addEventListener('click',async()=>{
+    const runId=button.dataset.run;if(!confirm(`确定删除运行 ${runId.slice(0,8)} 及其全部结果？此操作不可恢复。`))return;
+    button.disabled=true;
+    try{await request('/api/backtests/'+encodeURIComponent(runId),{method:'DELETE'});selectedRuns.delete(runId);await loadRuns();}
+    catch(error){button.disabled=false;const status=app.querySelector('#backtest-status');if(status){status.className='error';status.textContent=error.message;}}
+  }));
+  if(compare&&!compare.dataset.bound){compare.dataset.bound='true';compare.addEventListener('click',()=>{if(selectedRuns.size>=2&&selectedRuns.size<=4)location.hash='#/backtest/compare?run_ids='+[...selectedRuns].map(encodeURIComponent).join(',');});}
+  syncCompare();
+}
+
+// 多运行对比页：服务端已按共同交易日完成归一和累计超额计算。
+async function compareRunsPage(hash,version){
+  const params=new URLSearchParams(hash.split('?')[1]||'');
+  const runIds=(params.get('run_ids')||'').split(',').map(item=>item.trim()).filter(Boolean);
+  const result=await get('/api/backtests/compare?run_ids='+runIds.map(encodeURIComponent).join(','));if(version!==routeVersion)return;
+  const metricKeys=[['total_return','累计收益'],['annual_return','年化收益'],['max_drawdown','最大回撤'],['excess_annual_return','年化超额'],['information_ratio','信息比率']];
+  app.innerHTML=`<div class="page-heading"><div><h1>运行对比</h1><p class="intro muted">共同交易日 ${esc(result.start)} ~ ${esc(result.end)}；策略净值统一从 1 开始，累计超额统一从 0 开始。</p></div><a class="button-link secondary-link" href="#/backtest">返回回测</a></div>
+  <section class="card"><h2>运行与指标</h2><div id="compare-summary"></div></section>
+  <section class="card"><h2>共同区间曲线</h2><div class="cards" id="compare-curves"></div></section>`;
+  table(app.querySelector('#compare-summary'),result.runs.map(row=>{
+    const record={运行:String(row.run_id).slice(0,8),策略:`${row.strategy_name} · v${row.strategy_version}`,原区间:`${String(row.start_date).slice(0,10)} ~ ${String(row.end_date).slice(0,10)}`,股票池:row.universe,基准:row.benchmark};
+    for(const [key,label] of metricKeys)record[label]=key==='information_ratio'?fmt(row.metrics[key]):pct(row.metrics[key]);
+    return record;
+  }));
+  const named=row=>`${row.strategy_name} · ${String(row.run_id).slice(0,8)}`;
+  backtestChart(app.querySelector('#compare-curves'),result.dates,result.runs.map(row=>({name:named(row),data:row.nav})),'策略净值（共同首日 = 1）');
+  backtestChart(app.querySelector('#compare-curves'),result.dates,result.runs.map(row=>({name:named(row),data:row.cumulative_excess})),'累计超额（共同首日 = 0）');
+}
+
+// 新建策略页：把当前 StrategySpec 支持的配置保存为不可变第一版。
+async function strategyPage(version){
+  const opts=await loadBacktestOptions();if(version!==routeVersion)return;
+  const factorRows=opts.factors.map(item=>`<tr><td><input class="factor-enabled" type="checkbox" value="${esc(item.name)}" ${item.name==='MOM_20'?'checked':''} aria-label="选择因子 ${esc(item.name)}"></td><td>${esc(item.name)}</td><td>${item.direction>0?'越大越看多':'越大越看空'}</td><td>${esc(item.description||'')}</td><td><input class="factor-weight" type="number" value="${item.name==='MOM_20'?'1':'0'}" step="0.1" ${item.name==='MOM_20'?'':'disabled'} aria-label="${esc(item.name)} 权重"></td></tr>`).join('');
+  app.innerHTML=`<div class="page-heading"><div><h1>新建策略</h1><p class="intro muted">保存后生成不可变的策略第一版，并与内置策略共用同一条回测路径。</p></div><a class="button-link secondary-link" href="#/backtest">返回回测</a></div>
+  <form id="strategy-form">
+    <section class="card"><h2>基本信息</h2><div class="form-grid">
+      <label>策略名称<input name="name" required maxlength="80" value="自定义多因子策略"></label>
+      <label>说明<textarea name="description" rows="3" maxlength="500"></textarea></label>
+      <label>股票池<select name="universe">${opts.universes.map(item=>`<option value="${esc(item.key)}">${esc(item.label)}</option>`).join('')}</select></label>
+      <label>基准<select name="benchmark">${opts.benchmarks.map(item=>`<option value="${esc(item.code)}" ${item.code===opts.defaults.benchmark?'selected':''}>${esc(item.label)}</option>`).join('')}</select></label>
+    </div></section>
+    <section class="card"><h2>因子信号</h2><div class="table-wrap"><table class="factor-table"><thead><tr><th>选择</th><th>因子</th><th>方向</th><th>说明</th><th>权重</th></tr></thead><tbody>${factorRows}</tbody></table></div><div class="toggle-row"><label><input type="checkbox" name="standardize" checked>截面标准化</label><label><input type="checkbox" name="winsorize">3×MAD 去极值</label></div></section>
+    <section class="card"><h2>组合与调仓</h2><div class="form-grid">
+      <label>持仓只数<input name="top_n" type="number" min="1" step="1" value="30" required></label>
+      <label>权重方式<select name="weighting"><option value="equal">等权</option><option value="market_cap">市值加权</option></select></label>
+      <label>调仓频率<select name="frequency"><option value="daily">日频</option><option value="weekly">周频</option><option value="monthly" selected>月频</option></select></label>
+    </div><p class="mini muted">固定口径：Top-N 选股、只做多、收盘生成信号、下一交易日开盘执行。</p></section>
+    <section class="card"><h2>执行规则</h2><div class="form-grid">
+      <label>现金缓冲<input name="cash_buffer" type="number" min="0" max="0.499999" step="0.005" value="0.02" required></label>
+      <label>交易单位<input value="100 股" readonly></label>
+    </div><div class="toggle-row"><label><input type="checkbox" name="reject_suspended" checked>停牌拒单</label><label><input type="checkbox" name="reject_limit_up_buy" checked>涨停买入拒单</label><label><input type="checkbox" name="reject_limit_down_sell" checked>跌停卖出拒单</label><label><input type="checkbox" name="enforce_t_plus_1" checked>T+1</label></div></section>
+    <section class="card"><h2>交易成本</h2><div class="form-grid">
+      <label>佣金率<input name="commission_rate" type="number" min="0" step="0.0001" value="${opts.costs.commission_rate}" required></label>
+      <label>最低佣金（元）<input name="minimum_commission" type="number" min="0" step="0.1" value="${opts.costs.minimum_commission}" required></label>
+      <label>卖出印花税率<input name="stamp_tax_rate" type="number" min="0" step="0.0001" value="${opts.costs.stamp_tax_rate}" required></label>
+      <label>滑点<input name="slippage" type="number" min="0" step="0.0001" value="${opts.costs.slippage}" required></label>
+    </div></section>
+    <div id="strategy-status" class="muted">至少选择一个因子，权重不能全部为 0。</div>
+    <div class="form-actions"><button type="submit">创建策略</button><a class="button-link secondary-link" href="#/backtest">取消</a></div>
+  </form>`;
+  const form=app.querySelector('#strategy-form'),status=app.querySelector('#strategy-status');
+  form.querySelectorAll('.factor-enabled').forEach(input=>input.addEventListener('change',()=>{const weight=input.closest('tr').querySelector('.factor-weight');weight.disabled=!input.checked;if(input.checked&&Number(weight.value)===0)weight.value='1';}));
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();status.className='muted';
+    const data=new FormData(form);const chosen=[...form.querySelectorAll('.factor-enabled:checked')];
+    const factorNames=chosen.map(input=>input.value);const factorWeights=chosen.map(input=>Number(input.closest('tr').querySelector('.factor-weight').value));
+    const topN=Number(data.get('top_n')),cashBuffer=Number(data.get('cash_buffer'));
+    const costs=['commission_rate','minimum_commission','stamp_tax_rate','slippage'].map(name=>Number(data.get(name)));
+    if(!String(data.get('name')).trim())return void(status.className='error',status.textContent='策略名称不能为空');
+    if(!factorNames.length)return void(status.className='error',status.textContent='至少选择一个因子');
+    if(factorWeights.some(value=>!Number.isFinite(value))||factorWeights.every(value=>value===0))return void(status.className='error',status.textContent='因子权重必须是数字且不能全部为 0');
+    if(!Number.isInteger(topN)||topN<=0)return void(status.className='error',status.textContent='持仓只数必须是正整数');
+    if(!Number.isFinite(cashBuffer)||cashBuffer<0||cashBuffer>=0.5)return void(status.className='error',status.textContent='现金缓冲必须在 0 到 0.5 之间');
+    if(costs.some(value=>!Number.isFinite(value)||value<0))return void(status.className='error',status.textContent='交易成本必须是非负数');
+    const payload={description:String(data.get('description')||''),spec:{name:String(data.get('name')).trim(),universe:data.get('universe'),signal:{factors:factorNames,weights:factorWeights,winsorize:data.has('winsorize'),standardize:data.has('standardize')},portfolio:{selection:'top_n',top_n:topN,weighting:data.get('weighting'),long_only:true},rebalance:{frequency:data.get('frequency'),signal_at:'close',execute_at:'next_open'},execution:{lot_size:100,cash_buffer:cashBuffer,reject_suspended:data.has('reject_suspended'),reject_limit_up_buy:data.has('reject_limit_up_buy'),reject_limit_down_sell:data.has('reject_limit_down_sell'),enforce_t_plus_1:data.has('enforce_t_plus_1')},costs:{commission_rate:costs[0],minimum_commission:costs[1],stamp_tax_rate:costs[2],slippage:costs[3]},benchmark:{index_code:data.get('benchmark')}}};
+    const submit=form.querySelector('[type=submit]');submit.disabled=true;status.textContent='正在创建策略…';
+    try{const created=await request('/api/strategies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});preferredStrategyId=created.strategy_id;backtestOptions=null;location.hash='#/backtest';}
+    catch(error){status.className='error';status.textContent=error.message;submit.disabled=false;}
+  });
 }
 
 // 百分比展示，无效值显示破折号。
@@ -219,6 +310,7 @@ async function runPage(runId,version){
   table(app.querySelector('#run-metrics'),shown.filter(key=>key in metrics).map(key=>({指标:labels[key],数值:rateKeys.has(key)?pct(metrics[key]):metrics[key]})));
   backtestChart(app.querySelector('#run-curves'),dates,series,'净值（起始 = 1）');
   backtestChart(app.querySelector('#run-curves'),dates,[{name:'回撤',data:column('drawdown'),area:true}],'回撤');
+  if(daily.some(row=>row.excess_return!==null&&row.excess_return!==undefined))backtestChart(app.querySelector('#run-curves'),dates,[{name:'日超额收益',data:column('excess_return'),bar:true}],'日超额收益');
   backtestChart(app.querySelector('#run-cost'),dates,[{name:'换手（占前一日组合价值）',data:column('turnover'),bar:true}],'日换手');
   backtestChart(app.querySelector('#run-cost'),dates,[{name:'当日交易成本（元）',data:column('cost'),bar:true}],'交易成本');
   const reasonRows=Object.entries(reasonCounts).map(([reason,count])=>({拒单原因:reasonLabels[reason]||reason,笔数:count}));

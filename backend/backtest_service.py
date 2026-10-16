@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Iterator
+
+import pandas as pd
 
 from backtest import (
     BacktestParams,
@@ -78,6 +81,84 @@ def get_strategy(strategy_id: str, version: int | None = None, store_path: str |
 def list_runs(limit: int = 50, store_path: str | None = None) -> list[dict]:
     """返回回测运行列表。"""
     return _store(store_path).list_runs(limit)
+
+
+def delete_run(run_id: str, store_path: str | None = None) -> dict:
+    """删除一次已结束运行及其全部结果。"""
+    _store(store_path).delete_run(run_id)
+    return {"run_id": run_id, "deleted": True}
+
+
+def compare_runs(run_ids: list[str], store_path: str | None = None) -> dict:
+    """按共同交易日对齐 2～4 次成功运行并生成可比曲线。
+
+    参数:
+        run_ids: 按页面选择顺序传入的运行标识。
+        store_path: 测试使用的数据库路径。
+    """
+    if not 2 <= len(run_ids) <= 4:
+        raise BacktestError("运行对比必须选择 2～4 次运行")
+    if len(set(run_ids)) != len(run_ids):
+        raise BacktestError("运行对比不能包含重复运行")
+    store = _store(store_path)
+    records = [store.get_run(run_id) for run_id in run_ids]
+    for record in records:
+        if record["status"] != "success":
+            raise BacktestError(f"只有成功运行可以对比：{record['run_id']} 当前为 {record['status']}")
+
+    frames = []
+    for run_id in run_ids:
+        frame = pd.DataFrame(store.get_result_table(run_id, "daily"))
+        required = {"trade_date", "nav", "excess_return"}
+        missing = required - set(frame.columns)
+        if missing:
+            raise BacktestError(f"运行 {run_id} 缺少对比字段：{sorted(missing)}")
+        frame = frame[["trade_date", "nav", "excess_return"]].copy()
+        frame["trade_date"] = pd.to_datetime(frame["trade_date"])
+        frame = frame.drop_duplicates("trade_date").set_index("trade_date").sort_index()
+        frames.append(frame)
+
+    common = frames[0].index
+    for frame in frames[1:]:
+        common = common.intersection(frame.index)
+    common = common.sort_values()
+    if len(common) < 2:
+        raise BacktestError("所选运行的共同交易日不足 2 天，无法对比")
+
+    payload = []
+    for record, frame in zip(records, frames, strict=True):
+        aligned = frame.loc[common]
+        nav = pd.to_numeric(aligned["nav"], errors="coerce")
+        excess = pd.to_numeric(aligned["excess_return"], errors="coerce")
+        if nav.isna().any() or excess.isna().any() or float(nav.iloc[0]) == 0.0:
+            raise BacktestError(f"运行 {record['run_id']} 的共同区间存在无效净值或超额收益")
+        relative_nav = nav / float(nav.iloc[0])
+        excess_growth = (1.0 + excess).cumprod()
+        cumulative_excess = excess_growth / float(excess_growth.iloc[0]) - 1.0
+        metadata = json.loads(record["metadata_json"]) if record.get("metadata_json") else {}
+        strategy = metadata.get("strategy") or {}
+        benchmark = metadata.get("benchmark") or {}
+        payload.append(
+            {
+                "run_id": record["run_id"],
+                "strategy_id": record["strategy_id"],
+                "strategy_name": strategy.get("name") or record["strategy_id"],
+                "strategy_version": record["strategy_version"],
+                "start_date": record["start_date"],
+                "end_date": record["end_date"],
+                "universe": record.get("universe") or metadata.get("universe"),
+                "benchmark": record.get("benchmark") or benchmark.get("code"),
+                "metrics": metadata.get("metrics") or {},
+                "nav": relative_nav.tolist(),
+                "cumulative_excess": cumulative_excess.tolist(),
+            }
+        )
+    return {
+        "start": common[0].date().isoformat(),
+        "end": common[-1].date().isoformat(),
+        "dates": [item.date().isoformat() for item in common],
+        "runs": payload,
+    }
 
 
 def get_run(run_id: str, store_path: str | None = None) -> dict:
