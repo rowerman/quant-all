@@ -106,6 +106,8 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
     assert payload["defaults"]["end"] == "2026-10-14"
     assert {"name", "direction"} <= set(payload["factors"][0])
     assert payload["limits"]["trade_days"] > 0
+    assert payload["limits"]["chunk_cells"] < payload["limits"]["panel_cells"]
+    assert payload["limits"]["max_chunks"] >= 2
 
 
 def test_run_tables_and_metrics_are_readable(client, store):

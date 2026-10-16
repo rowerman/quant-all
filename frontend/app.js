@@ -121,7 +121,7 @@ async function backtestPage(version){
     <button type="submit">运行回测</button>
     <button type="button" id="backtest-cancel" class="secondary" disabled>取消</button>
   </form>
-  <div id="backtest-status" class="muted">默认成本：佣金 ${opts.costs.commission_rate}、最低佣金 ${opts.costs.minimum_commission} 元、卖出印花税 ${opts.costs.stamp_tax_rate}、滑点 ${opts.costs.slippage}。上限 ${opts.limits.trade_days} 个交易日 / ${(opts.limits.panel_cells/1e6).toFixed(0)} 百万单元格；十年全 A 约需三到四分钟，回测默认串行执行。</div>
+  <div id="backtest-status" class="muted">默认成本：佣金 ${opts.costs.commission_rate}、最低佣金 ${opts.costs.minimum_commission} 元、卖出印花税 ${opts.costs.stamp_tax_rate}、滑点 ${opts.costs.slippage}。区间最多 ${opts.limits.trade_days} 个交易日；面板超过 ${(opts.limits.panel_cells/1e6).toFixed(0)} 百万格时自动按每块约 ${(opts.limits.chunk_cells/1e6).toFixed(1)} 百万格流式执行，最多 ${opts.limits.max_chunks} 块。</div>
   <section class="card"><div class="card-header"><h2>历史运行</h2><button type="button" id="compare-runs" class="secondary" disabled>对比所选运行</button></div><div id="run-list"></div></section>`;
   renderRuns(runs);
   preferredStrategyId=null;
@@ -136,7 +136,11 @@ async function backtestPage(version){
         if(stage==='queued')return void(status.textContent='已进入回测队列，等待运行名额…');
         if(stage==='error')throw new Error(`${payload.message} [${payload.code}] 请求 ${payload.request_id}`);
         if(stage==='meta')return void(status.textContent=`策略 ${payload.name} v${payload.version} · 池 ${payload.universe} · 基准 ${payload.benchmark||'无'} · 因子 ${payload.factors.join(' + ')}`);
-        if(stage==='load')return void(status.textContent=`数据就绪：${payload.trading_days} 个交易日 × ${payload.stocks} 只股票`);
+        if(stage==='load')return void(status.textContent=`数据就绪：${payload.trading_days} 个交易日 × ${payload.stocks} 只股票${payload.chunks?` · 自动分为 ${payload.chunks} 块`:''}`);
+        if(stage==='chunk'){
+          const phases={prepare:'准备信号',probe:'探针运行',baseline:'基准运行',allocation:`资金分配第 ${payload.iteration} 轮`};
+          return void(status.textContent=`${phases[payload.phase]||payload.phase}：第 ${payload.chunk_index}/${payload.chunk_count} 块 · ${payload.start} ~ ${payload.end}`);
+        }
         if(stage==='signals')return void(status.textContent=`信号完成：${payload.rebalance_days} 个调仓日`);
         if(stage==='probe')return void(status.textContent=`探针运行完成：${payload.probe_orders} 笔成交，开始规则过滤与费用校准`);
         if(stage==='orders')return void(status.textContent=`规则过滤完成：计划 ${payload.planned_orders} 笔，规则拒单 ${payload.rejected_orders} 笔`);

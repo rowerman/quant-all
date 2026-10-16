@@ -16,7 +16,7 @@ from backtest import (
     iter_run,
     run,
 )
-from backtest.config import MAX_PANEL_CELLS, MAX_TRADE_DAYS
+from backtest.config import CHUNK_CELL_BUDGET, MAX_CHUNKS, MAX_PANEL_CELLS, MAX_TRADE_DAYS
 from backtest.errors import BacktestError
 from backtest.specs import BENCHMARK_OPTIONS, SpecError
 from backtest.universe import list_universes, resolve_universe
@@ -48,7 +48,14 @@ def options(store_path: str | None = None) -> dict:
             "start": "2024-01-01", "end": "2026-10-14", "init_cash": 1_000_000.0,
             "benchmark": "H00300.CSI",
         },
-        "limits": {"trade_days": MAX_TRADE_DAYS, "panel_cells": MAX_PANEL_CELLS, "workers": 1, "waiting": 2},
+        "limits": {
+            "trade_days": MAX_TRADE_DAYS,
+            "panel_cells": MAX_PANEL_CELLS,
+            "chunk_cells": CHUNK_CELL_BUDGET,
+            "max_chunks": MAX_CHUNKS,
+            "workers": 1,
+            "waiting": 2,
+        },
         "costs": {
             "commission_rate": 0.0003,
             "minimum_commission": 5.0,
