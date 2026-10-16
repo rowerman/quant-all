@@ -8,7 +8,7 @@ let backtestOptions=null;
 const rateKeys=new Set(['total_return','annual_return','annual_volatility','max_drawdown','daily_win_rate','monthly_win_rate','benchmark_total_return','benchmark_annual_return','excess_annual_return','excess_win_rate']);
 // 规则拒单原因与执行校准字段的中文名
 const reasonLabels={suspended:'停牌不能交易',limit_up_or_not_buyable:'涨停或开盘不可买',limit_down_or_not_sellable:'跌停或开盘不可卖'};
-const calibrationLabels={cash_buffer:'现金缓冲（执行层预留）',allocation_iterations:'资金分配迭代次数',allocation_converged:'资金分配是否收敛',probe_orders:'探针成交笔数',probe_buys:'探针买入笔数',probe_sells:'探针卖出笔数',planned_orders:'计划下单格数',rebalance_orders:'其中再平衡格数',rejected_orders:'规则拒单笔数',forced_liquidations:'退市强制清算笔数',retry_attempts:'被拦交易的重试尝试次数',retried_filled_cells:'非调仓日补单成交格数',pending_at_end_cells:'区间末仍未解决的待重试格数',allocated_cells:'分配出目标股数的格数',bumped_one_lot_cells:'用取整余量补到一手的格数',unaffordable_lot_cells:'一手金额超出预算、未能建仓的格数',no_price_cells:'缺执行价、未下单的格数',final_orders:'最终成交笔数',final_buys:'最终买入笔数',final_sells:'最终卖出笔数',fallback_fee_orders:'没有成交估计、按意图方向计费笔数',fee_matrix_max_diff:'费用矩阵核对最大偏差（元）',cash_clipped_cells:'被现金裁剪的格数',allocation_gap_max_shares:'实际持股与目标股数的最大差额（股）',target_cells:'目标下单格数',weight_deviation_median:'权重偏差中位数',weight_deviation_p95:'权重偏差 95 分位',weight_deviation_max:'权重偏差最大值',weight_deviation_over_1pct:'权重偏差超 1% 的格数'};
+const calibrationLabels={cash_buffer:'现金缓冲（执行层预留）',allocation_iterations:'资金分配迭代次数',allocation_converged:'资金分配是否收敛',carry_iterations:'现金补回的调整次数',carry_converged:'现金补回是否收敛',probe_orders:'探针成交笔数',probe_buys:'探针买入笔数',probe_sells:'探针卖出笔数',planned_orders:'计划下单格数',rebalance_orders:'其中再平衡格数',rejected_orders:'规则拒单笔数',forced_liquidations:'退市强制清算笔数',retry_attempts:'被拦交易的重试尝试次数',retried_filled_cells:'非调仓日补单成交格数',pending_at_end_cells:'区间末仍未解决的待重试格数',cash_shrunk_cells:'被现金缩小的买单格数',cash_limited_cells:'其中进补回的格数（缩水过两成）',cash_limited_value:'进补回的缩水金额（元）',cash_retry_attempts:'现金补回的尝试格次',cash_retry_filled_cells:'现金补回补齐格数',cash_pending_at_end_cells:'区间末仍未补回的格数',allocated_cells:'分配出目标股数的格数',bumped_one_lot_cells:'用取整余量补到一手的格数',unaffordable_lot_cells:'一手金额超出预算、未能建仓的格数',no_price_cells:'缺执行价、未下单的格数',final_orders:'最终成交笔数',final_buys:'最终买入笔数',final_sells:'最终卖出笔数',fallback_fee_orders:'没有成交估计、按意图方向计费笔数',fee_matrix_max_diff:'费用矩阵核对最大偏差（元）',cash_clipped_cells:'被现金裁剪的格数',allocation_gap_max_shares:'实际持股与目标股数的最大差额（股）',target_cells:'目标下单格数',weight_deviation_median:'权重偏差中位数',weight_deviation_p95:'权重偏差 95 分位',weight_deviation_max:'权重偏差最大值',weight_deviation_over_1pct:'权重偏差超 1% 的格数'};
 // 需要按百分比展示的执行校准字段
 const calibrationRates=new Set(['cash_buffer','weight_deviation_median','weight_deviation_p95','weight_deviation_max']);
 
@@ -137,7 +137,7 @@ async function backtestPage(version){
         if(stage==='probe')return void(status.textContent=`探针运行完成：${payload.probe_orders} 笔成交，开始规则过滤与费用校准`);
         if(stage==='orders')return void(status.textContent=`规则过滤完成：计划 ${payload.planned_orders} 笔，规则拒单 ${payload.rejected_orders} 笔`);
         if(stage==='baseline')return void(status.textContent=`基准遍完成：执行层预留 ${pct(payload.cash_buffer)} 现金，开始资金分配`);
-        if(stage==='allocation')return void(status.textContent=`资金分配完成：建仓 ${payload.allocated_cells} 格，补一手 ${payload.bumped_one_lot_cells} 格，未建仓 ${payload.unaffordable_lot_cells} 格`);
+        if(stage==='allocation')return void(status.textContent=`资金分配完成：建仓 ${payload.allocated_cells} 格，补一手 ${payload.bumped_one_lot_cells} 格，未建仓 ${payload.unaffordable_lot_cells} 格，被现金缩小 ${payload.cash_shrunk_cells} 格（其中 ${payload.cash_limited_cells} 格待补回）`);
         if(stage==='execute')return void(status.textContent=`最终运行完成：${payload.final_orders} 笔成交，费用矩阵偏差 ${fmt(payload.fee_matrix_max_diff)}`);
         if(stage==='done'){status.innerHTML=`回测完成，用时 ${fmt(payload.elapsed_seconds)} 秒，成交 ${payload.orders} 笔，规则拒单 ${payload.rejections} 笔。<a href="#/backtest/${encodeURIComponent(payload.run_id)}">查看结果</a>`;loadRuns();}
       });
@@ -227,7 +227,7 @@ async function runPage(runId,version){
   if(liquidations.length)table(app.querySelector('#run-liquidation'),liquidations.map(row=>({日期:String(row.trade_date).slice(0,10),股票:row.stock_code,退市日:String(row.delist_date||'').slice(0,10),股数:row.size,价格:row.price,金额:row.value})));
   else app.querySelector('#run-liquidation').innerHTML='<p class="muted">本次运行没有强制清算</p>';
   const calibration=metadata.calibration||{};
-  const calibrationValue=key=>key==='allocation_converged'?(calibration[key]?'是':'否'):(calibrationRates.has(key)?pct(calibration[key]):fmt(calibration[key]));
+  const calibrationValue=key=>(key==='allocation_converged'||key==='carry_converged')?(calibration[key]?'是':'否'):(calibrationRates.has(key)?pct(calibration[key]):fmt(calibration[key]));
   table(app.querySelector('#run-calibration'),Object.keys(calibrationLabels).filter(key=>key in calibration).map(key=>({指标:calibrationLabels[key],数值:calibrationValue(key)})));
   if(orders.length)table(app.querySelector('#run-orders'),orders.slice(-100).map(row=>({日期:String(row.trade_date).slice(0,10),股票:row.stock_code,方向:row.Side,股数:row.Size,价格:row.Price,费用:row.Fees})));
   else app.querySelector('#run-orders').innerHTML='<p class="muted">本次运行没有成交</p>';
