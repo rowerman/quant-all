@@ -9,8 +9,9 @@ const rateKeys=new Set(['total_return','annual_return','annual_volatility','max_
 // 规则拒单原因与执行校准字段的中文名
 const reasonLabels={suspended:'停牌不能交易',limit_up_or_not_buyable:'涨停或开盘不可买',limit_down_or_not_sellable:'跌停或开盘不可卖'};
 const calibrationLabels={cash_buffer:'现金缓冲（执行层预留）',allocation_iterations:'资金分配迭代次数',allocation_converged:'资金分配是否收敛',carry_iterations:'现金补回的调整次数',carry_converged:'现金补回是否收敛',probe_orders:'探针成交笔数',probe_buys:'探针买入笔数',probe_sells:'探针卖出笔数',planned_orders:'计划下单格数',rebalance_orders:'其中再平衡格数',rejected_orders:'规则拒单笔数',forced_liquidations:'退市强制清算笔数',retry_attempts:'被拦交易的重试尝试次数',retried_filled_cells:'非调仓日补单成交格数',pending_at_end_cells:'区间末仍未解决的待重试格数',cash_shrunk_cells:'现金缩水行数',cash_limited_cells:'新补回事件数',cash_limited_value:'新补回事件缩水金额（元）',cash_retry_attempts:'现金补回的尝试格次',cash_retry_filled_cells:'现金补回补齐格数',cash_pending_at_end_cells:'区间末仍未补回的格数',allocated_cells:'分配出目标股数的格数',bumped_one_lot_cells:'用取整余量补到一手的格数',unaffordable_lot_cells:'一手金额超出预算、未能建仓的格数',no_price_cells:'缺执行价、未下单的格数',final_orders:'最终成交笔数',final_buys:'最终买入笔数',final_sells:'最终卖出笔数',fallback_fee_orders:'没有成交估计、按意图方向计费笔数',fee_matrix_max_diff:'费用矩阵核对最大偏差（元）',cash_clipped_cells:'被现金裁剪的格数',allocation_gap_max_shares:'实际持股与目标股数的最大差额（股）',target_cells:'目标下单格数',weight_deviation_median:'权重偏差中位数',weight_deviation_p95:'权重偏差 95 分位',weight_deviation_max:'权重偏差最大值',weight_deviation_over_1pct:'权重偏差超 1% 的格数'};
+Object.assign(calibrationLabels,{single_cap_days:'触发单股上限的调仓日数',single_cap_cells:'单股上限封顶格数',single_cap_excess_weight:'单股上限截下的权重',single_cap_residual_cash:'单股上限未再分配的现金权重',single_cap_max_weight:'单股封顶后的最大目标权重',turnover_limited_days:'触发换手上限的调仓日数',turnover_limited_cells:'换手约束缩放格数',turnover_before_max:'约束前最大计划单边换手',turnover_after_max:'约束后最大计划单边换手',turnover_limit_error_max:'计划换手超限最大误差'});
 // 需要按百分比展示的执行校准字段
-const calibrationRates=new Set(['cash_buffer','weight_deviation_median','weight_deviation_p95','weight_deviation_max']);
+const calibrationRates=new Set(['cash_buffer','weight_deviation_median','weight_deviation_p95','weight_deviation_max','single_cap_excess_weight','single_cap_residual_cash','single_cap_max_weight','turnover_before_max','turnover_after_max','turnover_limit_error_max']);
 
 // 读取JSON接口，错误显示服务端提供的原因。
 async function request(url,init){const r=await fetch(url,init);const data=await r.json();if(!r.ok)throw new Error(data.message||'接口请求失败');return data;}
@@ -224,6 +225,10 @@ async function strategyPage(version){
       <label>权重方式<select name="weighting"><option value="equal">等权</option><option value="market_cap">市值加权</option></select></label>
       <label>调仓频率<select name="frequency"><option value="daily">日频</option><option value="weekly">周频</option><option value="monthly" selected>月频</option></select></label>
     </div><p class="mini muted">固定口径：Top-N 选股、只做多、收盘生成信号、下一交易日开盘执行。</p></section>
+    <section class="card"><h2>风险约束</h2><div class="form-grid">
+      <label><span><input type="checkbox" name="max_single_enabled">启用单股上限</span><input name="max_single_weight" type="number" min="0.01" max="100" step="0.5" value="10" disabled required></label>
+      <label><span><input type="checkbox" name="turnover_enabled">启用单边换手上限</span><input name="max_one_way_turnover" type="number" min="0" max="100" step="1" value="30" disabled required></label>
+    </div><p class="mini muted">单股上限超出的权重在同一入选池内再分配；换手上限包含现金变化，超过时沿当前组合向目标组合整体缩放。</p></section>
     <section class="card"><h2>执行规则</h2><div class="form-grid">
       <label>现金缓冲<input name="cash_buffer" type="number" min="0" max="0.499999" step="0.005" value="0.02" required></label>
       <label>交易单位<input value="100 股" readonly></label>
@@ -238,20 +243,29 @@ async function strategyPage(version){
     <div class="form-actions"><button type="submit">创建策略</button><a class="button-link secondary-link" href="#/backtest">取消</a></div>
   </form>`;
   const form=app.querySelector('#strategy-form'),status=app.querySelector('#strategy-status');
+  const toggleRiskInput=(checkbox,input)=>{input.disabled=!checkbox.checked;input.required=checkbox.checked;};
+  toggleRiskInput(form.querySelector('[name=max_single_enabled]'),form.querySelector('[name=max_single_weight]'));
+  toggleRiskInput(form.querySelector('[name=turnover_enabled]'),form.querySelector('[name=max_one_way_turnover]'));
+  form.querySelector('[name=max_single_enabled]').addEventListener('change',event=>toggleRiskInput(event.target,form.querySelector('[name=max_single_weight]')));
+  form.querySelector('[name=turnover_enabled]').addEventListener('change',event=>toggleRiskInput(event.target,form.querySelector('[name=max_one_way_turnover]')));
   form.querySelectorAll('.factor-enabled').forEach(input=>input.addEventListener('change',()=>{const weight=input.closest('tr').querySelector('.factor-weight');weight.disabled=!input.checked;if(input.checked&&Number(weight.value)===0)weight.value='1';}));
   form.addEventListener('submit',async event=>{
     event.preventDefault();status.className='muted';
     const data=new FormData(form);const chosen=[...form.querySelectorAll('.factor-enabled:checked')];
     const factorNames=chosen.map(input=>input.value);const factorWeights=chosen.map(input=>Number(input.closest('tr').querySelector('.factor-weight').value));
     const topN=Number(data.get('top_n')),cashBuffer=Number(data.get('cash_buffer'));
+    const maxSingleWeight=data.has('max_single_enabled')?Number(data.get('max_single_weight'))/100:null;
+    const maxOneWayTurnover=data.has('turnover_enabled')?Number(data.get('max_one_way_turnover'))/100:null;
     const costs=['commission_rate','minimum_commission','stamp_tax_rate','slippage'].map(name=>Number(data.get(name)));
     if(!String(data.get('name')).trim())return void(status.className='error',status.textContent='策略名称不能为空');
     if(!factorNames.length)return void(status.className='error',status.textContent='至少选择一个因子');
     if(factorWeights.some(value=>!Number.isFinite(value))||factorWeights.every(value=>value===0))return void(status.className='error',status.textContent='因子权重必须是数字且不能全部为 0');
     if(!Number.isInteger(topN)||topN<=0)return void(status.className='error',status.textContent='持仓只数必须是正整数');
     if(!Number.isFinite(cashBuffer)||cashBuffer<0||cashBuffer>=0.5)return void(status.className='error',status.textContent='现金缓冲必须在 0 到 0.5 之间');
+    if(maxSingleWeight!==null&&(!Number.isFinite(maxSingleWeight)||maxSingleWeight<=0||maxSingleWeight>1))return void(status.className='error',status.textContent='单股上限必须在 0 到 100% 之间');
+    if(maxOneWayTurnover!==null&&(!Number.isFinite(maxOneWayTurnover)||maxOneWayTurnover<0||maxOneWayTurnover>1))return void(status.className='error',status.textContent='单边换手上限必须在 0 到 100% 之间');
     if(costs.some(value=>!Number.isFinite(value)||value<0))return void(status.className='error',status.textContent='交易成本必须是非负数');
-    const payload={description:String(data.get('description')||''),spec:{name:String(data.get('name')).trim(),universe:data.get('universe'),signal:{factors:factorNames,weights:factorWeights,winsorize:data.has('winsorize'),standardize:data.has('standardize')},portfolio:{selection:'top_n',top_n:topN,weighting:data.get('weighting'),long_only:true},rebalance:{frequency:data.get('frequency'),signal_at:'close',execute_at:'next_open'},execution:{lot_size:100,cash_buffer:cashBuffer,reject_suspended:data.has('reject_suspended'),reject_limit_up_buy:data.has('reject_limit_up_buy'),reject_limit_down_sell:data.has('reject_limit_down_sell'),enforce_t_plus_1:data.has('enforce_t_plus_1')},costs:{commission_rate:costs[0],minimum_commission:costs[1],stamp_tax_rate:costs[2],slippage:costs[3]},benchmark:{index_code:data.get('benchmark')}}};
+    const payload={description:String(data.get('description')||''),spec:{name:String(data.get('name')).trim(),universe:data.get('universe'),signal:{factors:factorNames,weights:factorWeights,winsorize:data.has('winsorize'),standardize:data.has('standardize')},portfolio:{selection:'top_n',top_n:topN,weighting:data.get('weighting'),long_only:true},rebalance:{frequency:data.get('frequency'),signal_at:'close',execute_at:'next_open'},execution:{lot_size:100,cash_buffer:cashBuffer,reject_suspended:data.has('reject_suspended'),reject_limit_up_buy:data.has('reject_limit_up_buy'),reject_limit_down_sell:data.has('reject_limit_down_sell'),enforce_t_plus_1:data.has('enforce_t_plus_1')},risk:{max_single_weight:maxSingleWeight,max_one_way_turnover:maxOneWayTurnover},costs:{commission_rate:costs[0],minimum_commission:costs[1],stamp_tax_rate:costs[2],slippage:costs[3]},benchmark:{index_code:data.get('benchmark')}}};
     const submit=form.querySelector('[type=submit]');submit.disabled=true;status.textContent='正在创建策略…';
     try{const created=await request('/api/strategies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});preferredStrategyId=created.strategy_id;backtestOptions=null;location.hash='#/backtest';}
     catch(error){status.className='error';status.textContent=error.message;submit.disabled=false;}

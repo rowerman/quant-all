@@ -60,6 +60,7 @@ def test_strategy_api_accepts_complete_supported_configuration(client):
                 "reject_limit_down_sell": False,
                 "enforce_t_plus_1": True,
             },
+            "risk": {"max_single_weight": 0.1, "max_one_way_turnover": 0.3},
             "costs": {
                 "commission_rate": 0.0002,
                 "minimum_commission": 3.0,
@@ -75,6 +76,8 @@ def test_strategy_api_accepts_complete_supported_configuration(client):
     assert detail["spec"]["signal"]["weights"] == [1.0, -0.5]
     assert detail["spec"]["rebalance"]["frequency"] == "weekly"
     assert detail["spec"]["costs"]["slippage"] == pytest.approx(0.0008)
+    assert detail["spec"]["risk"]["max_single_weight"] == pytest.approx(0.1)
+    assert detail["spec"]["risk"]["max_one_way_turnover"] == pytest.approx(0.3)
 
 
 def test_strategy_api_rejects_invalid_weights_and_costs(client):
