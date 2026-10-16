@@ -39,3 +39,15 @@ class RunCancelled(BacktestError):
     """调用方主动取消回测。"""
 
     code = "BT-501"
+
+
+class RunNotFoundError(BacktestError):
+    """指定的回测运行不存在。"""
+
+    code = "BT-601"
+
+
+class RunConflictError(BacktestError):
+    """回测运行当前状态不允许执行请求的操作。"""
+
+    code = "BT-602"

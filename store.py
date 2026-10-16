@@ -14,7 +14,7 @@ import pandas as pd
 from backtest.builtin import BUILTINS
 from backtest.config import DEFAULT_BACKTEST_DB
 from backtest.engine import BacktestResult
-from backtest.errors import BacktestError
+from backtest.errors import BacktestError, RunConflictError, RunNotFoundError
 from backtest.metrics import summarize
 from backtest.specs import BacktestParams, StrategySpec
 
@@ -206,9 +206,31 @@ class BacktestStore:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM bt.run WHERE run_id = ?", [run_id]).fetchone()
             if row is None:
-                raise BacktestError(f"回测运行不存在：{run_id}")
+                raise RunNotFoundError(f"回测运行不存在：{run_id}")
             columns = [item[0] for item in conn.execute("DESCRIBE bt.run").fetchall()]
         return dict(zip(columns, row))
+
+    def delete_run(self, run_id: str) -> None:
+        """事务删除一次已结束运行及其全部结果表记录。
+
+        参数:
+            run_id: 要删除的回测运行标识。
+        """
+        with self._connect() as conn:
+            row = conn.execute("SELECT status FROM bt.run WHERE run_id = ?", [run_id]).fetchone()
+            if row is None:
+                raise RunNotFoundError(f"回测运行不存在：{run_id}")
+            if row[0] == "running":
+                raise RunConflictError(f"回测运行仍在执行，不能删除：{run_id}")
+            conn.begin()
+            try:
+                for table in RESULT_TABLES:
+                    conn.execute(f"DELETE FROM bt.{table} WHERE run_id = ?", [run_id])
+                conn.execute("DELETE FROM bt.run WHERE run_id = ?", [run_id])
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
     def list_runs(self, limit: int = 50) -> list[dict]:
         """按开始时间倒序列出回测运行。

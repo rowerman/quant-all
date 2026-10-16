@@ -8,7 +8,7 @@ import pytest
 
 from backtest import BacktestParams, BacktestResult, StrategySpec
 from backtest.builtin import BUILTINS, MOM20_ID
-from backtest.errors import BacktestError
+from backtest.errors import BacktestError, RunConflictError, RunNotFoundError
 from backtest.specs import PortfolioSpec
 from backtest.store import BacktestStore
 
@@ -77,6 +77,50 @@ def test_run_lifecycle_reports_status_and_list(store):
     assert runs[0]["run_id"] == run_id
     assert runs[0]["strategy_hash"] == "abc"
     assert runs[0]["metrics"] == {"total_return": 0.01}
+
+
+def test_delete_run_removes_run_and_all_result_rows(store):
+    """删除已结束运行时，所有结果表不能留下孤立行。"""
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-05"))
+    store.finish_run(run_id, _result())
+    with store._connect() as conn:
+        for table in ("position", "order", "rejection", "target_weight", "holding", "liquidation", "allocation"):
+            conn.execute(f"INSERT INTO bt.{table} (run_id) VALUES (?)", [run_id])
+
+    store.delete_run(run_id)
+
+    with store._connect() as conn:
+        assert conn.execute("SELECT count(*) FROM bt.run WHERE run_id = ?", [run_id]).fetchone()[0] == 0
+        for table in ("daily", "position", "order", "rejection", "target_weight", "holding", "liquidation", "allocation"):
+            assert conn.execute(f"SELECT count(*) FROM bt.{table} WHERE run_id = ?", [run_id]).fetchone()[0] == 0
+    with pytest.raises(RunNotFoundError):
+        store.get_run(run_id)
+
+
+def test_delete_run_rejects_running_and_missing_runs(store):
+    strategy_id, version = store.create_strategy(StrategySpec())
+    running = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-05"))
+    with pytest.raises(RunConflictError, match="仍在执行"):
+        store.delete_run(running)
+    with pytest.raises(RunNotFoundError, match="不存在"):
+        store.delete_run("missing")
+
+
+def test_delete_run_accepts_failed_and_cancelled_runs(store):
+    strategy_id, version = store.create_strategy(StrategySpec())
+    failed = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-05"))
+    store.fail_run(failed, BacktestError("失败"))
+    cancelled = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-05"))
+    store.cancel_run(cancelled)
+
+    store.delete_run(failed)
+    store.delete_run(cancelled)
+
+    with pytest.raises(RunNotFoundError):
+        store.get_run(failed)
+    with pytest.raises(RunNotFoundError):
+        store.get_run(cancelled)
 
 
 def test_run_records_universe_and_benchmark(store):
