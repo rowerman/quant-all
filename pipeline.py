@@ -12,8 +12,10 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import Callable, Iterator
 
-from backtest.data import load_market_data
-from backtest.engine import run_backtest
+from backtest.chunked import plan_chunks, run_chunked
+from backtest.config import MAX_PANEL_CELLS
+from backtest.data import estimate_panel, load_market_data
+from backtest.engine import BacktestResult, run_backtest
 from backtest.errors import BacktestError, RunCancelled
 from backtest.logging_conf import get_logger
 from backtest.specs import BacktestParams, BenchmarkSpec, StrategySpec
@@ -61,14 +63,16 @@ def effective_spec(spec: StrategySpec, request: RunRequest) -> StrategySpec:
     return replace(spec, **changes) if changes else spec
 
 
-def _run_in_thread(spec: StrategySpec, params: BacktestParams, data, events: Queue) -> None:
-    """在工作线程里执行回测，把阶段事件推进队列。"""
+def _run_in_thread(runner: Callable[[Callable[[str, dict], None]], BacktestResult], events: Queue) -> None:
+    """在工作线程里执行回测，把阶段事件推进队列。
 
-    def report(stage: str, payload: dict) -> None:
-        events.put((stage, payload))
+    参数:
+        runner: 接收阶段回调、返回回测结果的执行函数。
+        events: 阶段事件队列。
+    """
 
     try:
-        result = run_backtest(data, spec, params, progress=report)
+        result = runner(lambda stage, payload: events.put((stage, payload)))
         events.put(("__result__", result))
     except BaseException as error:  # 线程里的异常要带回主流程
         events.put(("__error__", error))
@@ -113,24 +117,53 @@ def iter_run(
     result_holder: dict = {}
     try:
         _check_cancelled(should_cancel)
-        data = load_market_data(
-            params.start,
-            params.end,
-            list(spec.signal.factors),
-            universe=spec.universe,
-            benchmark_code=spec.benchmark.index_code,
+        days, stocks = estimate_panel(params.start, params.end, spec.universe)
+        # 面板超过单块上限就按时间分块；分块结果与不分块逐位一致，只是逐块占用内存
+        windows = (
+            plan_chunks(params.start, params.end, spec.universe)
+            if days * stocks > MAX_PANEL_CELLS
+            else None
         )
-        yield (
-            "load",
-            {
-                "trading_days": int(len(data.index)),
-                "stocks": int(len(data.columns)),
-                "factors": list(data.factors),
-                "membership": data.membership is not None,
-                "benchmark": data.benchmark is not None,
-            },
-        )
-        worker = Thread(target=_run_in_thread, args=(spec, params, data, events), daemon=True)
+        if windows is None:
+            data = load_market_data(
+                params.start,
+                params.end,
+                list(spec.signal.factors),
+                universe=spec.universe,
+                benchmark_code=spec.benchmark.index_code,
+            )
+            yield (
+                "load",
+                {
+                    "trading_days": int(len(data.index)),
+                    "stocks": int(len(data.columns)),
+                    "factors": list(data.factors),
+                    "membership": data.membership is not None,
+                    "benchmark": data.benchmark is not None,
+                },
+            )
+            runner = lambda report: run_backtest(data, spec, params, progress=report)  # noqa: E731
+        else:
+            logger.info("面板 %d×%d 超过单块上限，改为 %d 块分块回测", days, stocks, len(windows))
+            yield (
+                "load",
+                {
+                    "trading_days": int(days),
+                    "stocks": int(stocks),
+                    "factors": list(spec.signal.factors),
+                    "membership": spec.universe != "all_a",
+                    "benchmark": spec.benchmark.index_code is not None,
+                    "chunks": len(windows),
+                },
+            )
+            runner = lambda report: run_chunked(  # noqa: E731
+                spec,
+                params,
+                progress=report,
+                should_cancel=should_cancel,
+                windows=windows,
+            )
+        worker = Thread(target=_run_in_thread, args=(runner, events), daemon=True)
         worker.start()
         while True:
             try:

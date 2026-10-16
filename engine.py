@@ -35,6 +35,7 @@ from backtest.allocation import (
     execution_cash,
     execution_price,
     extend_carry,
+    pending_carry,
 )
 from backtest.config import MAX_ALLOCATION_ITERATIONS
 from backtest.data import PRICE_ADJUST, MarketData
@@ -44,6 +45,7 @@ from backtest.metrics import summarize
 from backtest.orders import (
     PROBE_COLUMNS,
     OrderPlan,
+    RuleState,
     baseline_inputs,
     build_order_plan,
     execution_targets,
@@ -55,6 +57,38 @@ from backtest.specs import BacktestParams, StrategySpec
 logger = get_logger("backtest.engine")
 
 Progress = Callable[[str, dict], None]
+
+
+@dataclass(frozen=True)
+class ChunkState:
+    """分块回测的跨块交接状态。
+
+    ``cash`` 与 ``shares`` 是上一块最后一个交易日收盘的真实现金与持股，
+    ``mark_prices`` 是同一时点的估值价（停牌股沿用前收盘），
+    ``rule_state`` 是规则状态机，``carry`` 是下一交易日仍要补回的目标权重。
+    """
+
+    cash: float
+    shares: pd.Series
+    mark_prices: pd.Series
+    last_prices: pd.Series
+    rule_state: RuleState
+    carry: pd.Series
+
+
+@dataclass(frozen=True)
+class SeedPlan:
+    """跨块播种的执行口径。
+
+    ``shares`` 是上一块收盘持股，``percent`` 是预热行的目标百分比（基准遍与探针遍用），
+    ``fixed_fees`` 是预热行的固定费用：数值等于播种成交金额的相反数，使播种那笔交易的
+    现金变化精确为 0（成交金额与固定费用在浮点里正好相加为 0），组合因此从上一块收盘
+    的现金与持股起步，结果与不分块逐位一致。
+    """
+
+    shares: pd.Series
+    percent: pd.Series
+    fixed_fees: pd.Series
 
 
 @dataclass(frozen=True)
@@ -75,6 +109,7 @@ class BacktestResult:
     metadata: dict
     liquidations: pd.DataFrame = field(default_factory=pd.DataFrame)
     allocations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    final_state: "ChunkState | None" = None
 
 
 def _notify(progress: Progress | None, stage: str, **payload) -> None:
@@ -92,6 +127,7 @@ def _run_portfolio(
     fees: pd.DataFrame | None,
     fixed_fees: pd.DataFrame | None,
     size_type: str = "targetpercent",
+    init_cash: float | None = None,
 ):
     """调用一次 VectorBT 的 ``from_orders``。
 
@@ -105,6 +141,8 @@ def _run_portfolio(
         fees: 逐格费率；None 表示免费。
         fixed_fees: 逐格固定费用；None 表示没有。
         size_type: VectorBT 的下单量口径。
+        init_cash: 初始资金；None 表示用回测参数里的初始资金。分块回测从第二块起
+            用「交接现金 + 交接持仓按播种价估值」当初始资金。
     """
     try:
         import vectorbt as vbt
@@ -118,7 +156,7 @@ def _run_portfolio(
             fixed_fees=0.0 if fixed_fees is None else fixed_fees,
             slippage=strategy.costs.slippage,
             size_granularity=strategy.execution.lot_size,
-            init_cash=float(params.init_cash),
+            init_cash=float(params.init_cash if init_cash is None else init_cash),
             cash_sharing=True,
             call_seq="auto",
             # 100 股取整后必然与原目标有零头，allow_partial=False 会把订单整笔拒掉
@@ -176,11 +214,29 @@ def _probe_frame(orders: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _daily_frame(portfolio, orders: pd.DataFrame, benchmark: pd.Series | None) -> pd.DataFrame:
-    """标准化每日组合结果。"""
-    value = portfolio.value()
-    daily = pd.DataFrame({"portfolio_value": value, "cash": portfolio.cash()})
-    daily.index = pd.DatetimeIndex(value.index)
+def derive_daily(
+    portfolio_value: pd.Series,
+    cash: pd.Series,
+    orders: pd.DataFrame,
+    benchmark: pd.Series | None = None,
+) -> pd.DataFrame:
+    """由组合价值、现金与成交明细推导标准化日结果。
+
+    分块回测拼接后也走这里，保证单块与分块的派生列口径完全一致。
+
+    参数:
+        portfolio_value: 逐日组合价值。
+        cash: 逐日现金。
+        orders: 成交明细，含 ``trade_date``、``Size``、``Price``、``Fees``。
+        benchmark: 基准指数收盘价；None 表示不算超额。
+    """
+    daily = pd.DataFrame(
+        {
+            "portfolio_value": pd.Series(portfolio_value).astype("float64"),
+            "cash": pd.Series(cash).astype("float64"),
+        }
+    )
+    daily.index = pd.DatetimeIndex(daily.index)
     daily["holdings_value"] = daily["portfolio_value"] - daily["cash"]
     daily["return"] = daily["portfolio_value"].pct_change().fillna(0.0)
     daily["nav"] = daily["portfolio_value"] / float(daily["portfolio_value"].iloc[0])
@@ -202,6 +258,11 @@ def _daily_frame(portfolio, orders: pd.DataFrame, benchmark: pd.Series | None) -
         daily["benchmark_nav"] = (1.0 + daily["benchmark_return"]).cumprod()
         daily["excess_return"] = daily["return"] - daily["benchmark_return"]
     return daily
+
+
+def _daily_frame(portfolio, orders: pd.DataFrame, benchmark: pd.Series | None) -> pd.DataFrame:
+    """标准化每日组合结果。"""
+    return derive_daily(portfolio.value(), portfolio.cash(), orders, benchmark)
 
 
 def _holdings_frame(portfolio) -> pd.DataFrame:
@@ -263,25 +324,25 @@ def _fee_witnesses(
     }
 
 
-def _weight_witnesses(plan: OrderPlan, holdings: pd.DataFrame) -> dict:
+def weight_witnesses(target_percent: pd.DataFrame, holdings: pd.DataFrame) -> dict:
     """统计实际权重与目标权重的偏差。
 
     目标权重逐格下单后，当日收盘的实际权重应当贴近目标；偏差来自 100 股取整、
     现金不足被裁剪以及盘中与收盘的估值差。这里给出分位数作为验收口径。
 
     参数:
-        plan: 订单计划，``target_percent`` 非空表示当时提交了订单。
+        target_percent: 实际提交的目标权重矩阵，非空表示当时提交了订单。
         holdings: 逐日逐股持仓市值与权重。
     """
-    targets = plan.target_percent.to_numpy(dtype="float64")
+    targets = target_percent.to_numpy(dtype="float64")
     rows, cols = np.where(~np.isnan(targets))
     if not len(rows):
         return {"target_cells": 0, "weight_deviation_median": None, "weight_deviation_p95": None,
                 "weight_deviation_max": None, "weight_deviation_over_1pct": 0}
     realized = np.zeros_like(targets)
     if not holdings.empty:
-        holding_rows = plan.target_percent.index.get_indexer(pd.DatetimeIndex(holdings["trade_date"]))
-        holding_cols = plan.target_percent.columns.get_indexer(holdings["stock_code"])
+        holding_rows = target_percent.index.get_indexer(pd.DatetimeIndex(holdings["trade_date"]))
+        holding_cols = target_percent.columns.get_indexer(holdings["stock_code"])
         valid = (holding_rows >= 0) & (holding_cols >= 0)
         realized[holding_rows[valid], holding_cols[valid]] = holdings["weight"].to_numpy()[valid]
     deviation = np.abs(realized[rows, cols] - targets[rows, cols])
@@ -292,6 +353,11 @@ def _weight_witnesses(plan: OrderPlan, holdings: pd.DataFrame) -> dict:
         "weight_deviation_max": float(deviation.max()),
         "weight_deviation_over_1pct": int((deviation > 0.01).sum()),
     }
+
+
+def _weight_witnesses(plan: OrderPlan, holdings: pd.DataFrame) -> dict:
+    """按单块订单计划统计权重偏差。"""
+    return weight_witnesses(plan.target_percent, holdings)
 
 
 def _liquidation_records(plan: OrderPlan, orders: pd.DataFrame) -> pd.DataFrame:
@@ -384,6 +450,100 @@ def _cash_pending_on_last_day(allocation: pd.DataFrame, last_day: pd.Timestamp) 
     return int(rows["cash_limited"].astype(bool).sum())
 
 
+def seed_inputs(
+    initial_state: "ChunkState",
+    data: MarketData,
+    valuation: pd.DataFrame,
+    slippage: float,
+) -> SeedPlan:
+    """给出跨块播种的执行口径。
+
+    播种价取预热行执行价（开盘价，停牌时沿用前收盘），初始资金就是交接现金。预热行的
+    买单带一笔等额负固定费用，`成交金额 + 固定费用` 在浮点里正好相加为 0，于是这一笔
+    的现金变化精确为 0：组合从上一块收盘的现金与持股起步，后续每一天与不分块时逐位一致。
+    最终遍按目标股数下单，基准遍与探针遍按目标百分比下单，两种口径都精确落到交接持股。
+
+    参数:
+        initial_state: 上一块的收尾状态。
+        data: 本块输入面板（首行为预热行）。
+        valuation: 逐日估值价。
+        slippage: 滑点比例。
+    """
+    price_row = execution_price(data.open, valuation).iloc[0].astype("float64")
+    shares = initial_state.shares.reindex(data.columns).fillna(0.0).astype("float64")
+    held = shares > 0
+    if held.any():
+        missing = price_row.index[held.to_numpy() & ~(price_row > 0).to_numpy()]
+        if len(missing):
+            raise ExecutionError(f"分块播种缺少执行价：{list(missing[:5])}")
+    # 百分比略微放大一点，保证 VectorBT 再把百分比换算成股数并向下取整到 100 股时
+    # 正好落在交接持股上（浮点误差可能让结果差一个最小变动单位）
+    percent = (shares * price_row / float(initial_state.cash) * (1.0 + 1e-12)).astype("float64")
+    cost = shares * (price_row * (1.0 + float(slippage)))
+    return SeedPlan(
+        shares=shares,
+        percent=percent,
+        fixed_fees=(-cost).where(held, 0.0).astype("float64"),
+    )
+
+
+def _seed_target_row(size: pd.Series) -> pd.Series:
+    """把播种结果写成下单矩阵的一行：没有持仓的格子留空，不提交 0 股订单。"""
+    return size.where(size > 0, np.nan)
+
+
+def _with_seed_row(matrix: pd.DataFrame, percent: pd.Series) -> pd.DataFrame:
+    """把播种行的目标百分比写进下单矩阵。"""
+    if not len(matrix.index):
+        return matrix
+    frame = matrix.copy()
+    frame.iloc[0] = (
+        _seed_target_row(percent).reindex(matrix.columns).to_numpy(dtype="float64")
+    )
+    return frame
+
+
+def _drop_warmup_orders(orders: pd.DataFrame, index: pd.Index, warmup_rows: int) -> pd.DataFrame:
+    """丢掉预热行的成交并把订单号重新从 0 编起（预热行的播种成交不属于运行结果）。"""
+    if not warmup_rows or orders.empty:
+        return orders
+    kept = orders.loc[pd.DatetimeIndex(orders["trade_date"]) >= index[warmup_rows]].copy()
+    kept["Order Id"] = np.arange(len(kept), dtype="int64")
+    return kept.reset_index(drop=True)
+
+
+def _with_seed_fixed_fees(
+    fixed_fees: pd.DataFrame | None,
+    index: pd.Index,
+    columns: pd.Index,
+    plan: SeedPlan,
+) -> pd.DataFrame:
+    """把预热行的固定费用写进费用矩阵；没有矩阵时按面板形状新建一个。
+
+    写进去之前统一按 ``float64`` 存放：费率矩阵原本是 ``float32``，升成 ``float64`` 只是
+    精确提升，不会改变其它格子的数值，但能让「成交金额 + 固定费用」正好相加为 0。
+    """
+    frame = (
+        pd.DataFrame(0.0, index=index, columns=columns)
+        if fixed_fees is None
+        else fixed_fees
+    ).astype("float64")
+    values = plan.fixed_fees.reindex(columns).fillna(0.0).to_numpy(dtype="float64")
+    frame.iloc[0] = values
+    return frame
+
+
+def _check_seed_cash(state_cash: pd.Series, initial_state: "ChunkState", label: str) -> None:
+    """核对播种后的开盘现金与上一块收盘现金一致，防止浮点偏差悄悄改变执行口径。"""
+    if not len(state_cash.index):
+        return
+    seeded = float(state_cash.iloc[0])
+    if seeded != float(initial_state.cash):
+        raise ExecutionError(
+            f"{label} 播种后的现金 {seeded!r} 与上一块收盘现金 {float(initial_state.cash)!r} 不一致"
+        )
+
+
 def _clipped_cells(plan: OrderPlan, portfolio) -> dict:
     """核对最终一遍的实际持股是否等于分配出的目标股数。
 
@@ -416,6 +576,12 @@ def run_backtest(
     strategy: StrategySpec,
     params: BacktestParams,
     progress: Progress | None = None,
+    *,
+    initial_state: "ChunkState | None" = None,
+    warmup_rows: int = 0,
+    rebalance_days: pd.Series | None = None,
+    liquidations: pd.DataFrame | None = None,
+    chunk_boundary: bool = False,
 ) -> BacktestResult:
     """执行一次 VectorBT 回测。
 
@@ -424,6 +590,12 @@ def run_backtest(
         strategy: 策略配置。
         params: 区间与初始资金。
         progress: 可选阶段回调，签名为 ``progress(stage, payload)``。
+        initial_state: 分块回测从上一块继承的组合与规则状态；None 表示从初始资金空仓起步。
+        warmup_rows: 预热行数。分块回测的块首行只提供价格与平移口径，不下单、不进结果。
+        rebalance_days: 整段区间的调仓日掩码；None 表示按本面板现算。
+        liquidations: 整段区间的退市强制清算格；None 表示按本面板现算。
+        chunk_boundary: 本块之后还有下一块。块末仍有现金补回待办时记为跨块携带，
+            不算未收敛。
     """
     if not data.index.size:
         raise ExecutionError("回测数据为空")
@@ -433,10 +605,12 @@ def run_backtest(
             "请用 load_market_data(universe=...) 取数"
         )
     data = data.crop(params.start, params.end)
+    if warmup_rows and warmup_rows >= len(data.index):
+        raise ExecutionError(f"预热行数 {warmup_rows} 不小于面板交易日数 {len(data.index)}")
     started = time.perf_counter()
     valuation = data.close.ffill(axis=0)
     target_weights, ranks = build_target_weights(
-        data, strategy.signal, strategy.portfolio, strategy.rebalance
+        data, strategy.signal, strategy.portfolio, strategy.rebalance, rebalance_days
     )
     target_weights, single_cap_stats = cap_single_weights(
         target_weights, strategy.risk.max_single_weight
@@ -450,21 +624,58 @@ def run_backtest(
     )
 
     targets = execution_targets(target_weights)
-    probe = _run_portfolio(data, valuation, targets, params, strategy, None, None)
+    seed_plan = None
+    init_cash = float(params.init_cash)
+    if initial_state is not None:
+        seed_plan = seed_inputs(
+            initial_state, data, valuation, float(strategy.costs.slippage)
+        )
+        # 播种的现金变化为 0，组合直接从上一块收盘的现金起步
+        init_cash = float(initial_state.cash)
+    probe_size = targets if seed_plan is None else _with_seed_row(targets, seed_plan.percent)
+    probe = _run_portfolio(
+        data,
+        valuation,
+        probe_size,
+        params,
+        strategy,
+        None,
+        None if seed_plan is None else _with_seed_fixed_fees(None, targets.index, targets.columns, seed_plan),
+        init_cash=init_cash,
+    )
     probe_orders = _probe_frame(_order_records(probe, "探针运行"))
+    if warmup_rows:
+        stamps = pd.DatetimeIndex(probe_orders["trade_date"])
+        probe_orders = probe_orders.loc[stamps >= data.index[warmup_rows]].reset_index(drop=True)
     del probe  # 探针只提供成交明细，矩阵尽早释放
     _notify(progress, "probe", probe_orders=int(len(probe_orders)))
 
     # 基准遍：规则照过滤、费用照收，只是按留了缓冲的目标百分比下单，用来提供分配预算
     budget_scale = 1.0 - float(strategy.execution.cash_buffer)
     baseline_targets, baseline_fees, baseline_fixed = baseline_inputs(
-        data, targets, strategy.execution, probe_orders, strategy.costs
+        data,
+        targets,
+        strategy.execution,
+        probe_orders,
+        strategy.costs,
+        liquidations,
+        None if initial_state is None else initial_state.rule_state,
+        warmup_rows,
     )
+    baseline_size = baseline_targets * budget_scale
+    baseline_fixed_fees = baseline_fixed
+    if seed_plan is not None:
+        baseline_size = _with_seed_row(baseline_size, seed_plan.percent)
+        baseline_fixed_fees = _with_seed_fixed_fees(
+            baseline_fixed, targets.index, targets.columns, seed_plan
+        )
     baseline = _run_portfolio(
-        data, valuation, baseline_targets * budget_scale, params, strategy,
-        baseline_fees, baseline_fixed,
+        data, valuation, baseline_size, params, strategy,
+        baseline_fees, baseline_fixed_fees, init_cash=init_cash,
     )
     state_cash, state_shares = _state_frames(baseline)
+    if seed_plan is not None:
+        _check_seed_cash(state_cash, initial_state, "基准遍")
     del baseline
     _notify(
         progress,
@@ -482,6 +693,11 @@ def run_backtest(
     # 之后按分配结果收敛回真正需要补的日子。
     price = execution_price(data.open, valuation)
     carry = cash_carry(None, targets)
+    if initial_state is not None and len(carry.index):
+        # 上一块交接过来的补回目标写在预热行上，之后按当天的真实状态继续推进
+        carry.iloc[0] = (
+            initial_state.carry.reindex(targets.columns).astype("float64").to_numpy(dtype="float64")
+        )
     plan: OrderPlan | None = None
     portfolio = None
     previous_shares: pd.DataFrame | None = None
@@ -505,8 +721,8 @@ def run_backtest(
     effective_targets = targets
     risk_stats = dict(single_cap_stats)
     for iteration in range(1, MAX_ALLOCATION_ITERATIONS + 1):
-        budget = execution_budget(state_cash, state_shares, price, params.init_cash)
-        cash_open = execution_cash(state_cash, params.init_cash)
+        budget = execution_budget(state_cash, state_shares, price, init_cash)
+        cash_open = execution_cash(state_cash, init_cash)
         effective_targets, turnover_stats = constrain_one_way_turnover(
             targets,
             budget,
@@ -519,12 +735,24 @@ def run_backtest(
         candidate = build_order_plan(
             data, effective_targets, strategy.execution, probe_orders, budget, cash_open, state_shares,
             strategy.costs, carry,
+            initial_state=None if initial_state is None else initial_state.rule_state,
+            warmup_rows=warmup_rows,
+            liquidations=liquidations,
+            seed_shares=None if seed_plan is None else seed_plan.shares,
+            seed_fixed_fees=None if seed_plan is None else seed_plan.fixed_fees,
         )
         if (
             previous_shares is not None
             and _same_matrix(previous_shares, candidate.shares)
             and _same_matrix(previous_carry, carry)
             and _same_matrix(previous_effective_targets, effective_targets)
+            # 分块时块末还有没补成的现金缺口就继续重算：这些格子本来会在后面的交易日补回，
+            # 分块必须在块内把固定点走完，否则交接给下一块的状态会停在不同的迭代轮次上。
+            # 单块运行保持原有判据，行为与元数据不变。
+            and (
+                not chunk_boundary
+                or _cash_pending_on_last_day(candidate.allocation, effective_targets.index[-1]) == 0
+            )
         ):
             converged = True
             break
@@ -537,9 +765,11 @@ def run_backtest(
             )
         portfolio = _run_portfolio(
             data, valuation, candidate.shares, params, strategy, candidate.fees,
-            candidate.fixed_fees, size_type="targetamount",
+            candidate.fixed_fees, size_type="targetamount", init_cash=init_cash,
         )
         state_cash, state_shares = _state_frames(portfolio)
+        if seed_plan is not None:
+            _check_seed_cash(state_cash, initial_state, "最终遍")
         plan = candidate
         last_plan_carry = carry
         previous_shares = candidate.shares
@@ -573,6 +803,16 @@ def run_backtest(
             and previous_cash_events == cash_events
             and previous_shares is not None
             and _same_masked_matrix(previous_shares, candidate.shares, original_target_mask)
+            # 分块运行时额外要求目标股数与补回目标本身稳定：只比「原始目标格」会让结果
+            # 依赖迭代停在哪一轮，从而依赖回测区间的终点，分块与不分块就对不上了
+            and (
+                not chunk_boundary
+                or (
+                    _same_matrix(previous_shares, candidate.shares)
+                    and _same_matrix(previous_carry, carry)
+                    and _same_matrix(previous_effective_targets, effective_targets)
+                )
+            )
             and allocation_witnesses["cash_clipped_cells"] == 0
             and no_pending
         ):
@@ -598,12 +838,13 @@ def run_backtest(
     )
 
     orders = _order_records(portfolio, "最终运行")
+    orders = _drop_warmup_orders(orders, data.index, warmup_rows)
     witnesses = {**_fee_witnesses(orders, plan), **_clipped_cells(plan, portfolio)}
     _notify(progress, "execute", **witnesses)
 
     daily = _daily_frame(portfolio, orders, data.benchmark)
     holdings = _holdings_frame(portfolio)
-    liquidations = _liquidation_records(plan, orders)
+    liquidation_records = _liquidation_records(plan, orders)
     # 区间末仍被现金限制、来不及补回的格子（末日的补回目标没有下一交易日可落）
     last_allocations = plan.allocation.loc[
         pd.DatetimeIndex(plan.allocation["trade_date"]) == effective_targets.index[-1]
@@ -614,6 +855,8 @@ def run_backtest(
         )
     else:
         pending_at_end = int(last_allocations["cash_limited"].astype(bool).sum())
+    if plan.rule_state is None:
+        raise ExecutionError("订单计划缺少规则状态，无法交接给下一块")
     calibration = {
         "cash_buffer": float(strategy.execution.cash_buffer),
         "allocation_iterations": int(iteration),
@@ -622,6 +865,7 @@ def run_backtest(
         "carry_converged": bool(carry_converged),
         "cash_retry_filled_cells": cash_retry_filled(carry, plan.allocation),
         "cash_pending_at_end_cells": pending_at_end,
+        "cash_carry_over_cells": int(pending_at_end if chunk_boundary else 0),
         **risk_stats,
         **plan.plan_stats,
         **witnesses,
@@ -658,7 +902,7 @@ def run_backtest(
         params.end,
         len(orders),
         len(plan.rejection),
-        len(liquidations),
+        len(liquidation_records),
         metadata["elapsed_seconds"],
     )
     return BacktestResult(
@@ -671,8 +915,16 @@ def run_backtest(
         rejections=plan.rejection,
         metrics=summarize(daily),
         metadata=metadata,
-        liquidations=liquidations,
+        liquidations=liquidation_records,
         allocations=plan.allocation,
+        final_state=ChunkState(
+            cash=float(state_cash.iloc[-1]),
+            shares=state_shares.iloc[-1].astype("float64"),
+            mark_prices=valuation.iloc[-1].astype("float64"),
+            last_prices=execution_price(data.open, valuation).iloc[-1].astype("float64"),
+            rule_state=plan.rule_state,
+            carry=pending_carry(carry, plan.allocation, effective_targets),
+        ),
     )
 
 

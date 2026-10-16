@@ -10,8 +10,8 @@ from backtest.data import (
     PRICE_ADJUST,
     STATE_ADJUST,
     _load_field,
-    _load_benchmark,
     _load_versions,
+    load_benchmark,
     load_market_data,
 )
 from backtest.errors import DataAlignmentError, ResourceLimitError, SpecError
@@ -98,7 +98,7 @@ def test_benchmark_metadata_and_alignment(monkeypatch):
         "load_index_basic",
         lambda *args, **kwargs: pd.DataFrame({"index_name": ["300收益"]}),
     )
-    series, info = _load_benchmark("H00300.CSI", "2024-01-02", "2024-01-03", index, None)
+    series, info = load_benchmark("H00300.CSI", "2024-01-02", "2024-01-03", index, None)
     assert series.tolist() == [1000.0, 1001.0]
     assert info == {
         "code": "H00300.CSI",
@@ -120,7 +120,7 @@ def test_benchmark_missing_day_is_an_error(monkeypatch):
         ),
     )
     with pytest.raises(DataAlignmentError, match="缺少 1 个回测交易日"):
-        _load_benchmark("H00300.CSI", "2024-01-02", "2024-01-03", index, None)
+        load_benchmark("H00300.CSI", "2024-01-02", "2024-01-03", index, None)
 
 
 def test_price_fields_use_adjusted_prices(monkeypatch):

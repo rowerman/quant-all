@@ -53,6 +53,9 @@ PANEL_FIELDS = PRICE_FIELDS + FLAG_FIELDS + VALUE_FIELDS
 PRICE_ADJUST = "qfq"
 STATE_ADJUST = "raw"
 
+# 退市强制清算候选的列，与 backtest.orders.LIQUIDATION_COLUMNS 一致
+LIQUIDATION_COLUMNS = ("trade_date", "stock_code", "price", "delist_date")
+
 
 @dataclass(frozen=True)
 class MarketData:
@@ -294,12 +297,86 @@ def _stock_upper_bound(start: str, end: str, db_path: Path | str | None) -> int:
     return int(alive.sum())
 
 
-def _load_benchmark(
+def estimate_panel(
+    start: str,
+    end: str,
+    universe: str = "all_a",
+    *,
+    db_path: Path | str | None = None,
+) -> tuple[int, int]:
+    """预估区间内的交易日数与股票数上界。
+
+    分块回测用它决定要不要切块；单块取数前的规模预检也用同一份口径。
+
+    参数:
+        start: 起始交易日。
+        end: 截止交易日。
+        universe: 股票池标识。
+        db_path: 行情库路径。
+    """
+    spec = resolve_universe(universe)
+    stocks = universe_stocks(spec, start, end, db_path=db_path)
+    days = _trade_days(start, end, db_path)
+    return days, len(stocks) if stocks else _stock_upper_bound(start, end, db_path)
+
+
+def load_liquidation_candidates(
+    start: str,
+    end: str,
+    *,
+    db_path: Path | str | None = None,
+) -> pd.DataFrame:
+    """读取整段区间的退市强制清算候选：每只退市股在区间内最后一只有价行情日。
+
+    分块回测必须一次算好整段区间的清算候选：按块现算时，持仓股最后一条行情日
+    正好落在块边界，清算会被记到下一块的预热行，与原块的日结果打架。
+
+    口径与 :func:`backtest.orders.liquidation_cells` 的面板版一致：退市日不晚于区间末、
+    最后一只有价行情日早于区间末（最后一天仍在交易的股票不按清算处理）。
+
+    参数:
+        start: 起始交易日。
+        end: 截止交易日。
+        db_path: 行情库路径。
+    """
+    frame = db_query(
+        """
+        WITH delisted AS (
+            SELECT DISTINCT stock_code, delist_date
+            FROM md.daily_bar
+            WHERE delist_date IS NOT NULL AND delist_date <= CAST(? AS DATE)
+        ),
+        last_priced AS (
+            SELECT b.stock_code, MAX(b.trade_date) AS trade_date
+            FROM md.daily_bar b
+            WHERE b.trade_date >= CAST(? AS DATE) AND b.trade_date < CAST(? AS DATE)
+              AND b.open IS NOT NULL
+              AND b.stock_code IN (SELECT stock_code FROM delisted)
+            GROUP BY b.stock_code
+        )
+        SELECT b.trade_date, b.stock_code, b.open AS price, d.delist_date
+        FROM last_priced l
+        JOIN md.daily_bar b
+          ON b.stock_code = l.stock_code AND b.trade_date = l.trade_date
+        JOIN delisted d ON d.stock_code = l.stock_code
+        ORDER BY b.trade_date, b.stock_code
+        """,
+        [start, start, end],
+        path=db_path,
+    )
+    if frame.empty:
+        return pd.DataFrame(columns=list(LIQUIDATION_COLUMNS))
+    frame["trade_date"] = pd.to_datetime(frame["trade_date"])
+    frame["delist_date"] = pd.to_datetime(frame["delist_date"])
+    return frame[list(LIQUIDATION_COLUMNS)]
+
+
+def load_benchmark(
     code: str | None,
     start: str,
     end: str,
     index: pd.DatetimeIndex,
-    db_path: Path | str | None,
+    db_path: Path | str | None = None,
 ) -> tuple[pd.Series | None, dict | None]:
     """读取基准指数收盘价、严格对齐交易日并返回口径说明。"""
     if not code:
@@ -336,6 +413,8 @@ def load_market_data(
     db_path: Path | str | None = None,
     factor_dir: Path | str | None = None,
     benchmark_code: str | None = "H00300.CSI",
+    membership_end: str | None = None,
+    stock_codes: tuple[str, ...] | None = None,
 ) -> MarketData:
     """从主库和因子目录读取回测输入。
 
@@ -347,28 +426,49 @@ def load_market_data(
         db_path: 行情库路径。
         factor_dir: 因子数据根目录。
         benchmark_code: 基准指数代码；None 表示不取基准。
+        membership_end: 指数成分的截止日；None 表示用 ``end``。分块回测传整段区间的
+            截止日，保证每块的成分口径与不分块一致。
+        stock_codes: 外部固定的股票列；None 表示按本区间解析股票池。分块回测传整段
+            区间的股票并集，保证每块列集合一致，持仓不会因股票暂时不在本块池内而丢失。
     """
     spec = resolve_universe(universe)
-    stocks = universe_stocks(spec, start, end, db_path=db_path)
+    stocks = stock_codes if stock_codes is not None else universe_stocks(spec, start, end, db_path=db_path)
     days = _trade_days(start, end, db_path)
     expected = len(stocks) if stocks else _stock_upper_bound(start, end, db_path)
     check_limits(days, expected, MAX_TRADE_DAYS, MAX_PANEL_CELLS)
 
     frames = {name: _load_field(name, start, end, stocks, db_path) for name in PANEL_FIELDS}
-    index, columns = frames["open"].index, frames["open"].columns
+    index = frames["open"].index
+    columns = (
+        pd.Index(stocks, name=frames["open"].columns.name)
+        if stock_codes is not None
+        else frames["open"].columns
+    )
     if len(index) * len(columns) > MAX_PANEL_CELLS:
         raise ResourceLimitError(
             f"面板规模 {len(index)}×{len(columns)} 超过上限 {MAX_PANEL_CELLS} 个单元格；请缩短区间"
         )
-    frames = {
-        name: frame.reindex(index=index, columns=columns) for name, frame in frames.items()
-    }
+    aligned = {}
+    for name, frame in frames.items():
+        if name in FLAG_FIELDS:
+            value = frame.reindex(index=index, columns=columns, fill_value=False).astype(bool)
+        elif name in PRICE_FIELDS or name in VALUE_FIELDS:
+            value = frame.reindex(index=index, columns=columns)
+            value = value.astype("float32")
+        else:
+            value = frame.reindex(index=index, columns=columns)
+        aligned[name] = value
+    frames = aligned
     factors = {
         name: _load_factor(name, start, end, index, columns, stocks, factor_dir)
         for name in factor_names
     }
     membership = (
-        membership_frame(spec, index, columns, end, db_path=db_path) if spec.is_index else None
+        membership_frame(
+            spec, index, columns, end if membership_end is None else membership_end, db_path=db_path
+        )
+        if spec.is_index
+        else None
     )
     basic = quant.load_stock_basic(db_path=db_path)
     indexed = basic.set_index("stock_code")
@@ -387,7 +487,7 @@ def load_market_data(
         len(columns),
         list(factors),
     )
-    benchmark, benchmark_info = _load_benchmark(benchmark_code, start, end, index, db_path)
+    benchmark, benchmark_info = load_benchmark(benchmark_code, start, end, index, db_path)
     return MarketData(
         factors=factors,
         list_date=list_date,

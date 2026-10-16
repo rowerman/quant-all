@@ -55,6 +55,20 @@ WEIGHT_EPS = 1e-12
 
 
 @dataclass(frozen=True)
+class RuleState:
+    """规则状态机在某一时点的状态，用于分块回测跨块交接。
+
+    ``held`` 表示是否持仓，``shadow`` 是上一个已知的目标权重，``pending`` 是被规则
+    拦下、等下一个交易日继续尝试的目标权重（``NaN`` 表示没有待重试的格子）。
+    三个序列都以股票代码为索引，跨块交接时按股票对齐，不受股票池变化影响。
+    """
+
+    held: pd.Series
+    shadow: pd.Series
+    pending: pd.Series
+
+
+@dataclass(frozen=True)
 class OrderPlan:
     """VectorBT 订单矩阵、规则拒单与计划期统计。
 
@@ -71,6 +85,7 @@ class OrderPlan:
     liquidations: pd.DataFrame
     allocation: pd.DataFrame
     plan_stats: dict
+    rule_state: RuleState | None = None
 
 
 def execution_targets(target_weights: pd.DataFrame) -> pd.DataFrame:
@@ -206,7 +221,9 @@ def apply_rules(
     execution: ExecutionSpec,
     liquidations: pd.DataFrame | None = None,
     carry: pd.DataFrame | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame, dict]:
+    initial_state: RuleState | None = None,
+    warmup_rows: int = 0,
+) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame, dict, RuleState]:
     """按 A 股规则过滤订单，被拦住的格子置 ``NaN``（保持原仓位）。
 
     被拦下的格子不会丢状态：它进入待重试，之后每个交易日尝试一次，直到成交或者
@@ -224,9 +241,12 @@ def apply_rules(
             停牌规则，按最后一条有效行情的开盘价卖出。
         carry: 被现金缩小的买单在下一交易日的补回目标，来自
             :func:`backtest.allocation.cash_carry`；None 表示没有补回目标。
+        initial_state: 分块回测从上一块继承的规则状态；None 表示空仓起步。
+        warmup_rows: 预热行数（分块回测的块首行），这些行只提供价格与平移口径，
+            不参与执行、不改状态、不产生重试尝试。
 
     返回:
-        ``(提交的目标权重, 拒单明细, 意图方向矩阵, 实际提交的清算明细, 重试统计)``；
+        ``(提交的目标权重, 拒单明细, 意图方向矩阵, 实际提交的清算明细, 重试统计, 收尾状态)``；
         方向矩阵 1 买 / -1 卖 / 0 再平衡；重试统计含 ``retry_attempts``（非首日的
         尝试次数）、``retried_filled_cells``（非调仓日补单成功格数）、
         ``pending_at_end_cells``（区间末仍未解决格数）、``cash_retry_attempts``
@@ -254,15 +274,31 @@ def apply_rules(
     blocked = {reason: np.zeros(planned.shape, dtype=bool) for reason in
                ("suspended", "limit_up_or_not_buyable", "limit_down_or_not_sellable")}
     has_target_row = ~np.isnan(planned).all(axis=1)
-    held = np.zeros(planned.shape[1], dtype=bool)
-    shadow = np.zeros(planned.shape[1], dtype="float64")
+    if initial_state is None:
+        held = np.zeros(planned.shape[1], dtype=bool)
+        shadow = np.zeros(planned.shape[1], dtype="float64")
+    else:
+        held = (
+            initial_state.held.reindex(targets.columns)
+            .astype("boolean")
+            .fillna(False)
+            .to_numpy(dtype=bool)
+        )
+        shadow = initial_state.shadow.reindex(targets.columns).fillna(0.0).to_numpy(dtype="float64")
     # 待重试的目标权重：被拦下的格子在这里等下一天；调仓目标行整行有值，会覆盖旧事件
-    pending = np.full(planned.shape[1], np.nan, dtype="float64")
-    pending_count = 0
+    pending = (
+        np.full(planned.shape[1], np.nan, dtype="float64")
+        if initial_state is None
+        else initial_state.pending.reindex(targets.columns).to_numpy(dtype="float64")
+    )
+    pending_count = int(np.count_nonzero(~np.isnan(pending)))
     retry_attempts = 0
     retried_filled = 0
     cash_retry_attempts = 0
     for row in range(len(planned)):
+        if row < warmup_rows:
+            # 预热行属于上一块：保留平移口径，但不执行、不改状态
+            continue
         if not (has_target_row[row] or pending_count or has_carry_row[row]):
             continue
         current = planned[row]
@@ -336,7 +372,12 @@ def apply_rules(
         "pending_at_end_cells": int(np.count_nonzero(~np.isnan(pending))),
         "cash_retry_attempts": int(cash_retry_attempts),
     }
-    return filtered, rejection, direction, executed, stats
+    state = RuleState(
+        held=pd.Series(held, index=targets.columns),
+        shadow=pd.Series(shadow, index=targets.columns),
+        pending=pd.Series(pending, index=targets.columns),
+    )
+    return filtered, rejection, direction, executed, stats, state
 
 
 def fee_matrices(
@@ -382,6 +423,9 @@ def baseline_inputs(
     execution: ExecutionSpec,
     probe: pd.DataFrame,
     costs: CostSpec | None = None,
+    liquidations: pd.DataFrame | None = None,
+    initial_state: RuleState | None = None,
+    warmup_rows: int = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """给出基准遍需要的输入：规则过滤后的目标权重与逐格费用矩阵。
 
@@ -394,14 +438,52 @@ def baseline_inputs(
         execution: 交易限制。
         probe: 探针成交明细。
         costs: 交易成本参数。
+        liquidations: 外部给定的退市强制清算格（分块回测按整段区间算好）；None 表示按面板现算。
+        initial_state: 分块回测从上一块继承的规则状态。
+        warmup_rows: 预热行数，见 :func:`apply_rules`。
+    """
+    filtered, fees, fixed_fees, _ = baseline_inputs_with_state(
+        data,
+        targets,
+        execution,
+        probe,
+        costs,
+        liquidations,
+        initial_state,
+        warmup_rows,
+    )
+    return filtered, fees, fixed_fees
+
+
+def baseline_inputs_with_state(
+    data: MarketData,
+    targets: pd.DataFrame,
+    execution: ExecutionSpec,
+    probe: pd.DataFrame,
+    costs: CostSpec | None = None,
+    liquidations: pd.DataFrame | None = None,
+    initial_state: RuleState | None = None,
+    warmup_rows: int = 0,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, RuleState]:
+    """给出基准遍输入及规则状态，供整段流式执行跨块交接。
+
+    参数与 :func:`baseline_inputs` 一致；额外返回本块结束时的规则状态。
     """
     costs = costs or CostSpec()
     side, value = probe_matrices(probe, targets.index, targets.columns)
-    filtered, _, intent, _, _ = apply_rules(data, targets, execution, liquidation_cells(data))
+    filtered, _, intent, _, _, state = apply_rules(
+        data,
+        targets,
+        execution,
+        liquidation_cells(data) if liquidations is None else liquidations,
+        None,
+        initial_state,
+        warmup_rows,
+    )
     fees, fixed_fees = fee_matrices(
         targets.index, targets.columns, filtered.notna(), side, value, intent, costs
     )
-    return filtered, fees, fixed_fees
+    return filtered, fees, fixed_fees, state
 
 
 def build_order_plan(
@@ -414,6 +496,11 @@ def build_order_plan(
     baseline_shares: pd.DataFrame,
     costs: CostSpec | None = None,
     carry: pd.DataFrame | None = None,
+    initial_state: RuleState | None = None,
+    warmup_rows: int = 0,
+    liquidations: pd.DataFrame | None = None,
+    seed_shares: pd.Series | None = None,
+    seed_fixed_fees: pd.Series | None = None,
 ) -> OrderPlan:
     """把目标权重、探针成交明细与执行预算变成最终订单计划。
 
@@ -428,12 +515,18 @@ def build_order_plan(
         costs: 交易成本参数。
         carry: 被现金缩小的买单在下一交易日的补回目标，来自
             :func:`backtest.allocation.cash_carry`；None 表示没有补回目标。
+        initial_state: 分块回测从上一块继承的规则状态。
+        warmup_rows: 预热行数，见 :func:`apply_rules`。
+        liquidations: 外部给定的退市强制清算格；None 表示按面板现算。
+        seed_shares: 分块回测的播种持股，写在预热行上；None 表示不需要播种。
+        seed_fixed_fees: 分块回测预热行的固定费用（等于播种成交金额的相反数），
+            使播种那笔的现金变化精确为 0。
     """
     costs = costs or CostSpec()
     side, value = probe_matrices(probe, targets.index, targets.columns)
-    liquidations = liquidation_cells(data)
-    filtered, rejection, direction, executed, rule_stats = apply_rules(
-        data, targets, execution, liquidations, carry
+    cells = liquidation_cells(data) if liquidations is None else liquidations
+    filtered, rejection, direction, executed, rule_stats, rule_state = apply_rules(
+        data, targets, execution, cells, carry, initial_state, warmup_rows
     )
     price = execution_price(data.open, data.close.ffill(axis=0))
     shares, allocation, allocated_direction, allocation_stats = allocate_shares(
@@ -441,6 +534,11 @@ def build_order_plan(
         execution.cash_buffer,
         carry,
     )
+    if seed_shares is not None and len(shares.index):
+        # 播种行：把上一块的收盘持股原样买回来，供后续交易日算真实差值；
+        # 没有持仓的格子留空，避免提交一笔 0 股订单
+        seed_row = seed_shares.reindex(shares.columns).fillna(0.0)
+        shares.iloc[0] = seed_row.where(seed_row > 0, np.nan).to_numpy(dtype="float64")
     # 成交估计：最终一遍每笔成交都恰好把持仓补齐到目标股数，因此「目标股数 -
     # 上一交易日收盘的目标持股」就是这一笔的真实方向与金额；用基准遍的当日收盘
     # 持股会错位一天（那边已经是执行后的持仓），股数差会系统性变成 0。
@@ -461,6 +559,12 @@ def build_order_plan(
     fees, fixed_fees = fee_matrices(
         targets.index, targets.columns, filtered.notna(), side_source, value_source, mixed, costs
     )
+    if seed_fixed_fees is not None and len(fixed_fees.index):
+        # 升成 float64 让预热行的「成交金额 + 固定费用」正好相加为 0；其它格子的数值不变
+        fixed_fees = fixed_fees.astype("float64")
+        fixed_fees.iloc[0] = (
+            seed_fixed_fees.reindex(fixed_fees.columns).fillna(0.0).to_numpy(dtype="float64")
+        )
     plan_stats = {
         "probe_orders": int((side != 0).sum()),
         "probe_buys": int((side > 0).sum()),
@@ -483,5 +587,6 @@ def build_order_plan(
         liquidations=executed,
         allocation=allocation,
         plan_stats=plan_stats,
+        rule_state=rule_state,
     )
 

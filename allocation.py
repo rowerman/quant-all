@@ -397,3 +397,57 @@ def extend_carry(carry: pd.DataFrame, targets: pd.DataFrame) -> pd.DataFrame:
         )
         extended[row] = np.where(moving, extended[row - 1], extended[row])
     return pd.DataFrame(extended, index=carry.index, columns=carry.columns)
+
+
+def pending_carry(
+    carry: pd.DataFrame | None,
+    allocation: pd.DataFrame | None,
+    targets: pd.DataFrame,
+) -> pd.Series:
+    """给出「最后一个交易日之后」仍要补回的目标权重。
+
+    :func:`cash_carry` 只把补回目标推到下一交易日，而最后一天的下一日在面板之外，
+    因此单独把「末日新产生的现金缩水」与「末日仍没成交的旧补回」取出来，供分块回测
+    交接给下一块继续补回。
+
+    参数:
+        carry: 本轮的补回目标矩阵；None 表示没有补回。
+        allocation: 逐格分配明细，含 ``trade_date``、``stock_code``、``cash_limited``、
+            ``allocated_shares``、``cash_shrunk_shares``。
+        targets: 执行日的原始目标权重矩阵。
+    """
+    out = pd.Series(np.nan, index=targets.columns, dtype="float64")
+    if not len(targets.index):
+        return out
+    last = pd.Timestamp(targets.index[-1])
+    status: dict[str, tuple[bool, float, float]] = {}
+    weights: dict[str, float] = {}
+    if allocation is not None and not allocation.empty:
+        for row in allocation.itertuples(index=False):
+            if pd.Timestamp(row.trade_date) != last:
+                continue
+            shrunk = getattr(row, "cash_shrunk_shares", np.nan)
+            shrunk = float(shrunk) if not pd.isna(shrunk) else (1.0 if row.cash_limited else 0.0)
+            status[row.stock_code] = (bool(row.cash_limited), float(row.allocated_shares), shrunk)
+            weights[row.stock_code] = float(row.target_weight)
+    previous = None
+    if carry is not None and len(carry.index):
+        last_carry = carry.iloc[-1].astype("float64")
+        if last_carry.notna().any():
+            previous = last_carry
+    # 末日仍没成交的旧补回继续往后推
+    if previous is not None:
+        for column in previous.index[previous.notna()]:
+            item = status.get(column)
+            filled = item is not None and item[1] > 0 and item[2] <= 0
+            if not filled:
+                out[column] = float(previous[column])
+    # 末日新产生的现金缩水推到下一交易日；已在旧补回里的不重复起事件
+    for column, item in status.items():
+        if not item[0]:
+            continue
+        if previous is not None and not pd.isna(previous.get(column, np.nan)):
+            continue
+        if column in weights:
+            out[column] = weights[column]
+    return out

@@ -103,6 +103,7 @@ def build_target_weights(
     signal: SignalSpec,
     portfolio: PortfolioSpec,
     rebalance: RebalanceSpec,
+    rebalance_days: pd.Series | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """生成信号日目标权重和选股排名。
 
@@ -113,10 +114,17 @@ def build_target_weights(
         signal: 信号定义。
         portfolio: 组合定义。
         rebalance: 调仓定义。
+        rebalance_days: 外部给定的调仓日掩码（整段区间算好后按块切片）；None 表示按
+            本面板的日期索引现算。分块回测必须传入整段口径，否则块尾落在周中时
+            会被当成周频调仓日。
     """
     scores = build_scores(data, signal)
     eligible = eligible_mask(data)
-    mask = rebalance_mask(data.index, rebalance.frequency)
+    mask = (
+        rebalance_mask(data.index, rebalance.frequency)
+        if rebalance_days is None
+        else rebalance_days.reindex(data.index).fillna(False).astype(bool)
+    )
     weights = pd.DataFrame(np.nan, index=data.index, columns=data.columns, dtype=float)
     ranks = pd.DataFrame(np.nan, index=data.index, columns=data.columns, dtype=float)
     score_values = scores.to_numpy()
