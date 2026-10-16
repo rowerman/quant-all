@@ -157,7 +157,7 @@ def test_allocate_shares_keeps_full_weight_on_retry_row():
 
 
 def test_allocate_shares_caps_buys_by_open_cash():
-    """买单按开盘现金限制，缩水到目标两成以上的格子进补回。"""
+    """买单按开盘现金限制，所有现金缩水格子都进补回。"""
     # 目标 0.5 × 10 万 = 4.9 万，但开盘只有 2 万现金，且没有可卖出的持仓
     baseline = [[0.0], [4_900.0], [4_900.0]]
     weights = [[np.nan], [0.5], [np.nan]]
@@ -175,18 +175,18 @@ def test_allocate_shares_caps_buys_by_open_cash():
     assert records.iloc[0]["cash_shrunk_shares"] == pytest.approx(2_900.0)
 
 
-def test_allocate_shares_skips_immaterial_shrinkage():
-    """一手两手的残差不进补回：现金不会因为重试而变多，补了只是每天空跑。"""
-    # 目标 0.49 × 10 万 = 4.9 万，开盘 4.8 万现金：只差 100 股（目标的 2%）
+def test_allocate_shares_retries_small_cash_shortfall():
+    """即使只差一手，只要确实触发现金缩放，也进入补回。"""
+    # 目标 0.49 × 10 万 = 4.9 万，开盘 4.8 万现金：现金缩放后只差 100 股
     weights = [[np.nan], [0.49], [np.nan]]
     shares, records, stats = _allocate(
         weights, [100_000.0] * 3, [[10.0]] * 3, ["A"], cash=[0.0, 48_000.0, 48_000.0],
     )
     assert shares.loc[DATES[1], "A"] == 4_800.0
     assert stats["cash_shrunk_cells"] == 1
-    assert stats["cash_limited_cells"] == 0
-    assert stats["cash_limited_value"] == 0.0
-    assert not records.iloc[0]["cash_limited"]
+    assert stats["cash_limited_cells"] == 1
+    assert stats["cash_limited_value"] == pytest.approx(1_000.0)
+    assert bool(records.iloc[0]["cash_limited"])
     assert records.iloc[0]["cash_shrunk_shares"] == pytest.approx(100.0)
 
 
@@ -232,6 +232,45 @@ def test_cash_carry_moves_limited_buys_to_the_next_day():
     assert cash_carry(None, targets).isna().to_numpy().all()
 
 
+def test_cash_carry_continues_unfilled_retry_without_creating_duplicate_event():
+    """已有补回未成交时继续传播，不能把重试再次当成新的补回事件。"""
+    columns = ["A"]
+    long_dates = pd.date_range("2024-01-29", periods=4, freq="B")
+    targets = _frame([[np.nan]] * 4, columns, long_dates)
+    previous = _frame([[np.nan], [0.3], [np.nan], [np.nan]], columns, long_dates)
+    allocation = pd.DataFrame(
+        {
+            "trade_date": [DATES[1]],
+            "stock_code": ["A"],
+            "target_weight": [0.3],
+            "cash_limited": [True],
+            "allocated_shares": [100.0],
+        }
+    )
+    next_carry = cash_carry(allocation, targets, previous)
+    assert next_carry.loc[long_dates[2], "A"] == pytest.approx(0.3)
+    assert np.isnan(next_carry.loc[long_dates[3], "A"])
+
+
+def test_cash_carry_stops_after_existing_retry_is_filled():
+    """已有补回拿到目标仓位后停止传播。"""
+    columns = ["A"]
+    long_dates = pd.date_range("2024-01-29", periods=4, freq="B")
+    targets = _frame([[np.nan]] * 4, columns, long_dates)
+    previous = _frame([[np.nan], [0.3], [np.nan], [np.nan]], columns, long_dates)
+    allocation = pd.DataFrame(
+        {
+            "trade_date": [DATES[1]],
+            "stock_code": ["A"],
+            "target_weight": [0.3],
+            "cash_limited": [False],
+            "allocated_shares": [3_000.0],
+        }
+    )
+    next_carry = cash_carry(allocation, targets, previous)
+    assert next_carry.isna().all().all()
+
+
 def test_cash_carry_yields_to_real_target_and_drops_last_day():
     """下一交易日有真实调仓目标时补回让位；末日被缩小的格子没有下一交易日。"""
     columns = ["A"]
@@ -261,6 +300,18 @@ def test_extend_carry_keeps_retrying_until_the_next_target():
     extended = extend_carry(carry, _frame([[np.nan]] * 3, columns))
     assert extended.loc[DATES[2], "A"] == pytest.approx(0.3)
     assert np.isnan(extended.loc[DATES[0], "A"])
+
+
+def test_extend_carry_spans_more_than_iteration_limit_days():
+    """补回种子一次铺完整条长链，不依赖逐日增加迭代次数。"""
+    long_dates = pd.date_range("2024-01-02", periods=30, freq="B")
+    columns = ["A"]
+    carry = _frame([[np.nan], [0.3]] + [[np.nan]] * 28, columns, long_dates)
+    targets = _frame([[np.nan]] * 29 + [[0.2]], columns, long_dates)
+    extended = extend_carry(carry, targets)
+    assert extended.loc[long_dates[1]:long_dates[-2], "A"].eq(0.3).all()
+    assert np.isnan(extended.loc[long_dates[0], "A"])
+    assert np.isnan(extended.loc[long_dates[-1], "A"])
 
 
 def test_cash_retry_filled_counts_only_topped_up_cells():

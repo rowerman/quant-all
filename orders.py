@@ -439,6 +439,7 @@ def build_order_plan(
     shares, allocation, allocated_direction, allocation_stats = allocate_shares(
         filtered, budget, cash_open, price, baseline_shares, execution.lot_size,
         execution.cash_buffer,
+        carry,
     )
     # 成交估计：最终一遍每笔成交都恰好把持仓补齐到目标股数，因此「目标股数 -
     # 上一交易日收盘的目标持股」就是这一笔的真实方向与金额；用基准遍的当日收盘

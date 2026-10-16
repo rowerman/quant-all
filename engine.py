@@ -336,6 +336,53 @@ def _same_matrix(first: pd.DataFrame, second: pd.DataFrame) -> bool:
     return bool(np.array_equal(left[~left_nan], right[~right_nan]))
 
 
+def _matrix_signature(frame: pd.DataFrame) -> tuple[tuple[int, ...], bytes]:
+    """生成固定点迭代的稳定签名，NaN 位置和有限值都参与比较。"""
+    values = frame.to_numpy(dtype="float64", copy=False)
+    finite = np.isfinite(values)
+    normalized = np.where(finite, values, 0.0)
+    return tuple(finite.ravel().astype("uint8")), normalized.tobytes()
+
+
+def _same_masked_matrix(
+    first: pd.DataFrame,
+    second: pd.DataFrame,
+    mask: np.ndarray,
+) -> bool:
+    """比较指定格子的矩阵值，补回重试日之外的原始目标必须稳定。"""
+    if first.shape != second.shape or first.shape != mask.shape:
+        return False
+    left = first.to_numpy(dtype="float64")[mask]
+    right = second.to_numpy(dtype="float64")[mask]
+    left_nan, right_nan = np.isnan(left), np.isnan(right)
+    if not np.array_equal(left_nan, right_nan):
+        return False
+    return bool(np.array_equal(left[~left_nan], right[~right_nan]))
+
+
+def _cash_event_signature(allocation: pd.DataFrame) -> tuple[tuple[str, str], ...]:
+    """提取新的现金补回事件，忽略重试日重新计算的股数。"""
+    if allocation.empty or "cash_limited" not in allocation:
+        return ()
+    limited = allocation.loc[allocation["cash_limited"].astype(bool), ["trade_date", "stock_code"]]
+    return tuple(
+        sorted((str(pd.Timestamp(row.trade_date)), str(row.stock_code))
+               for row in limited.itertuples(index=False))
+    )
+
+
+def _cash_pending_on_last_day(allocation: pd.DataFrame, last_day: pd.Timestamp) -> int:
+    """统计最后交易日仍有现金缩水缺口的补回格。"""
+    if allocation.empty:
+        return 0
+    rows = allocation.loc[pd.DatetimeIndex(allocation["trade_date"]) == last_day]
+    if rows.empty:
+        return 0
+    if "cash_shrunk_shares" in rows:
+        return int((rows["cash_shrunk_shares"].to_numpy(dtype="float64") > 0).sum())
+    return int(rows["cash_limited"].astype(bool).sum())
+
+
 def _clipped_cells(plan: OrderPlan, portfolio) -> dict:
     """核对最终一遍的实际持股是否等于分配出的目标股数。
 
@@ -438,6 +485,10 @@ def run_backtest(
     carry_converged = False
     iteration = 0
     converged = False
+    seen_states: dict[tuple[tuple[int, ...], bytes, tuple[tuple[int, ...], bytes]], int] = {}
+    last_plan_carry: pd.DataFrame | None = None
+    previous_cash_events: tuple[tuple[str, str], ...] | None = None
+    original_target_mask = ~np.isnan(targets.to_numpy(dtype="float64"))
     for iteration in range(1, MAX_ALLOCATION_ITERATIONS + 1):
         budget = execution_budget(state_cash, state_shares, price, params.init_cash)
         cash_open = execution_cash(state_cash, params.init_cash)
@@ -465,14 +516,41 @@ def run_backtest(
         )
         state_cash, state_shares = _state_frames(portfolio)
         plan = candidate
+        last_plan_carry = carry
         previous_shares = candidate.shares
         previous_carry = carry
-        next_carry = cash_carry(plan.allocation, targets)
+        next_carry = cash_carry(plan.allocation, targets, carry)
         if iteration == 1:
             next_carry = extend_carry(next_carry, targets)
         if not _same_matrix(next_carry, carry):
             carry_iterations += 1
         carry = next_carry
+        cash_events = _cash_event_signature(candidate.allocation)
+        allocation_witnesses = _clipped_cells(candidate, portfolio)
+        no_pending = _cash_pending_on_last_day(candidate.allocation, targets.index[-1]) == 0
+        state_key = (
+            _matrix_signature(candidate.shares),
+            _matrix_signature(carry),
+        )
+        prior_iteration = seen_states.get(state_key)
+        if prior_iteration is not None and prior_iteration < iteration - 1:
+            logger.warning(
+                "资金分配检测到重复状态：第 %d 轮重复第 %d 轮，停止继续重算",
+                iteration,
+                prior_iteration,
+            )
+            break
+        seen_states[state_key] = iteration
+        if (
+            previous_cash_events is not None
+            and previous_cash_events == cash_events
+            and previous_shares is not None
+            and _same_masked_matrix(previous_shares, candidate.shares, original_target_mask)
+            and allocation_witnesses["cash_clipped_cells"] == 0
+            and no_pending
+        ):
+            converged = True
+            logger.info("现金补回事件在第 %d 轮稳定，停止继续重算", iteration)
         _notify(
             progress,
             "allocation",
@@ -480,11 +558,17 @@ def run_backtest(
             carry_iterations=carry_iterations,
             **{key: candidate.plan_stats[key] for key in ALLOCATION_STAT_KEYS},
         )
+        previous_cash_events = cash_events
+        if converged:
+            break
     else:
         logger.warning("资金分配 %d 次迭代仍未稳定，使用最后一次结果", MAX_ALLOCATION_ITERATIONS)
     if plan is None or portfolio is None:
         raise ExecutionError("资金分配没有产出可执行的目标股数")
-    carry_converged = _same_matrix(carry, cash_carry(plan.allocation, targets))
+    carry_converged = _same_matrix(
+        carry,
+        cash_carry(plan.allocation, targets, last_plan_carry),
+    )
 
     orders = _order_records(portfolio, "最终运行")
     witnesses = {**_fee_witnesses(orders, plan), **_clipped_cells(plan, portfolio)}
@@ -494,8 +578,15 @@ def run_backtest(
     holdings = _holdings_frame(portfolio)
     liquidations = _liquidation_records(plan, orders)
     # 区间末仍被现金限制、来不及补回的格子（末日的补回目标没有下一交易日可落）
-    limited = plan.allocation["cash_limited"].to_numpy(dtype=bool)
-    on_last_day = pd.DatetimeIndex(plan.allocation["trade_date"]).to_numpy() == targets.index[-1].to_datetime64()
+    last_allocations = plan.allocation.loc[
+        pd.DatetimeIndex(plan.allocation["trade_date"]) == targets.index[-1]
+    ]
+    if "cash_shrunk_shares" in last_allocations:
+        pending_at_end = int(
+            (last_allocations["cash_shrunk_shares"].to_numpy(dtype="float64") > 0).sum()
+        )
+    else:
+        pending_at_end = int(last_allocations["cash_limited"].astype(bool).sum())
     calibration = {
         "cash_buffer": float(strategy.execution.cash_buffer),
         "allocation_iterations": int(iteration),
@@ -503,7 +594,7 @@ def run_backtest(
         "carry_iterations": int(carry_iterations),
         "carry_converged": bool(carry_converged),
         "cash_retry_filled_cells": cash_retry_filled(carry, plan.allocation),
-        "cash_pending_at_end_cells": int((limited & on_last_day).sum()),
+        "cash_pending_at_end_cells": pending_at_end,
         **plan.plan_stats,
         **witnesses,
         **_weight_witnesses(plan, holdings),
@@ -515,6 +606,7 @@ def run_backtest(
         "universe": strategy.universe,
         "benchmark": data.benchmark_info,
         "price_adjust": PRICE_ADJUST,
+        "cash_retry_policy": "all_cash_shortfall_event",
         "execution": {
             "sizing": "target_amount",
             "cash_buffer": float(strategy.execution.cash_buffer),

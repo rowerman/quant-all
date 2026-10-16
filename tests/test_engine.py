@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from backtest.data import load_market_data
-from backtest.engine import run_backtest
+from backtest.engine import _cash_event_signature, _same_masked_matrix, run_backtest
 from backtest.errors import DataAlignmentError, ExecutionError
 from backtest.specs import (
     BacktestParams,
@@ -19,6 +19,27 @@ from backtest.specs import (
 
 DATES = pd.date_range("2024-01-29", periods=6, freq="B")
 STOCKS = ["SH600000", "SZ000001", "SZ000002"]
+
+
+def test_fixed_point_compares_original_targets_but_ignores_retry_cells():
+    """原始调仓股数必须稳定，补回重试日的派生股数允许随当天预算变化。"""
+    first = pd.DataFrame([[1_000.0], [500.0]], index=DATES[:2], columns=["A"])
+    second = pd.DataFrame([[1_000.0], [600.0]], index=DATES[:2], columns=["A"])
+    assert _same_masked_matrix(first, second, np.array([[True], [False]]))
+    assert not _same_masked_matrix(first, second, np.array([[False], [True]]))
+
+
+def test_cash_event_signature_ignores_retry_shrink_rows():
+    """同一补回重试中的现金缩水不会被重复登记成新事件。"""
+    allocation = pd.DataFrame(
+        {
+            "trade_date": [DATES[0], DATES[1]],
+            "stock_code": ["A", "A"],
+            "cash_limited": [True, False],
+            "cash_shrunk_shares": [500.0, 300.0],
+        }
+    )
+    assert _cash_event_signature(allocation) == ((str(DATES[0]), "A"),)
 
 
 def _frames():
