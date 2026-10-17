@@ -532,7 +532,8 @@ def build_order_plan(
     shares, allocation, allocated_direction, allocation_stats = allocate_shares(
         filtered, budget, cash_open, price, baseline_shares, execution.lot_size,
         execution.cash_buffer,
-        carry,
+        carry=carry,
+        costs=costs,
     )
     if seed_shares is not None and len(shares.index):
         # 播种行：把上一块的收盘持股原样买回来，供后续交易日算真实差值；

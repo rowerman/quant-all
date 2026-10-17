@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import gc
-from pathlib import Path
-from tempfile import TemporaryDirectory
 import time
 from typing import Callable
 
@@ -21,19 +19,8 @@ import numpy as np
 import pandas as pd
 
 import quant
-from backtest.allocation import (
-    ALLOCATION_STAT_KEYS,
-    cash_carry,
-    cash_retry_filled,
-    execution_budget,
-    execution_cash,
-    execution_price,
-    extend_carry,
-    pending_carry,
-)
 from backtest.config import (
     CHUNK_CELL_BUDGET,
-    MAX_ALLOCATION_ITERATIONS,
     MAX_CHUNKS,
     MAX_PANEL_CELLS,
     MAX_TRADE_DAYS,
@@ -49,7 +36,6 @@ from backtest.engine import (
     BacktestResult,
     ChunkState,
     derive_daily,
-    seed_inputs,
     weight_witnesses,
 )
 import backtest.engine as engine
@@ -57,12 +43,10 @@ from backtest.errors import ResourceLimitError, RunCancelled
 from backtest.logging_conf import get_logger
 from backtest.metrics import summarize
 from backtest.orders import (
-    RuleState,
-    baseline_inputs_with_state,
-    build_order_plan,
     execution_targets,
+    liquidation_cells,
 )
-from backtest.risk import cap_single_weights, constrain_one_way_turnover
+from backtest.risk import cap_single_weights
 from backtest.signals import build_target_weights, rebalance_mask
 from backtest.specs import BacktestParams, StrategySpec
 from backtest.universe import resolve_universe, universe_stocks
@@ -261,107 +245,6 @@ class _PreparedChunk:
     single_cap_stats: dict
 
 
-class _StateStore:
-    """把一轮的逐日现金与非零持股暂存到 Parquet，避免跨块常驻内存。"""
-
-    def __init__(self) -> None:
-        self._temp = TemporaryDirectory(prefix="backtest-chunk-state-")
-        self.root = Path(self._temp.name)
-
-    def write(self, position: int, cash: pd.Series, shares: pd.DataFrame) -> None:
-        cash_frame = pd.DataFrame(
-            {"trade_date": pd.DatetimeIndex(cash.index), "cash": cash.to_numpy(dtype="float64")}
-        )
-        cash_frame.to_parquet(self.root / f"cash-{position}.parquet", index=False)
-        values = shares.to_numpy(dtype="float64")
-        rows, columns = np.where(values != 0.0)
-        share_frame = pd.DataFrame(
-            {
-                "trade_date": shares.index[rows],
-                "stock_code": shares.columns[columns],
-                "shares": values[rows, columns],
-            }
-        )
-        share_frame.to_parquet(self.root / f"shares-{position}.parquet", index=False)
-
-    def read(
-        self,
-        position: int,
-        index: pd.DatetimeIndex,
-        columns: pd.Index,
-    ) -> tuple[pd.Series, pd.DataFrame]:
-        cash_frame = pd.read_parquet(self.root / f"cash-{position}.parquet")
-        cash = pd.Series(
-            cash_frame["cash"].to_numpy(dtype="float64"),
-            index=pd.DatetimeIndex(cash_frame["trade_date"]),
-        ).reindex(index)
-        shares = pd.DataFrame(0.0, index=index, columns=columns, dtype="float64")
-        share_frame = pd.read_parquet(self.root / f"shares-{position}.parquet")
-        if not share_frame.empty:
-            rows = index.get_indexer(pd.DatetimeIndex(share_frame["trade_date"]))
-            cols = columns.get_indexer(share_frame["stock_code"])
-            valid = (rows >= 0) & (cols >= 0)
-            shares.to_numpy()[rows[valid], cols[valid]] = share_frame.loc[
-                valid, "shares"
-            ].to_numpy(dtype="float64")
-        return cash, shares
-
-    def cleanup(self) -> None:
-        self._temp.cleanup()
-
-
-def _empty_rule_state(columns: pd.Index) -> RuleState:
-    """构造空仓规则状态。"""
-    return RuleState(
-        held=pd.Series(False, index=columns),
-        shadow=pd.Series(0.0, index=columns, dtype="float64"),
-        pending=pd.Series(np.nan, index=columns, dtype="float64"),
-    )
-
-
-def _empty_carry(index: pd.Index, columns: pd.Index) -> pd.DataFrame:
-    """构造与本块面板同形的空补回矩阵。"""
-    return pd.DataFrame(np.nan, index=index, columns=columns, dtype="float64")
-
-
-def _physical_state(
-    cash: pd.Series,
-    shares: pd.DataFrame,
-    data: MarketData,
-    valuation: pd.DataFrame,
-    rule_state: RuleState | None = None,
-) -> ChunkState:
-    """从一次组合执行的收尾状态构造下一块播种状态。"""
-    columns = shares.columns
-    return ChunkState(
-        cash=float(cash.iloc[-1]),
-        shares=shares.iloc[-1].astype("float64"),
-        mark_prices=valuation.iloc[-1].astype("float64"),
-        last_prices=execution_price(data.open, valuation).iloc[-1].astype("float64"),
-        rule_state=rule_state or _empty_rule_state(columns),
-        carry=pd.Series(np.nan, index=columns, dtype="float64"),
-    )
-
-
-def _seeded_inputs(
-    matrix: pd.DataFrame,
-    fixed_fees: pd.DataFrame | None,
-    state: ChunkState | None,
-    data: MarketData,
-    valuation: pd.DataFrame,
-    slippage: float,
-) -> tuple[pd.DataFrame, pd.DataFrame | None, float, object | None]:
-    """把跨块播种行写入下单与费用矩阵。"""
-    if state is None:
-        return matrix, fixed_fees, np.nan, None
-    plan = seed_inputs(state, data, valuation, slippage)
-    seeded = engine._with_seed_row(matrix, plan.percent)
-    seeded_fees = engine._with_seed_fixed_fees(
-        fixed_fees, matrix.index, matrix.columns, plan
-    )
-    return seeded, seeded_fees, float(state.cash), plan
-
-
 def _logical_frame(frame: pd.DataFrame, window: ChunkWindow) -> pd.DataFrame:
     """去掉重复的预热行，得到本块真正属于整段区间的行。"""
     if window.warmup is None:
@@ -378,35 +261,39 @@ def _concat_logical(
     ).sort_index()
 
 
-def _split_logical(
-    frame: pd.DataFrame, prepared: list[_PreparedChunk]
-) -> list[pd.DataFrame]:
-    """把整段矩阵切回各块形状，预热行保持为空。"""
-    parts: list[pd.DataFrame] = []
-    for item in prepared:
-        part = _empty_carry(item.targets.index, item.targets.columns)
-        logical_index = part.index if item.window.warmup is None else part.index[1:]
-        part.loc[logical_index] = frame.reindex(
-            index=logical_index, columns=part.columns
-        ).to_numpy(dtype="float64")
-        parts.append(part)
-    return parts
+def _segment_windows(
+    days: pd.DatetimeIndex,
+    prepared: list[_PreparedChunk],
+) -> list[ChunkWindow]:
+    """按真实调仓执行日划分因果求解段。
 
-
-def _frames_equal(first: list[pd.DataFrame], second: list[pd.DataFrame]) -> bool:
-    """逐块精确比较矩阵列表。"""
-    return len(first) == len(second) and all(
-        engine._same_matrix(left, right)
-        for left, right in zip(first, second, strict=True)
+    第一段从回测起点开始并包含第一次调仓；之后每个执行日开启新段。后一段带上
+    前一交易日作为预热行，使信号平移、持仓播种和规则状态都能连续交接。
+    """
+    targets = _concat_logical([item.targets for item in prepared], prepared).reindex(days)
+    execution_days = pd.DatetimeIndex(
+        targets.index[targets.notna().any(axis=1).to_numpy()]
     )
-
-
-def _carry_events(allocations: list[pd.DataFrame]) -> tuple[tuple[str, str], ...]:
-    """提取整段本轮新产生的现金补回事件。"""
-    events: list[tuple[str, str]] = []
-    for allocation in allocations:
-        events.extend(engine._cash_event_signature(allocation))
-    return tuple(sorted(events))
+    starts = [pd.Timestamp(days[0])]
+    starts.extend(pd.Timestamp(day) for day in execution_days[1:])
+    starts = list(dict.fromkeys(starts))
+    positions = {pd.Timestamp(day): position for position, day in enumerate(days)}
+    windows: list[ChunkWindow] = []
+    for index, start in enumerate(starts):
+        start_position = positions[start]
+        if index + 1 < len(starts):
+            end = pd.Timestamp(days[positions[starts[index + 1]] - 1])
+        else:
+            end = pd.Timestamp(days[-1])
+        warmup = None if start_position == 0 else pd.Timestamp(days[start_position - 1])
+        windows.append(
+            ChunkWindow(
+                start=str(start.date()),
+                end=str(end.date()),
+                warmup=None if warmup is None else str(warmup.date()),
+            )
+        )
+    return windows
 
 
 def _check_cancelled(should_cancel: Cancelled | None) -> None:
@@ -486,203 +373,6 @@ def _prepare_chunks(
     return prepared
 
 
-def _run_probe_pass(
-    prepared: list[_PreparedChunk],
-    strategy: StrategySpec,
-    params: BacktestParams,
-    loader: Callable[[ChunkWindow, ChunkState | None], MarketData],
-    progress: Progress | None,
-    should_cancel: Cancelled | None,
-) -> list[pd.DataFrame]:
-    """按整段顺序执行探针遍，块间只交接探针组合状态。"""
-    state: ChunkState | None = None
-    probes: list[pd.DataFrame] = []
-    for position, item in enumerate(prepared, start=1):
-        _check_cancelled(should_cancel)
-        _report_chunk(progress, "probe", position, len(prepared), item.window)
-        data = loader(item.window, state)
-        valuation = data.close.ffill(axis=0)
-        fixed = None
-        size = item.targets
-        init_cash = float(params.init_cash)
-        if state is not None:
-            size, fixed, init_cash, _ = _seeded_inputs(
-                size,
-                fixed,
-                state,
-                data,
-                valuation,
-                float(strategy.costs.slippage),
-            )
-        portfolio = engine._run_portfolio(
-            data,
-            valuation,
-            size,
-            params,
-            strategy,
-            None,
-            fixed,
-            init_cash=init_cash,
-        )
-        orders = engine._probe_frame(engine._order_records(portfolio, "探针运行"))
-        warmup_rows = 0 if item.window.warmup is None else 1
-        if warmup_rows:
-            orders = orders.loc[
-                pd.DatetimeIndex(orders["trade_date"]) >= data.index[warmup_rows]
-            ].reset_index(drop=True)
-        cash, shares = engine._state_frames(portfolio)
-        if state is not None:
-            engine._check_seed_cash(cash, state, "探针遍")
-        state = _physical_state(cash, shares, data, valuation)
-        probes.append(orders)
-        del data, portfolio, cash, shares
-        gc.collect()
-    _notify(progress, "probe", probe_orders=sum(len(frame) for frame in probes))
-    return probes
-
-
-def _run_baseline_pass(
-    prepared: list[_PreparedChunk],
-    probes: list[pd.DataFrame],
-    strategy: StrategySpec,
-    params: BacktestParams,
-    loader: Callable[[ChunkWindow, ChunkState | None], MarketData],
-    liquidations: pd.DataFrame | None,
-    progress: Progress | None,
-    should_cancel: Cancelled | None,
-) -> _StateStore:
-    """按整段顺序执行基准遍，返回第一轮分配所需的逐日状态。"""
-    store = _StateStore()
-    state: ChunkState | None = None
-    rule_state: RuleState | None = None
-    try:
-        for position, (item, probe) in enumerate(zip(prepared, probes, strict=True), start=1):
-            _check_cancelled(should_cancel)
-            _report_chunk(progress, "baseline", position, len(prepared), item.window)
-            data = loader(item.window, state)
-            valuation = data.close.ffill(axis=0)
-            warmup_rows = 0 if item.window.warmup is None else 1
-            targets, fees, fixed, rule_state = baseline_inputs_with_state(
-                data,
-                item.targets,
-                strategy.execution,
-                probe,
-                strategy.costs,
-                liquidations,
-                rule_state,
-                warmup_rows,
-            )
-            size = targets * (1.0 - float(strategy.execution.cash_buffer))
-            init_cash = float(params.init_cash)
-            if state is not None:
-                size, fixed, init_cash, _ = _seeded_inputs(
-                    size,
-                    fixed,
-                    state,
-                    data,
-                    valuation,
-                    float(strategy.costs.slippage),
-                )
-            portfolio = engine._run_portfolio(
-                data,
-                valuation,
-                size,
-                params,
-                strategy,
-                fees,
-                fixed,
-                init_cash=init_cash,
-            )
-            cash, shares = engine._state_frames(portfolio)
-            if state is not None:
-                engine._check_seed_cash(cash, state, "基准遍")
-            store.write(position, cash, shares)
-            state = _physical_state(cash, shares, data, valuation, rule_state)
-            del data, portfolio, cash, shares
-            gc.collect()
-    except BaseException:
-        store.cleanup()
-        raise
-    _notify(
-        progress,
-        "baseline",
-        cash_buffer=float(strategy.execution.cash_buffer),
-        rebalance_days=sum(int(item.targets.notna().any(axis=1).sum()) for item in prepared),
-    )
-    return store
-
-
-def _result_from_iteration(
-    data: MarketData,
-    strategy: StrategySpec,
-    params: BacktestParams,
-    portfolio,
-    plan,
-    orders: pd.DataFrame,
-    holdings: pd.DataFrame,
-    liquidations: pd.DataFrame,
-    allocation_witnesses: dict,
-    risk_stats: dict,
-    carry: pd.DataFrame,
-    effective_targets: pd.DataFrame,
-    rank_rows: int,
-    iteration: int,
-) -> BacktestResult:
-    """把一块当前固定点轮次的执行结果整理成标准结果。"""
-    fee_witnesses = engine._fee_witnesses(orders, plan)
-    witnesses = {**fee_witnesses, **allocation_witnesses}
-    pending = engine._cash_pending_on_last_day(plan.allocation, effective_targets.index[-1])
-    calibration = {
-        "cash_buffer": float(strategy.execution.cash_buffer),
-        "allocation_iterations": int(iteration),
-        "allocation_converged": False,
-        "carry_iterations": 0,
-        "carry_converged": False,
-        "cash_retry_filled_cells": cash_retry_filled(carry, plan.allocation),
-        "cash_pending_at_end_cells": int(pending),
-        "cash_carry_over_cells": 0,
-        **risk_stats,
-        **plan.plan_stats,
-        **witnesses,
-        **engine._weight_witnesses(plan, holdings),
-    }
-    metadata = {
-        "strategy": strategy.to_dict(),
-        "strategy_hash": strategy.config_hash,
-        "params": {"start": params.start, "end": params.end, "init_cash": params.init_cash},
-        "universe": strategy.universe,
-        "benchmark": data.benchmark_info,
-        "price_adjust": PRICE_ADJUST,
-        "cash_retry_policy": "all_cash_shortfall_event",
-        "risk": strategy.risk.to_dict(),
-        "execution": {
-            "sizing": "target_amount",
-            "cash_buffer": float(strategy.execution.cash_buffer),
-            "lot_size": strategy.execution.lot_size,
-        },
-        "versions": data.versions,
-        "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),
-        "panel": {"trading_days": int(len(data.index)), "stocks": int(len(data.columns))},
-        "rank_rows": int(rank_rows),
-        "calibration": calibration,
-        "elapsed_seconds": 0.0,
-    }
-    return BacktestResult(
-        portfolio=portfolio,
-        daily=engine._daily_frame(portfolio, orders, data.benchmark),
-        orders=orders,
-        positions=portfolio.positions.records_readable.copy(),
-        holdings=holdings,
-        target_weights=plan.target_percent,
-        rejections=plan.rejection,
-        metrics={},
-        metadata=metadata,
-        liquidations=liquidations,
-        allocations=plan.allocation,
-        final_state=None,
-    )
-
-
 def run_windows(
     windows: list[ChunkWindow],
     strategy: StrategySpec,
@@ -696,271 +386,76 @@ def run_windows(
     progress: Progress | None = None,
     should_cancel: Cancelled | None = None,
 ) -> BacktestResult:
-    """按给定窗口做整段固定点流式回测，并返回拼接结果。"""
+    """按给定资源窗口准备信号，再按调仓执行段因果求解并拼接结果。"""
     started = time.perf_counter()
-    logger.info("整段流式回测：区间=%s~%s 共 %d 块", params.start, params.end, len(windows))
+    logger.info("因果分段回测：区间=%s~%s 共 %d 个资源块", params.start, params.end, len(windows))
     prepared = _prepare_chunks(windows, strategy, days, loader, progress, should_cancel)
-    probes = _run_probe_pass(prepared, strategy, params, loader, progress, should_cancel)
-    previous_store = _run_baseline_pass(
-        prepared,
-        probes,
-        strategy,
-        params,
-        loader,
-        liquidations,
-        progress,
-        should_cancel,
-    )
-    carry_frames = [_empty_carry(item.targets.index, item.targets.columns) for item in prepared]
-    previous_shares: list[pd.DataFrame] | None = None
-    previous_effective: list[pd.DataFrame] | None = None
-    previous_carry: list[pd.DataFrame] | None = None
-    previous_cash_events: tuple[tuple[str, str], ...] | None = None
-    carry_iterations = 0
-    converged = False
-    carry_converged = False
-    final_results: list[tuple[ChunkWindow, BacktestResult]] = []
-    final_opens: list[pd.DataFrame] = []
-    final_marks: list[pd.DataFrame] = []
-    iteration = 0
-    try:
-        for iteration in range(1, MAX_ALLOCATION_ITERATIONS + 1):
-            current_store = _StateStore()
-            state: ChunkState | None = None
-            rule_state: RuleState | None = None
-            current_results: list[tuple[ChunkWindow, BacktestResult]] = []
-            open_parts: list[pd.DataFrame] = []
-            mark_parts: list[pd.DataFrame] = []
-            share_frames: list[pd.DataFrame] = []
-            effective_frames: list[pd.DataFrame] = []
-            raw_next_carry: list[pd.DataFrame] = []
-            allocations: list[pd.DataFrame] = []
-            boundary_carry: list[pd.Series] = []
-            clipped_cells = 0
-            allocation_totals = {key: 0.0 for key in ALLOCATION_STAT_KEYS}
-            try:
-                for position, (item, probe, carry) in enumerate(
-                    zip(prepared, probes, carry_frames, strict=True), start=1
-                ):
-                    _check_cancelled(should_cancel)
-                    _report_chunk(
-                        progress,
-                        "allocation",
-                        position,
-                        len(prepared),
-                        item.window,
-                        iteration,
-                    )
-                    data = loader(item.window, state)
-                    valuation = data.close.ffill(axis=0)
-                    price = execution_price(data.open, valuation)
-                    prior_cash, prior_shares = previous_store.read(
-                        position, data.index, data.columns
-                    )
-                    prior_init_cash = float(
-                        params.init_cash if item.window.warmup is None else prior_cash.iloc[0]
-                    )
-                    budget = execution_budget(prior_cash, prior_shares, price, prior_init_cash)
-                    cash_open = execution_cash(prior_cash, prior_init_cash)
-                    effective_targets, turnover_stats = constrain_one_way_turnover(
-                        item.targets,
-                        budget,
-                        cash_open,
-                        price,
-                        prior_shares,
-                        strategy.risk.max_one_way_turnover,
-                    )
-                    risk_stats = {**item.single_cap_stats, **turnover_stats}
-                    seed_plan = None
-                    init_cash = float(params.init_cash)
-                    if state is not None:
-                        seed_plan = seed_inputs(
-                            state, data, valuation, float(strategy.costs.slippage)
-                        )
-                        init_cash = float(state.cash)
-                    warmup_rows = 0 if item.window.warmup is None else 1
-                    plan = build_order_plan(
-                        data,
-                        effective_targets,
-                        strategy.execution,
-                        probe,
-                        budget,
-                        cash_open,
-                        prior_shares,
-                        strategy.costs,
-                        carry,
-                        rule_state,
-                        warmup_rows,
-                        liquidations,
-                        None if seed_plan is None else seed_plan.shares,
-                        None if seed_plan is None else seed_plan.fixed_fees,
-                    )
-                    portfolio = engine._run_portfolio(
-                        data,
-                        valuation,
-                        plan.shares,
-                        params,
-                        strategy,
-                        plan.fees,
-                        plan.fixed_fees,
-                        size_type="targetamount",
-                        init_cash=init_cash,
-                    )
-                    cash, shares = engine._state_frames(portfolio)
-                    if state is not None:
-                        engine._check_seed_cash(cash, state, "最终遍")
-                    current_store.write(position, cash, shares)
-                    allocation_witnesses = engine._clipped_cells(plan, portfolio)
-                    clipped_cells += int(allocation_witnesses["cash_clipped_cells"])
-                    orders = engine._drop_warmup_orders(
-                        engine._order_records(portfolio, "最终运行"), data.index, warmup_rows
-                    )
-                    holdings = engine._holdings_frame(portfolio)
-                    liquidation_records = engine._liquidation_records(plan, orders)
-                    result = _result_from_iteration(
-                        data,
-                        strategy,
-                        params,
-                        portfolio,
-                        plan,
-                        orders,
-                        holdings,
-                        liquidation_records,
-                        allocation_witnesses,
-                        risk_stats,
-                        carry,
-                        effective_targets,
-                        item.rank_rows,
-                        iteration,
-                    )
-                    if len(orders):
-                        order_days = pd.DatetimeIndex(orders["trade_date"])
-                        rows = data.index.get_indexer(order_days)
-                        cols = data.columns.get_indexer(orders["stock_code"])
-                        open_parts.append(
-                            pd.DataFrame(
-                                {
-                                    "trade_date": order_days.to_numpy(),
-                                    "stock_code": orders["stock_code"].to_numpy(),
-                                    "open": data.open.to_numpy()[rows, cols],
-                                }
-                            )
-                        )
-                        mark_parts.append(valuation.loc[order_days.unique()])
-                    mark_parts.append(valuation.iloc[[-1]])
-                    state = _physical_state(cash, shares, data, valuation, plan.rule_state)
-                    rule_state = plan.rule_state
-                    share_frames.append(plan.shares)
-                    effective_frames.append(effective_targets)
-                    allocations.append(plan.allocation)
-                    raw_next_carry.append(cash_carry(plan.allocation, effective_targets, carry))
-                    boundary_carry.append(
-                        pending_carry(carry, plan.allocation, effective_targets)
-                    )
-                    for key in ALLOCATION_STAT_KEYS:
-                        allocation_totals[key] += float(plan.plan_stats.get(key, 0) or 0)
-                    current_results.append((item.window, replace(result, portfolio=None)))
-                    del data, portfolio, cash, shares, prior_cash, prior_shares
-                    gc.collect()
-            except BaseException:
-                current_store.cleanup()
-                raise
+    segments = _segment_windows(days, prepared)
+    mask = rebalance_mask(days, strategy.rebalance.frequency)
+    results: list[tuple[ChunkWindow, BacktestResult]] = []
+    open_parts: list[pd.DataFrame] = []
+    mark_parts: list[pd.DataFrame] = []
+    state: ChunkState | None = None
+    for position, window in enumerate(segments, start=1):
+        _check_cancelled(should_cancel)
+        _report_chunk(progress, "segment", position, len(segments), window)
+        data = loader(window, state)
+        valuation = data.close.ffill(axis=0)
 
-            for position in range(1, len(raw_next_carry)):
-                pending = boundary_carry[position - 1]
-                if pending.notna().any():
-                    row = raw_next_carry[position].index.get_loc(
-                        pd.Timestamp(prepared[position].window.start)
-                    )
-                    columns = pending.index[pending.notna()]
-                    raw_next_carry[position].loc[
-                        raw_next_carry[position].index[row], columns
-                    ] = pending.loc[columns].to_numpy(dtype="float64")
-            next_carry = raw_next_carry
-            if iteration == 1:
-                global_carry = _concat_logical(next_carry, prepared)
-                global_targets = _concat_logical(effective_frames, prepared)
-                next_carry = _split_logical(
-                    extend_carry(global_carry, global_targets), prepared
-                )
-            if not _frames_equal(next_carry, carry_frames):
-                carry_iterations += 1
-            stable = (
-                previous_shares is not None
-                and previous_effective is not None
-                and previous_carry is not None
-                and _frames_equal(previous_shares, share_frames)
-                and _frames_equal(previous_effective, effective_frames)
-                and _frames_equal(previous_carry, carry_frames)
-            )
-            cash_events = _carry_events(allocations)
-            last_pending = engine._cash_pending_on_last_day(
-                allocations[-1], effective_frames[-1].index[-1]
-            )
-            converged = stable or (
-                previous_cash_events is not None
-                and previous_cash_events == cash_events
-                and clipped_cells == 0
-                and last_pending == 0
-            )
-            carry_converged = _frames_equal(next_carry, raw_next_carry)
+        def segment_progress(stage: str, payload: dict) -> None:
             _notify(
                 progress,
-                "allocation",
-                iteration=iteration,
-                carry_iterations=carry_iterations,
-                **allocation_totals,
+                stage,
+                **payload,
+                segment_index=position,
+                segment_count=len(segments),
             )
-            previous_store.cleanup()
-            previous_store = current_store
-            previous_shares = share_frames
-            previous_effective = effective_frames
-            previous_carry = carry_frames
-            carry_frames = next_carry
-            previous_cash_events = cash_events
-            final_results = current_results
-            final_opens = open_parts
-            final_marks = mark_parts
-            if converged:
-                logger.info("整段资金分配在第 %d 轮稳定", iteration)
-                break
-        else:
-            logger.warning("整段资金分配 %d 次迭代仍未稳定", MAX_ALLOCATION_ITERATIONS)
 
-        elapsed = time.perf_counter() - started
-        result = _stitch(
-            final_results,
-            final_opens,
-            final_marks,
-            days,
-            benchmark,
-            benchmark_info,
+        result = engine.run_backtest(
+            data,
             strategy,
             params,
-            elapsed,
+            progress=segment_progress,
+            initial_state=state,
+            warmup_rows=0 if window.warmup is None else 1,
+            rebalance_days=mask,
+            liquidations=liquidations,
+            chunk_boundary=position < len(segments),
         )
-        metadata = dict(result.metadata)
-        calibration = dict(metadata["calibration"])
-        calibration.update(
-            {
-                "allocation_iterations": int(iteration),
-                "allocation_converged": bool(converged),
-                "carry_iterations": int(carry_iterations),
-                "carry_converged": bool(carry_converged),
-                "cash_carry_over_cells": 0,
-            }
-        )
-        metadata["calibration"] = calibration
-        metadata["execution"] = {
-            **metadata.get("execution", {}),
-            "mode": "streamed_fixed_point",
-            "chunk_count": len(windows),
-            "allocation_iterations": int(iteration),
-            "allocation_converged": bool(converged),
-        }
-        return replace(result, metadata=metadata)
-    finally:
-        previous_store.cleanup()
+        if result.final_state is None:
+            raise ResourceLimitError("调仓段执行没有返回可交接状态")
+        if len(result.orders):
+            order_days = pd.DatetimeIndex(result.orders["trade_date"])
+            rows = data.index.get_indexer(order_days)
+            cols = data.columns.get_indexer(result.orders["stock_code"])
+            open_parts.append(
+                pd.DataFrame(
+                    {
+                        "trade_date": order_days.to_numpy(),
+                        "stock_code": result.orders["stock_code"].to_numpy(),
+                        "open": data.open.to_numpy()[rows, cols],
+                    }
+                )
+            )
+            mark_parts.append(valuation.loc[order_days.unique()])
+        mark_parts.append(valuation.iloc[[-1]])
+        state = result.final_state
+        results.append((window, replace(result, portfolio=None)))
+        del data, result, valuation
+        gc.collect()
+
+    return _stitch(
+        results,
+        open_parts,
+        mark_parts,
+        days,
+        benchmark,
+        benchmark_info,
+        strategy,
+        params,
+        time.perf_counter() - started,
+        resource_windows=windows,
+    )
 
 
 def _load_window(
@@ -987,6 +482,38 @@ def _load_window(
     if window.warmup is None or state is None:
         return data
     return _warm_up(data, state)
+
+
+def run_loaded(
+    data: MarketData,
+    strategy: StrategySpec,
+    params: BacktestParams,
+    *,
+    progress: Progress | None = None,
+    should_cancel: Cancelled | None = None,
+) -> BacktestResult:
+    """对已经加载到内存的面板执行因果分段回测。
+
+    小面板与数据库分块面板共用 :func:`run_windows`，因此资源切块不会改变求解边界。
+    """
+    window = ChunkWindow(params.start, params.end)
+
+    def loader(part: ChunkWindow, state: ChunkState | None) -> MarketData:
+        chunk = data.crop(part.warmup or part.start, part.end)
+        return chunk if state is None else _warm_up(chunk, state)
+
+    return run_windows(
+        [window],
+        strategy,
+        params,
+        days=pd.DatetimeIndex(data.index),
+        loader=loader,
+        benchmark=data.benchmark,
+        benchmark_info=data.benchmark_info,
+        liquidations=liquidation_cells(data),
+        progress=progress,
+        should_cancel=should_cancel,
+    )
 
 
 def _global_stock_codes(
@@ -1195,6 +722,13 @@ def _aggregate_calibration(items: list[dict]) -> dict:
     merged["carry_iterations"] = max(int(item.get("carry_iterations", 0) or 0) for item in items)
     merged["allocation_converged"] = all(bool(item.get("allocation_converged")) for item in items)
     merged["carry_converged"] = all(bool(item.get("carry_converged")) for item in items)
+    iterations = [int(item.get("allocation_iterations", 0) or 0) for item in items]
+    merged["allocation_segments"] = len(items)
+    merged["allocation_iterations_total"] = sum(iterations)
+    merged["allocation_iterations_max"] = max(iterations, default=0)
+    merged["nonconverged_segments"] = sum(
+        not bool(item.get("allocation_converged")) for item in items
+    )
     return merged
 
 
@@ -1208,11 +742,12 @@ def _stitch(
     strategy: StrategySpec,
     params: BacktestParams,
     elapsed: float,
+    resource_windows: list[ChunkWindow] | None = None,
 ) -> BacktestResult:
-    """把各块结果拼成一次运行的标准化输出。
+    """把各调仓段结果拼成一次运行的标准化输出。
 
     参数:
-        results: 各块的窗口与结果。
+        results: 各调仓执行段的窗口与结果。
         open_parts: 各块成交对应的开盘价明细，用来重放持仓表。
         mark_parts: 各块成交日与区间末的估值价，用来重放持仓表。
         days: 整段区间的交易日索引。
@@ -1221,6 +756,7 @@ def _stitch(
         strategy: 策略配置。
         params: 整段区间与初始资金。
         elapsed: 分块执行总耗时。
+        resource_windows: 原始资源窗口；只用于记录取数切块，不参与求解。
     """
     orders_parts: list[pd.DataFrame] = []
     holding_parts: list[pd.DataFrame] = []
@@ -1318,7 +854,14 @@ def _stitch(
         "price_adjust": first.metadata.get("price_adjust"),
         "cash_retry_policy": first.metadata.get("cash_retry_policy"),
         "risk": first.metadata.get("risk"),
-        "execution": {**first.metadata.get("execution", {}), "chunk_count": len(results)},
+        "execution": {
+            **first.metadata.get("execution", {}),
+            "mode": "causal_segmented",
+            "chunk_count": len(resource_windows or results),
+            "segment_count": len(results),
+            "allocation_iterations": calibration["allocation_iterations_max"],
+            "allocation_converged": calibration["allocation_converged"],
+        },
         "versions": first.metadata.get("versions"),
         "vectorbt_version": first.metadata.get("vectorbt_version"),
         "panel": {"trading_days": int(len(days)), "stocks": int(len(target_weights.columns))},
@@ -1329,12 +872,23 @@ def _stitch(
                 "start": window.start,
                 "end": window.end,
                 "warmup": window.warmup,
-                "trading_days": int(len(item.daily) - (0 if window.warmup is None else 1)),
-                "stocks": int(len(item.target_weights.columns)),
+                "trading_days": int(
+                    ((days >= pd.Timestamp(window.start)) & (days <= pd.Timestamp(window.end))).sum()
+                ),
+                "stocks": int(len(target_weights.columns)),
+            }
+            for index, window in enumerate(resource_windows or [window for window, _ in results], start=1)
+        ],
+        "segments": [
+            {
+                "index": index,
+                "start": window.start,
+                "end": window.end,
+                "warmup": window.warmup,
                 "allocation_iterations": int(item.metadata["calibration"]["allocation_iterations"]),
                 "allocation_converged": bool(item.metadata["calibration"]["allocation_converged"]),
-                "cash_carry_over_cells": int(
-                    item.metadata["calibration"].get("cash_carry_over_cells", 0) or 0
+                "cash_clipped_cells": int(
+                    item.metadata["calibration"].get("cash_clipped_cells", 0) or 0
                 ),
             }
             for index, (window, item) in enumerate(results, start=1)
@@ -1343,9 +897,10 @@ def _stitch(
         "elapsed_seconds": round(elapsed, 3),
     }
     logger.info(
-        "分块回测完成：区间=%s~%s 块数=%d 订单=%d 耗时=%.1fs",
+        "因果分段回测完成：区间=%s~%s 资源块=%d 调仓段=%d 订单=%d 耗时=%.1fs",
         params.start,
         params.end,
+        len(resource_windows or results),
         len(results),
         len(orders),
         metadata["elapsed_seconds"],

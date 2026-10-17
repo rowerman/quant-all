@@ -467,3 +467,15 @@ def test_engine_keeps_cash_limited_cell_until_the_end(make_data):
     assert calibration["cash_retry_filled_cells"] == 0
     assert calibration["cash_pending_at_end_cells"] >= 1
     assert calibration["carry_converged"] is True
+
+
+def test_engine_allows_stable_cash_carry_at_segment_boundary(make_data):
+    """中间调仓段允许把稳定的现金补回目标交给下一段。"""
+    data, strategy, params = _weekly_panel(make_data, sell_blocked_rows=[9, 10, 11])
+    result = run_backtest(data, strategy, params, chunk_boundary=True)
+    calibration = result.metadata["calibration"]
+
+    assert calibration["allocation_converged"] is True
+    assert calibration["cash_carry_over_cells"] >= 1
+    assert result.final_state is not None
+    assert result.final_state.carry.notna().any()

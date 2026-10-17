@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.errors import ExecutionError
+from backtest.specs import CostSpec
 
 # 逐格分配状态：正常分配 / 余量补到一手 / 一手都装不下 / 缺执行价不下单 / 目标 0
 STATUS_ALLOCATED = "allocated"
@@ -120,6 +121,7 @@ def allocate_shares(
     lot_size: int,
     cash_buffer: float,
     carry: pd.DataFrame | None = None,
+    costs: CostSpec | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, dict]:
     """按预算把目标权重换成目标股数，返回 ``(股数矩阵, 逐格明细, 方向矩阵, 统计)``。
 
@@ -132,9 +134,16 @@ def allocate_shares(
         lot_size: 交易单位（股）。
         cash_buffer: 预留现金比例，取值 ``[0, 1)``。
         carry: 本轮已有现金补回目标；重试再次缺现金时继续传播，不新建补回事件。
+        costs: 最终成交使用的佣金、印花税和滑点口径；None 表示零成本。
     """
     if not 0.0 <= float(cash_buffer) < 1.0:
         raise ExecutionError(f"现金缓冲必须在 [0, 1) 之间：{cash_buffer}")
+    costs = costs or CostSpec(
+        commission_rate=0.0,
+        minimum_commission=0.0,
+        stamp_tax_rate=0.0,
+        slippage=0.0,
+    )
     index = pd.DatetimeIndex(targets.index)
     columns = targets.columns
     prices = price.reindex(index=index, columns=columns).to_numpy(dtype="float64")
@@ -192,34 +201,67 @@ def allocate_shares(
         previous_held = previous[row, cells]
         previous_value = previous_held * tradable_price
         target_value = cell_shares * tradable_price
-        buy_need = float(np.sum(np.maximum(target_value - previous_value, 0.0)))
-        sell_funds = float(np.sum(np.maximum(previous_value - target_value, 0.0)))
+        buy_delta = np.maximum(cell_shares - previous_held, 0.0)
+        sell_delta = np.maximum(previous_held - cell_shares, 0.0)
+
+        def buy_cost(delta: np.ndarray) -> np.ndarray:
+            traded = delta * tradable_price * (1.0 + float(costs.slippage))
+            commission = np.where(
+                delta > 0,
+                np.maximum(float(costs.minimum_commission), traded * float(costs.commission_rate)),
+                0.0,
+            )
+            return traded + commission
+
+        def sell_proceeds(delta: np.ndarray) -> np.ndarray:
+            traded = delta * tradable_price * (1.0 - float(costs.slippage))
+            commission = np.where(
+                delta > 0,
+                np.maximum(float(costs.minimum_commission), traded * float(costs.commission_rate)),
+                0.0,
+            )
+            tax = traded * float(costs.stamp_tax_rate)
+            return traded - commission - tax
+
+        buy_need = float(buy_cost(buy_delta).sum())
+        sell_funds = float(sell_proceeds(sell_delta).sum())
         funds = cash_open + sell_funds
         # 缩小前的目标股数，用来判断哪些买单被现金限制、差多少股
         intended = cell_shares.copy()
         buying = np.zeros(len(cells), dtype=bool)
-        if buy_need > funds:
+        if buy_need > funds + 1e-9:
             scale = max(funds, 0.0) / buy_need
-            buying = target_value > previous_value
-            scaled = previous_value + (target_value - previous_value) * scale
-            with np.errstate(divide="ignore", invalid="ignore"):
-                scaled_shares = np.floor(scaled / np.where(tradable, cell_price, 1.0) / lot_size) * lot_size
-            cell_shares = np.where(buying, np.maximum(scaled_shares, 0.0), cell_shares)
+            buying = intended > previous_held
+            scaled_delta = np.floor(buy_delta * scale / lot_size) * lot_size
+            cell_shares = np.where(buying, previous_held + scaled_delta, cell_shares)
+            # 最低佣金是非线性的，比例缩放后仍可能差几元；逐手回退到真实现金可成交。
+            while float(buy_cost(np.maximum(cell_shares - previous_held, 0.0)).sum()) > funds + 1e-9:
+                candidates = np.flatnonzero((cell_shares - previous_held) >= lot_size * 0.5)
+                if not len(candidates):
+                    break
+                marginal = lot_size * tradable_price[candidates] * (1.0 + float(costs.slippage))
+                cell_shares[candidates[int(np.argmax(marginal))]] -= lot_size
             target_value = cell_shares * tradable_price
         bumpable = positive & (cell_shares == 0)
         used = float(target_value.sum())
         # 补一手的余量同样受资金约束：不超过「开盘现金 + 本行持仓市值」，也不超过可用预算
         capacity = cash_open + float(previous_value.sum())
         leftover = max(min(usable, capacity) - used, 0.0)
+        cash_left = max(
+            funds - float(buy_cost(np.maximum(cell_shares - previous_held, 0.0)).sum()),
+            0.0,
+        )
         # 余量补一手：按一手金额从小到大，用预算内的取整余量把没建仓的格子补到一手
         bump = np.zeros(len(cells), dtype=bool)
         for cell in np.flatnonzero(bumpable)[np.argsort(
             lot_size * cell_price[bumpable], kind="stable"
         )]:
             lot_value = lot_size * cell_price[cell]
-            if lot_value <= leftover:
+            lot_cash = float(buy_cost(np.eye(1, len(cells), cell).ravel() * lot_size).sum())
+            if lot_value <= leftover and lot_cash <= cash_left + 1e-9:
                 cell_shares[cell] = lot_size
                 leftover -= lot_value
+                cash_left -= lot_cash
                 bump[cell] = True
         # 被现金缩小的买单：补一手之后仍未达到缩小前的目标股数。股数总是交易单位的
         # 整数倍，因此用半个交易单位消除浮点误差；普通取整不会进入这里。

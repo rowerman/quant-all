@@ -703,6 +703,8 @@ def run_backtest(
     previous_shares: pd.DataFrame | None = None
     previous_carry: pd.DataFrame | None = None
     previous_effective_targets: pd.DataFrame | None = None
+    previous_clipped_cells: int | None = None
+    previous_no_pending = False
     carry_iterations = 0
     carry_converged = False
     iteration = 0
@@ -746,11 +748,12 @@ def run_backtest(
             and _same_matrix(previous_shares, candidate.shares)
             and _same_matrix(previous_carry, carry)
             and _same_matrix(previous_effective_targets, effective_targets)
-            # 分块时块末还有没补成的现金缺口就继续重算：这些格子本来会在后面的交易日补回，
-            # 分块必须在块内把固定点走完，否则交接给下一块的状态会停在不同的迭代轮次上。
-            # 单块运行保持原有判据，行为与元数据不变。
+            and previous_clipped_cells == 0
+            and previous_no_pending
+            # 有下一调仓段时，稳定的补回目标可以交给下一段继续；最后一段没有后续交易日，
+            # 必须确认区间末不存在仍被现金缩小的缺口。
             and (
-                not chunk_boundary
+                chunk_boundary
                 or _cash_pending_on_last_day(candidate.allocation, effective_targets.index[-1]) == 0
             )
         ):
@@ -814,7 +817,7 @@ def run_backtest(
                 )
             )
             and allocation_witnesses["cash_clipped_cells"] == 0
-            and no_pending
+            and (no_pending or chunk_boundary)
         ):
             converged = True
             logger.info("现金补回事件在第 %d 轮稳定，停止继续重算", iteration)
@@ -826,6 +829,8 @@ def run_backtest(
             **{key: candidate.plan_stats[key] for key in ALLOCATION_STAT_KEYS},
         )
         previous_cash_events = cash_events
+        previous_clipped_cells = int(allocation_witnesses["cash_clipped_cells"])
+        previous_no_pending = bool(no_pending)
         if converged:
             break
     else:

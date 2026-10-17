@@ -3,14 +3,11 @@
 import numpy as np
 import pandas as pd
 import pytest
-from pathlib import Path
 
 import quant
-import backtest.chunked as chunked_module
-from backtest.chunked import ChunkWindow, _warm_up, plan_chunks, run_windows
+from backtest.chunked import ChunkWindow, _warm_up, plan_chunks, run_loaded, run_windows
 from backtest.config import MAX_CHUNKS
 from backtest.data import MarketData, load_market_data
-from backtest.engine import run_backtest
 from backtest.errors import ResourceLimitError, RunCancelled
 from backtest.orders import liquidation_cells
 from backtest.specs import (
@@ -138,6 +135,11 @@ def _run_chunked(data: MarketData, strategy: StrategySpec, params: BacktestParam
     )
 
 
+def _run_single(data: MarketData, strategy: StrategySpec, params: BacktestParams):
+    """用一个资源窗口运行，作为资源分块等价性的基准。"""
+    return run_loaded(data, strategy, params)
+
+
 def _assert_same(single, chunked) -> None:
     """逐位比较单块与分块的全部结果表。"""
     pd.testing.assert_frame_equal(single.daily, chunked.daily, check_exact=True)
@@ -160,7 +162,7 @@ def test_chunked_matches_single_block(make_data):
     strategy = _strategy()
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 300_000.0)
 
-    single = run_backtest(data, strategy, params)
+    single = _run_single(data, strategy, params)
     chunked = _run_chunked(data, strategy, params, [24, 40])
 
     assert chunked.metadata["execution"]["chunk_count"] == 3
@@ -175,7 +177,7 @@ def test_chunked_matches_single_block_across_blocked_and_delisted_cells(make_dat
     strategy = _strategy()
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 300_000.0)
 
-    single = run_backtest(data, strategy, params)
+    single = _run_single(data, strategy, params)
     assert len(single.rejections) > 0
     assert len(single.liquidations) == 1
     chunked = _run_chunked(data, strategy, params, [23, 24, 41])
@@ -188,37 +190,57 @@ def test_chunked_matches_single_block_for_single_cut(make_data):
     strategy = _strategy()
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 1_000_000.0)
 
-    single = run_backtest(data, strategy, params)
+    single = _run_single(data, strategy, params)
     chunked = _run_chunked(data, strategy, params, [24])
 
     assert chunked.metadata["execution"]["chunk_count"] == 2
     _assert_same(single, chunked)
 
 
-def test_chunked_cleans_temporary_state_on_success_and_cancel(make_data, monkeypatch):
-    """流式状态目录在成功和分配阶段取消后都要清理。"""
+def test_causal_segments_are_not_limited_by_global_iteration_count(make_data):
+    """超过 24 个调仓段时逐段收敛，不能再依赖整段迭代向后传播。"""
+    data = _panel(make_data)
+    # 本用例只验证长调仓链；恢复测试面板里专门用于退市边界测试的股票。
+    steps = np.arange(len(DATES), dtype="float64")
+    data.open.loc[:, DELIST_STOCK] = (210.0 + 0.30 * steps).astype("float32")
+    data.close.loc[:, DELIST_STOCK] = (data.open[DELIST_STOCK] * 1.002).astype("float32")
+    data.factors["MOM_20"].loc[:, DELIST_STOCK] = 3.0
+    data.delist_date.loc[DELIST_STOCK] = pd.NaT
+    strategy = _strategy(rebalance=RebalanceSpec(frequency="daily"))
+    params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 300_000.0)
+
+    result = _run_single(data, strategy, params)
+    calibration = result.metadata["calibration"]
+
+    assert calibration["allocation_segments"] > 24
+    assert calibration["allocation_iterations_total"] >= calibration["allocation_segments"]
+    assert calibration["allocation_iterations_max"] <= 24
+    nonconverged = [
+        (item["start"], item["end"], item["allocation_iterations"], item["cash_clipped_cells"])
+        for item in result.metadata["segments"]
+        if not item["allocation_converged"]
+    ]
+    assert calibration["nonconverged_segments"] == 0, nonconverged
+    assert calibration["allocation_converged"] is True
+    clipped = [
+        (item["start"], item["end"], item["cash_clipped_cells"])
+        for item in result.metadata["segments"]
+        if item["cash_clipped_cells"]
+    ]
+    assert calibration["cash_clipped_cells"] == 0, clipped
+
+
+def test_causal_segments_honor_cancel_between_segments(make_data):
+    """因果求解要在调仓段边界响应取消。"""
     data = _panel(make_data)
     strategy = _strategy()
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 1_000_000.0)
-    created: list[str] = []
-    original = chunked_module.TemporaryDirectory
-
-    def tracked(*args, **kwargs):
-        temp = original(*args, **kwargs)
-        created.append(temp.name)
-        return temp
-
-    monkeypatch.setattr(chunked_module, "TemporaryDirectory", tracked)
-    _run_chunked(data, strategy, params, [24, 40])
-    assert created and all(not Path(path).exists() for path in created)
-
-    created.clear()
     calls = 0
 
     def cancel_during_allocation() -> bool:
         nonlocal calls
         calls += 1
-        return calls >= 10
+        return calls >= 6
 
     with pytest.raises(RunCancelled):
         run_windows(
@@ -232,7 +254,7 @@ def test_chunked_cleans_temporary_state_on_success_and_cancel(make_data, monkeyp
             liquidations=liquidation_cells(data),
             should_cancel=cancel_during_allocation,
         )
-    assert created and all(not Path(path).exists() for path in created)
+    assert calls >= 6
 
 
 def test_plan_chunks_splits_by_cell_budget():
@@ -277,7 +299,7 @@ def test_chunked_matches_single_block_on_real_data():
         params.start, params.end, ["MOM_20"], universe=strategy.universe,
         benchmark_code="H00300.CSI",
     )
-    single = run_backtest(data, strategy, params)
+    single = run_loaded(data, strategy, params)
     chunked = run_chunked(
         strategy,
         params,

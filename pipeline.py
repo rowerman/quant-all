@@ -12,10 +12,10 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import Callable, Iterator
 
-from backtest.chunked import plan_chunks, run_chunked
+from backtest.chunked import plan_chunks, run_chunked, run_loaded
 from backtest.config import MAX_PANEL_CELLS
 from backtest.data import estimate_panel, load_market_data
-from backtest.engine import BacktestResult, run_backtest
+from backtest.engine import BacktestResult
 from backtest.errors import BacktestError, RunCancelled
 from backtest.logging_conf import get_logger
 from backtest.specs import BacktestParams, BenchmarkSpec, StrategySpec
@@ -142,7 +142,9 @@ def iter_run(
                     "benchmark": data.benchmark is not None,
                 },
             )
-            runner = lambda report: run_backtest(data, spec, params, progress=report)  # noqa: E731
+            runner = lambda report: run_loaded(  # noqa: E731
+                data, spec, params, progress=report, should_cancel=should_cancel
+            )
         else:
             logger.info("面板 %d×%d 超过单块上限，改为 %d 块分块回测", days, stocks, len(windows))
             yield (
