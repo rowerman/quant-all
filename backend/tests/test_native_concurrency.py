@@ -1,7 +1,8 @@
 """阶段隔离下的慢消费者、取消、名额预留及HTTP错误契约。"""
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Event, Lock
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -68,6 +69,62 @@ def test_cancel_while_waiting_for_native_lock_never_creates_generator():
             assert not created.is_set() and job.events.empty()
     finally:
         scheduler.close()
+
+
+def test_native_lock_wait_is_visible_in_job_status():
+    """任务等待共享原生锁时应记录等待状态和耗时。"""
+    scheduler = Scheduler(workers=1, waiting=0)
+
+    def factory():
+        return iter([('done', {})])
+
+    try:
+        with CALCULATION_LOCK:
+            job = scheduler.submit(factory)
+            assert job.started.wait(2)
+            deadline = time.monotonic() + 2
+            while job.snapshot()['status'] != 'waiting_native' and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert job.snapshot()['status'] == 'waiting_native'
+        assert job.finished.wait(2)
+        status = job.snapshot()
+        assert status['status'] == 'success'
+        assert status['native_wait_seconds'] > 0
+    finally:
+        scheduler.close()
+
+
+def test_factor_and_backtest_schedulers_share_native_lock():
+    """因子与回测独立调度器不能同时进入原生计算阶段。"""
+    factor_scheduler = Scheduler(workers=1, waiting=0)
+    backtest_scheduler = Scheduler(workers=1, waiting=0)
+    state_lock = Lock()
+    active = 0
+    maximum = 0
+
+    def factory(name):
+        def events():
+            nonlocal active, maximum
+            with state_lock:
+                active += 1
+                maximum = max(maximum, active)
+            time.sleep(.15)
+            with state_lock:
+                active -= 1
+            yield 'done', {'name': name}
+        return events
+
+    try:
+        factor = factor_scheduler.submit(factory('factor'))
+        backtest = backtest_scheduler.submit(factory('backtest'))
+        assert factor.finished.wait(3)
+        assert backtest.finished.wait(3)
+        assert maximum == 1
+        assert factor.events.get(timeout=1)[0] == 'done'
+        assert backtest.events.get(timeout=1)[0] == 'done'
+    finally:
+        factor_scheduler.close()
+        backtest_scheduler.close()
 
 
 def test_reservations_count_toward_capacity_and_close_releases_them():

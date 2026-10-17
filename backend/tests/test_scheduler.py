@@ -74,3 +74,27 @@ def test_error_is_public_and_generator_closed():
         assert job.finished.wait(2) and closed.is_set()
     finally:
         scheduler.close()
+
+
+def test_cancel_unblocks_terminal_event_waiting_on_full_queue():
+    """done尚未写入满队列时，断连取消必须让发送线程退出。"""
+    scheduler = Scheduler(workers=1, waiting=0)
+
+    def terminal_after_buffer():
+        yield 'overview', {'number': 1}
+        yield 'overview', {'number': 2}
+        yield 'done', {}
+
+    try:
+        job = scheduler.submit(terminal_after_buffer)
+        deadline = time.monotonic() + 2
+        while job.current_stage != 'done' and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert job.current_stage == 'done'
+        assert job.events.qsize() == 2
+        assert not job.terminal_sent.is_set()
+        job.cancel()
+        assert job.finished.wait(2)
+        assert job.snapshot()['status'] == 'cancelled'
+    finally:
+        scheduler.close()

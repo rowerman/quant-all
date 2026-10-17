@@ -103,9 +103,34 @@ def create_app():
         return json_safe(await asyncio.to_thread(backtest_service.compare_runs, chosen))
 
     @app.post('/api/backtests')
-    async def run_backtest(payload: dict):
-        """提交一次回测并保存结果。"""
-        return json_safe(await asyncio.to_thread(backtest_service.run_strategy, payload))
+    async def run_backtest(request: Request, payload: dict):
+        """提交一次回测并同步等待调度器返回结果。"""
+        scheduler = app.state.backtest_scheduler
+        job = scheduler.reserve()
+        request.state.request_id = job.request_id
+        try:
+            job.mark_status('preflight')
+            spec = await asyncio.to_thread(backtest_service.prepare, payload)
+            if await request.is_disconnected():
+                raise MonitorError('请求已断开，未提交回测任务', 400, 'MONITOR-105')
+            scheduler.start(
+                job,
+                lambda: backtest_service.stream_strategy(spec, job.cancelled.is_set),
+            )
+            result = await asyncio.to_thread(scheduler.wait, job)
+            result = dict(result)
+            result.pop('request_id', None)
+            return JSONResponse(
+                json_safe(result),
+                headers={'X-Request-ID': job.request_id},
+            )
+        except asyncio.CancelledError:
+            job.cancel()
+            raise
+        except BaseException:
+            if job.future is None or not job.finished.is_set():
+                scheduler.discard(job)
+            raise
 
     @app.get('/api/backtests/stream')
     async def stream_backtest(request: Request):
@@ -115,8 +140,12 @@ def create_app():
         payload = dict(request.query_params)
         scheduler = app.state.backtest_scheduler
         job = scheduler.reserve()
+        queued_status = job.snapshot()
+        request.state.request_id = job.request_id
         try:
+            job.mark_status('preflight')
             spec = await asyncio.to_thread(backtest_service.prepare, payload)
+            preflight_status = job.snapshot()
             if await request.is_disconnected():
                 raise MonitorError('请求已断开，未提交回测任务', 400, 'MONITOR-105')
             scheduler.start(
@@ -130,11 +159,22 @@ def create_app():
         async def stream():
             """消费回测阶段的线程事件，关闭连接时在阶段边界取消。"""
             ticks = 0
+            last_status_version = preflight_status['version']
+            terminal = False
             try:
-                yield 'event: queued\ndata: ' + json.dumps({'request_id': job.request_id}) + '\n\n'
+                yield 'event: queued\ndata: ' + json.dumps(queued_status, ensure_ascii=False) + '\n\n'
+                yield 'event: status\ndata: ' + json.dumps(
+                    preflight_status, ensure_ascii=False, allow_nan=False,
+                ) + '\n\n'
                 while True:
                     if await request.is_disconnected():
                         break
+                    status = job.snapshot()
+                    if status['version'] != last_status_version:
+                        last_status_version = status['version']
+                        yield 'event: status\ndata: ' + json.dumps(
+                            status, ensure_ascii=False, allow_nan=False,
+                        ) + '\n\n'
                     try:
                         stage, payload = job.events.get_nowait()
                     except Empty:
@@ -147,9 +187,11 @@ def create_app():
                         continue
                     yield f'event: {stage}\ndata: ' + json.dumps(payload, ensure_ascii=False, allow_nan=False) + '\n\n'
                     if stage in ('done', 'error'):
+                        terminal = True
                         break
             finally:
-                job.cancel()
+                if not terminal:
+                    job.cancel()
 
         return StreamingResponse(stream(), media_type='text/event-stream', background=BackgroundTask(job.cancel),
                                  headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
@@ -187,8 +229,11 @@ def create_app():
             raise MonitorError('同一查询参数不能重复提供')
         scheduler = app.state.scheduler
         job = scheduler.reserve()
+        queued_status = job.snapshot()
         try:
+            job.mark_status('preflight')
             spec = await asyncio.to_thread(service.prepare, dict(request.query_params), compare)
+            preflight_status = job.snapshot()
             if await request.is_disconnected():
                 raise MonitorError('请求已断开，未提交计算任务', 400, 'MONITOR-105')
             scheduler.start(job, lambda: service.run(spec))
@@ -200,11 +245,22 @@ def create_app():
         async def stream():
             """消费线程事件，长阶段发送心跳，关闭时标记取消。"""
             ticks = 0
+            last_status_version = preflight_status['version']
+            terminal = False
             try:
-                yield 'event: queued\ndata: ' + json.dumps({'request_id': job.request_id}) + '\n\n'
+                yield 'event: queued\ndata: ' + json.dumps(queued_status, ensure_ascii=False) + '\n\n'
+                yield 'event: status\ndata: ' + json.dumps(
+                    preflight_status, ensure_ascii=False, allow_nan=False,
+                ) + '\n\n'
                 while True:
                     if await request.is_disconnected():
                         break
+                    status = job.snapshot()
+                    if status['version'] != last_status_version:
+                        last_status_version = status['version']
+                        yield 'event: status\ndata: ' + json.dumps(
+                            status, ensure_ascii=False, allow_nan=False,
+                        ) + '\n\n'
                     try:
                         stage, payload = job.events.get_nowait()
                     except Empty:
@@ -217,9 +273,11 @@ def create_app():
                         continue
                     yield f'event: {stage}\ndata: ' + json.dumps(payload, ensure_ascii=False, allow_nan=False) + '\n\n'
                     if stage in ('done', 'error'):
+                        terminal = True
                         break
             finally:
-                job.cancel()
+                if not terminal:
+                    job.cancel()
 
         return StreamingResponse(stream(), media_type='text/event-stream', background=BackgroundTask(job.cancel),
                                  headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',

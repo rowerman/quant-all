@@ -65,6 +65,11 @@ function bindForm(selected){
     try{
       await consumeStream('/api/'+(compare?'compare':'evaluate')+'/stream?'+query,local.signal,(stage,payload)=>{
         if(stage==='queued'){status.textContent='已进入任务队列，运行时将逐阶段显示结果';return;}
+        if(stage==='status'){
+          if(payload.status==='waiting_native')status.textContent=`等待原生计算锁 · 已等待 ${payload.native_wait_seconds.toFixed(1)} 秒`;
+          else if(payload.status==='cancelling')status.textContent='已请求取消，等待当前安全边界退出…';
+          return;
+        }
         if(stage==='meta'){status.textContent='正在分析 '+payload.factor+' · '+(mode==='ic'?'轻量 IC':'完整分析');return;}
         if(stage==='error')throw new Error(`${payload.message} [${payload.code}] 请求 ${payload.request_id}`);
         if(stage==='done'){status.textContent=`分析完成 · 总耗时 ${(payload.total_elapsed_ms/1000).toFixed(1)} 秒`;return;}
@@ -134,6 +139,11 @@ async function backtestPage(version){
     try{
       await consumeStream('/api/backtests/stream?'+query,local.signal,(stage,payload)=>{
         if(stage==='queued')return void(status.textContent='已进入回测队列，等待运行名额…');
+        if(stage==='status'){
+          if(payload.status==='waiting_native')status.textContent=`等待因子评估或其他回测释放原生计算锁 · 已等待 ${fmt(payload.native_wait_seconds)} 秒`;
+          else if(payload.status==='cancelling')status.textContent='已请求取消，等待当前阶段或调仓段结束…';
+          return;
+        }
         if(stage==='error')throw new Error(`${payload.message} [${payload.code}] 请求 ${payload.request_id}`);
         if(stage==='meta')return void(status.textContent=`策略 ${payload.name} v${payload.version} · 池 ${payload.universe} · 基准 ${payload.benchmark||'无'} · 因子 ${payload.factors.join(' + ')}`);
         if(stage==='load')return void(status.textContent=`数据就绪：${payload.trading_days} 个交易日 × ${payload.stocks} 只股票${payload.chunks?` · 自动分为 ${payload.chunks} 块`:''}`);

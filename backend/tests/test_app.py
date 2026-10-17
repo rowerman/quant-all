@@ -29,9 +29,12 @@ def test_routes_and_real_ic():
             'factor': 'MOM_20', 'start': '2024-05-06', 'end': '2024-05-31', 'mode': 'ic'})
         assert result.status_code == 200
         events = decode(result.text)
-        assert [s for s, _ in events] == ['queued', 'meta', 'overview', 'ic_series',
-                                         'ic_dist', 'factor_done', 'done']
-        assert events[2][1]['metrics']['ic_stats']['valid_days'] == 20
+        business = [(stage, payload) for stage, payload in events if stage != 'status']
+        assert [s for s, _ in business] == ['queued', 'meta', 'overview', 'ic_series',
+                                           'ic_dist', 'factor_done', 'done']
+        assert any(stage == 'status' for stage, _ in events)
+        assert any(payload['status'] == 'preflight' for stage, payload in events if stage == 'status')
+        assert business[2][1]['metrics']['ic_stats']['valid_days'] == 20
         assert all('request_id' in payload for _, payload in events)
 
 

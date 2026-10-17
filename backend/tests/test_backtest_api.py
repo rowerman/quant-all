@@ -312,9 +312,59 @@ def test_backtest_stream_pushes_stage_events(client, monkeypatch):
         assert response.status_code == 200
         body = "".join(response.iter_text())
     assert "event: queued" in body
+    assert '"status": "queued"' in body
+    assert "event: status" in body
+    assert '"status": "preflight"' in body
     assert "event: meta" in body and '"name": "MOM_20 Top30"' in body
     assert "event: load" in body
     assert "event: done" in body
+
+
+def test_backtest_sync_api_uses_scheduler_and_drains_events(client, monkeypatch):
+    """同步接口经过回测调度器，且不会因事件队列无人消费而停住。"""
+
+    def fake_stream(request, should_cancel, store_path=None):
+        for number in range(8):
+            yield "progress", {"number": number}
+        yield "done", {"run_id": "r-sync", "orders": 3}
+
+    def direct_path_is_forbidden(*args, **kwargs):
+        raise AssertionError("同步接口绕过了调度器")
+
+    monkeypatch.setattr(backtest_service, "stream_strategy", fake_stream)
+    monkeypatch.setattr(backtest_service, "run_strategy", direct_path_is_forbidden)
+    response = client.post(
+        "/api/backtests",
+        json={"strategy_id": MOM20_ID, "start": "2024-01-01", "end": "2024-02-01"},
+    )
+    assert response.status_code == 200
+    assert response.headers["x-request-id"]
+    assert response.json() == {"run_id": "r-sync", "orders": 3}
+
+
+def test_backtest_sync_api_rejects_before_preflight_when_capacity_is_full(client, monkeypatch):
+    """同步回测容量已满时应直接429，并显示回测调度器的真实容量。"""
+    called = False
+
+    def prepare(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("容量已满仍进入预检")
+
+    monkeypatch.setattr(backtest_service, "prepare", prepare)
+    scheduler = client.app.state.backtest_scheduler
+    jobs = [scheduler.reserve() for _ in range(3)]
+    try:
+        response = client.post(
+            "/api/backtests",
+            json={"strategy_id": MOM20_ID, "start": "2024-01-01", "end": "2024-02-01"},
+        )
+        assert response.status_code == 429
+        assert "1个运行任务及2个等待名额" in response.json()["message"]
+        assert not called
+    finally:
+        for job in jobs:
+            scheduler.discard(job)
 
 
 def test_backtest_stream_rejects_bad_request(client):
