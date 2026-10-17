@@ -19,22 +19,56 @@ def cap_single_weights(
         weights: 信号日目标权重，NaN 表示非调仓日。
         max_single_weight: 单股权重上限，None 表示关闭。
     """
-    if max_single_weight is None:
+    return cap_target_weights(weights, max_single_weight)
+
+
+def cap_target_weights(
+    weights: pd.DataFrame,
+    max_single_weight: float | None,
+    industries: pd.DataFrame | None = None,
+    max_industry_weight: float | None = None,
+    industry_labels: dict[int, str] | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    """联合封顶单股和行业目标权重，并按原权重比例使用剩余容量。"""
+    if max_industry_weight is not None:
+        if industries is None:
+            raise ExecutionError("启用行业上限时缺少申万一级行业面板")
+        if not industries.index.equals(weights.index) or not industries.columns.equals(weights.columns):
+            raise ExecutionError("行业面板与目标权重的日期或股票列不一致")
+    if max_single_weight is None and max_industry_weight is None:
         return weights, {
             "single_cap_days": 0,
             "single_cap_cells": 0,
             "single_cap_excess_weight": 0.0,
             "single_cap_residual_cash": 0.0,
             "single_cap_max_weight": 0.0,
+            "industry_cap_days": 0,
+            "industry_cap_groups": 0,
+            "industry_cap_cells": 0,
+            "industry_cap_excess_weight": 0.0,
+            "industry_cap_residual_cash": 0.0,
+            "industry_cap_target_max_weight": 0.0,
+            "industry_missing_cells": 0,
+            "risk_residual_cash": 0.0,
         }
-    cap = float(max_single_weight)
+    single_cap = None if max_single_weight is None else float(max_single_weight)
+    industry_cap = None if max_industry_weight is None else float(max_industry_weight)
     values = weights.to_numpy(dtype="float64", copy=True)
+    industry_values = None if industries is None else industries.to_numpy(dtype="int16", copy=False)
     stats = {
         "single_cap_days": 0,
         "single_cap_cells": 0,
         "single_cap_excess_weight": 0.0,
         "single_cap_residual_cash": 0.0,
         "single_cap_max_weight": 0.0,
+        "industry_cap_days": 0,
+        "industry_cap_groups": 0,
+        "industry_cap_cells": 0,
+        "industry_cap_excess_weight": 0.0,
+        "industry_cap_residual_cash": 0.0,
+        "industry_cap_target_max_weight": 0.0,
+        "industry_missing_cells": 0,
+        "risk_residual_cash": 0.0,
     }
     for row in range(values.shape[0]):
         active = np.isfinite(values[row]) & (values[row] > 0)
@@ -42,28 +76,137 @@ def cap_single_weights(
             continue
         original = values[row, active].copy()
         capped = original.copy()
-        capped_cells = np.zeros(len(original), dtype=bool)
-        for _ in range(len(original) + 1):
-            over = capped > cap + 1e-12
-            if not over.any():
+        groups = None if industry_values is None else industry_values[row, active]
+        if industry_cap is not None and groups is not None and (groups <= 0).any():
+            missing_columns = weights.columns[np.flatnonzero(active)[groups <= 0]].astype(str).tolist()
+            stats["industry_missing_cells"] += len(missing_columns)
+            shown = ", ".join(missing_columns[:10])
+            suffix = "..." if len(missing_columns) > 10 else ""
+            raise ExecutionError(
+                f"申万一级行业缺失：{weights.index[row].date()} 的目标股票 {shown}{suffix}"
+            )
+        single_hits = np.zeros(len(original), dtype=bool)
+        group_hits: set[int] = set()
+        single_removed = 0.0
+        industry_removed = 0.0
+        target_total = float(original.sum())
+        for _ in range(len(original) * 2 + 4):
+            if single_cap is not None:
+                over = capped > single_cap + 1e-12
+                if over.any():
+                    single_removed += float((capped[over] - single_cap).sum())
+                    capped[over] = single_cap
+                    single_hits |= over
+            if industry_cap is not None and groups is not None:
+                for group in np.unique(groups):
+                    members = groups == group
+                    total = float(capped[members].sum())
+                    if total > industry_cap + 1e-12:
+                        industry_removed += total - industry_cap
+                        capped[members] *= industry_cap / total
+                        group_hits.add(int(group))
+            excess = target_total - float(capped.sum())
+            if excess <= 1e-12:
                 break
-            excess = float((capped[over] - cap).sum())
-            capped[over] = cap
-            capped_cells |= over
-            candidates = ~capped_cells & (capped < cap - 1e-12)
+            single_headroom = (
+                np.full(len(capped), np.inf)
+                if single_cap is None else np.maximum(single_cap - capped, 0.0)
+            )
+            candidates = single_headroom > 1e-12
+            group_headroom: dict[int, float] = {}
+            if industry_cap is not None and groups is not None:
+                for group in np.unique(groups):
+                    members = groups == group
+                    headroom = max(industry_cap - float(capped[members].sum()), 0.0)
+                    group_headroom[int(group)] = headroom
+                    if headroom <= 1e-12:
+                        candidates[members] = False
             if not candidates.any():
-                stats["single_cap_residual_cash"] += excess
                 break
-            base = capped[candidates]
-            share = base / base.sum() if base.sum() > 0 else np.full(candidates.sum(), 1.0 / candidates.sum())
-            capped[candidates] += excess * share
+            base = original[candidates]
+            proposal = excess * base / float(base.sum())
+            scale = 1.0
+            finite = np.isfinite(single_headroom[candidates]) & (proposal > 0)
+            if finite.any():
+                scale = min(scale, float(np.min(single_headroom[candidates][finite] / proposal[finite])))
+            if industry_cap is not None and groups is not None:
+                candidate_groups = groups[candidates]
+                for group in np.unique(candidate_groups):
+                    proposed = float(proposal[candidate_groups == group].sum())
+                    if proposed > 0:
+                        scale = min(scale, group_headroom[int(group)] / proposed)
+            if scale <= 1e-12:
+                break
+            candidate_positions = np.flatnonzero(candidates)
+            capped[candidate_positions] += proposal * min(scale, 1.0)
+            if single_cap is not None:
+                reached = capped[candidate_positions] >= single_cap - 1e-12
+                single_hits[candidate_positions[reached]] = True
+            if industry_cap is not None and groups is not None:
+                for group in np.unique(groups[candidates]):
+                    if float(capped[groups == group].sum()) >= industry_cap - 1e-12:
+                        group_hits.add(int(group))
         values[row, np.flatnonzero(active)] = capped
         stats["single_cap_max_weight"] = max(stats["single_cap_max_weight"], float(capped.max()))
-        if capped_cells.any():
+        residual = max(target_total - float(capped.sum()), 0.0)
+        stats["risk_residual_cash"] += residual
+        if single_cap is not None and single_hits.any():
             stats["single_cap_days"] += 1
-            stats["single_cap_cells"] += int(capped_cells.sum())
-            stats["single_cap_excess_weight"] += float(np.maximum(original - capped, 0.0).sum())
+            stats["single_cap_cells"] += int(single_hits.sum())
+            stats["single_cap_excess_weight"] += single_removed
+            stats["single_cap_residual_cash"] += residual
+        if industry_cap is not None and groups is not None:
+            group_weights = [float(capped[groups == group].sum()) for group in np.unique(groups)]
+            stats["industry_cap_target_max_weight"] = max(
+                stats["industry_cap_target_max_weight"], max(group_weights, default=0.0)
+            )
+            if group_hits:
+                stats["industry_cap_days"] += 1
+                stats["industry_cap_groups"] += len(group_hits)
+                stats["industry_cap_cells"] += int(
+                    np.isin(groups, np.fromiter(group_hits, dtype="int16")).sum()
+                )
+                stats["industry_cap_excess_weight"] += industry_removed
+                stats["industry_cap_residual_cash"] += residual
     return pd.DataFrame(values, index=weights.index, columns=weights.columns), stats
+
+
+def industry_weight_witnesses(
+    targets: pd.DataFrame,
+    industries: pd.DataFrame | None,
+    max_industry_weight: float | None,
+) -> dict:
+    """统计换手缩放后的行业暴露及继承超限。"""
+    stats = {
+        "industry_post_turnover_max_weight": 0.0,
+        "industry_inherited_over_cap_days": 0,
+        "industry_inherited_over_cap_groups": 0,
+        "industry_inherited_excess_weight": 0.0,
+    }
+    if max_industry_weight is None or industries is None:
+        return stats
+    cap = float(max_industry_weight)
+    values = targets.to_numpy(dtype="float64", copy=False)
+    groups = industries.to_numpy(dtype="int16", copy=False)
+    for row in range(len(targets)):
+        active = np.isfinite(values[row]) & (values[row] > 0)
+        if not active.any():
+            continue
+        over_groups = 0
+        for group in np.unique(groups[row, active]):
+            if group <= 0:
+                continue
+            weight = float(values[row, active & (groups[row] == group)].sum())
+            stats["industry_post_turnover_max_weight"] = max(
+                stats["industry_post_turnover_max_weight"], weight
+            )
+            if weight > cap + 1e-12:
+                over_groups += 1
+                stats["industry_inherited_excess_weight"] += weight - cap
+        if over_groups:
+            stats["industry_inherited_over_cap_days"] += 1
+            stats["industry_inherited_over_cap_groups"] += over_groups
+    return stats
 
 
 def constrain_one_way_turnover(
@@ -144,10 +287,21 @@ def apply_risk_constraints(
     price: pd.DataFrame,
     baseline_shares: pd.DataFrame,
     risk: RiskSpec,
+    industries: pd.DataFrame | None = None,
+    industry_labels: dict[int, str] | None = None,
 ) -> tuple[pd.DataFrame, dict]:
-    """依次应用单股上限和换手上限，返回实际执行目标。"""
-    capped, cap_stats = cap_single_weights(targets, risk.max_single_weight)
+    """依次应用集中度上限和换手上限，返回实际执行目标。"""
+    capped, cap_stats = cap_target_weights(
+        targets,
+        risk.max_single_weight,
+        industries,
+        risk.max_industry_weight,
+        industry_labels,
+    )
     constrained, turnover_stats = constrain_one_way_turnover(
         capped, budget, cash_open, price, baseline_shares, risk.max_one_way_turnover
     )
-    return constrained, {**cap_stats, **turnover_stats}
+    industry_stats = industry_weight_witnesses(
+        constrained, industries, risk.max_industry_weight
+    )
+    return constrained, {**cap_stats, **turnover_stats, **industry_stats}

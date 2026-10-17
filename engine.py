@@ -50,7 +50,7 @@ from backtest.orders import (
     build_order_plan,
     execution_targets,
 )
-from backtest.risk import cap_single_weights, constrain_one_way_turnover
+from backtest.risk import cap_target_weights, constrain_one_way_turnover, industry_weight_witnesses
 from backtest.signals import build_target_weights
 from backtest.specs import BacktestParams, StrategySpec
 
@@ -612,18 +612,25 @@ def run_backtest(
     target_weights, ranks = build_target_weights(
         data, strategy.signal, strategy.portfolio, strategy.rebalance, rebalance_days
     )
-    target_weights, single_cap_stats = cap_single_weights(
-        target_weights, strategy.risk.max_single_weight
+    target_weights, concentration_stats = cap_target_weights(
+        target_weights,
+        strategy.risk.max_single_weight,
+        data.industry_l1,
+        strategy.risk.max_industry_weight,
+        data.industry_labels,
     )
     _notify(
         progress,
         "signals",
         rebalance_days=int(target_weights.notna().any(axis=1).sum()),
         tradable_cells=int(ranks.notna().sum().sum()),
-        **single_cap_stats,
+        **concentration_stats,
     )
 
     targets = execution_targets(target_weights)
+    execution_industries = (
+        None if data.industry_l1 is None else data.industry_l1.shift(1, fill_value=0)
+    )
     seed_plan = None
     init_cash = float(params.init_cash)
     if initial_state is not None:
@@ -721,7 +728,7 @@ def run_backtest(
     previous_cash_events: tuple[tuple[str, str], ...] | None = None
     original_target_mask = ~np.isnan(targets.to_numpy(dtype="float64"))
     effective_targets = targets
-    risk_stats = dict(single_cap_stats)
+    risk_stats = dict(concentration_stats)
     for iteration in range(1, MAX_ALLOCATION_ITERATIONS + 1):
         budget = execution_budget(state_cash, state_shares, price, init_cash)
         cash_open = execution_cash(state_cash, init_cash)
@@ -733,7 +740,10 @@ def run_backtest(
             state_shares,
             strategy.risk.max_one_way_turnover,
         )
-        risk_stats = {**single_cap_stats, **turnover_stats}
+        industry_stats = industry_weight_witnesses(
+            effective_targets, execution_industries, strategy.risk.max_industry_weight
+        )
+        risk_stats = {**concentration_stats, **turnover_stats, **industry_stats}
         candidate = build_order_plan(
             data, effective_targets, strategy.execution, probe_orders, budget, cash_open, state_shares,
             strategy.costs, carry,

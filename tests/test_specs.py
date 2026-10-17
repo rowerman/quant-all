@@ -27,13 +27,17 @@ def test_default_risk_does_not_change_legacy_strategy_hash():
 
 
 def test_risk_configuration_round_trip_and_bounds():
-    spec = StrategySpec(risk=RiskSpec(max_single_weight=0.1, max_one_way_turnover=0.3))
+    spec = StrategySpec(
+        risk=RiskSpec(max_single_weight=0.1, max_industry_weight=0.3, max_one_way_turnover=0.3)
+    )
     restored = StrategySpec.from_dict(json.loads(spec.to_json()))
     assert restored == spec
     with pytest.raises(SpecError, match="max_single_weight"):
         RiskSpec(max_single_weight=0.0)
     with pytest.raises(SpecError, match="max_one_way_turnover"):
         RiskSpec(max_one_way_turnover=1.1)
+    with pytest.raises(SpecError, match="max_industry_weight"):
+        RiskSpec(max_industry_weight=0.0)
 
 
 def test_strategy_rejects_unknown_field():

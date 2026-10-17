@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 import quant
@@ -81,6 +82,8 @@ class MarketData:
     list_date: pd.Series
     delist_date: pd.Series | None = None
     membership: pd.DataFrame | None = None
+    industry_l1: pd.DataFrame | None = None
+    industry_labels: dict[int, str] | None = None
     benchmark: pd.Series | None = None
     benchmark_info: dict | None = None
     versions: dict | None = None
@@ -98,6 +101,10 @@ class MarketData:
             not self.membership.index.equals(index) or not self.membership.columns.equals(columns)
         ):
             raise DataAlignmentError("成分矩阵与行情面板的日期或股票列不一致")
+        if self.industry_l1 is not None and (
+            not self.industry_l1.index.equals(index) or not self.industry_l1.columns.equals(columns)
+        ):
+            raise DataAlignmentError("行业矩阵与行情面板的日期或股票列不一致")
         for name, frame in self.factors.items():
             if not frame.index.equals(index) or not frame.columns.equals(columns):
                 raise DataAlignmentError(f"因子 {name} 与行情面板的日期或股票列不一致")
@@ -141,6 +148,8 @@ class MarketData:
             list_date=self.list_date,
             delist_date=self.delist_date,
             membership=self.membership.loc[mask] if self.membership is not None else None,
+            industry_l1=self.industry_l1.loc[mask] if self.industry_l1 is not None else None,
+            industry_labels=self.industry_labels,
             benchmark=benchmark,
             benchmark_info=benchmark_info,
             versions=self.versions,
@@ -237,6 +246,37 @@ def _factor_version(factor_db: Path | str | None) -> dict | None:
     }
 
 
+def _industry_version(db_path: Path | str | None) -> dict | None:
+    """读取申万历史行业内容摘要，老库缺表时降级为 None。"""
+    try:
+        frame = db_query(
+            "SELECT source, api, digest, rows, source_rows, stocks, history_rows, "
+            "current_snapshot_rows, overlap_segments_resolved, gap_segments_filled, gap_days_filled, "
+            "min_date, max_date, source_updated_at, built_at "
+            "FROM meta.sw_industry_manifest LIMIT 1",
+            path=db_path,
+        )
+    except Exception as error:
+        logger.warning("读取申万行业版本失败：%s", error)
+        return None
+    if frame.empty:
+        return None
+    row = frame.iloc[0]
+    return {
+        name: (None if pd.isna(row[name]) else str(row[name]))
+        for name in ("source", "api", "digest", "min_date", "max_date", "source_updated_at", "built_at")
+    } | {
+        "rows": int(row["rows"]),
+        "source_rows": int(row["source_rows"]),
+        "stocks": int(row["stocks"]),
+        "history_rows": int(row["history_rows"]),
+        "current_snapshot_rows": int(row["current_snapshot_rows"]),
+        "overlap_segments_resolved": int(row["overlap_segments_resolved"]),
+        "gap_segments_filled": int(row["gap_segments_filled"]),
+        "gap_days_filled": int(row["gap_days_filled"]),
+    }
+
+
 def _load_versions(db_path: Path | str | None, factor_db: Path | str | None = None) -> dict:
     """读取本次运行用到的数据版本与因子版本。
 
@@ -247,7 +287,52 @@ def _load_versions(db_path: Path | str | None, factor_db: Path | str | None = No
     return {
         "dataset": _dataset_version(db_path),
         "factors": _factor_version(FACTOR_DB if factor_db is None else factor_db),
+        "industry": _industry_version(db_path),
     }
+
+
+def _load_industry_l1(
+    start: str,
+    end: str,
+    index: pd.DatetimeIndex,
+    columns: pd.Index,
+    db_path: Path | str | None,
+) -> tuple[pd.DataFrame, dict[int, str]]:
+    """把申万一级历史区间铺成紧凑整数宽表，0 表示无行业。"""
+    frame = quant.load_sw_industry_member(
+        start=start, end=end, stocks=list(columns), db_path=db_path
+    )
+    codes = sorted(frame["l1_code"].dropna().astype(str).unique())
+    encoded = {code: position + 1 for position, code in enumerate(codes)}
+    names = (
+        frame.drop_duplicates("l1_code").set_index("l1_code")["l1_name"].astype(str).to_dict()
+        if not frame.empty else {}
+    )
+    labels = {encoded[code]: f"{code} {names.get(code, '')}".strip() for code in codes}
+    values = np.zeros((len(index), len(columns)), dtype="int16")
+    column_positions = {str(code): position for position, code in enumerate(columns)}
+    stamps = index.to_numpy(dtype="datetime64[ns]")
+    for row in frame.itertuples(index=False):
+        column = column_positions.get(str(row.stock_code))
+        if column is None:
+            continue
+        start_at = int(np.searchsorted(stamps, np.datetime64(row.in_date), side="left"))
+        end_at = len(index) if pd.isna(row.out_date) else int(
+            np.searchsorted(stamps, np.datetime64(row.out_date), side="right")
+        )
+        if start_at >= end_at:
+            continue
+        code = encoded[str(row.l1_code)]
+        occupied = values[start_at:end_at, column]
+        conflict = (occupied != 0) & (occupied != code)
+        if conflict.any():
+            first = start_at + int(np.flatnonzero(conflict)[0])
+            raise DataAlignmentError(
+                f"申万一级行业区间冲突：{columns[column]} 在 {index[first].date()} "
+                f"同时命中 {labels[int(values[first, column])]} 与 {labels[code]}"
+            )
+        occupied[occupied == 0] = code
+    return pd.DataFrame(values, index=index, columns=columns), labels
 
 
 def _load_factor(
@@ -415,6 +500,7 @@ def load_market_data(
     benchmark_code: str | None = "H00300.CSI",
     membership_end: str | None = None,
     stock_codes: tuple[str, ...] | None = None,
+    industry_level: str | None = None,
 ) -> MarketData:
     """从主库和因子目录读取回测输入。
 
@@ -430,7 +516,10 @@ def load_market_data(
             截止日，保证每块的成分口径与不分块一致。
         stock_codes: 外部固定的股票列；None 表示按本区间解析股票池。分块回测传整段
             区间的股票并集，保证每块列集合一致，持仓不会因股票暂时不在本块池内而丢失。
+        industry_level: None 表示不加载行业；第一版只支持 ``L1``。
     """
+    if industry_level not in (None, "L1"):
+        raise ValueError("industry_level 第一版只支持 None/L1")
     spec = resolve_universe(universe)
     stocks = stock_codes if stock_codes is not None else universe_stocks(spec, start, end, db_path=db_path)
     days = _trade_days(start, end, db_path)
@@ -488,11 +577,17 @@ def load_market_data(
         list(factors),
     )
     benchmark, benchmark_info = load_benchmark(benchmark_code, start, end, index, db_path)
+    industry_l1, industry_labels = (
+        _load_industry_l1(start, end, index, columns, db_path)
+        if industry_level == "L1" else (None, None)
+    )
     return MarketData(
         factors=factors,
         list_date=list_date,
         delist_date=delist_date,
         membership=membership,
+        industry_l1=industry_l1,
+        industry_labels=industry_labels,
         benchmark=benchmark,
         benchmark_info=benchmark_info,
         versions=_load_versions(db_path),

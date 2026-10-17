@@ -46,7 +46,7 @@ from backtest.orders import (
     execution_targets,
     liquidation_cells,
 )
-from backtest.risk import cap_single_weights
+from backtest.risk import cap_target_weights
 from backtest.signals import build_target_weights, rebalance_mask
 from backtest.specs import BacktestParams, StrategySpec
 from backtest.universe import resolve_universe, universe_stocks
@@ -86,6 +86,16 @@ SUM_KEYS = (
     "single_cap_cells",
     "single_cap_excess_weight",
     "single_cap_residual_cash",
+    "industry_cap_days",
+    "industry_cap_groups",
+    "industry_cap_cells",
+    "industry_cap_excess_weight",
+    "industry_cap_residual_cash",
+    "industry_missing_cells",
+    "risk_residual_cash",
+    "industry_inherited_over_cap_days",
+    "industry_inherited_over_cap_groups",
+    "industry_inherited_excess_weight",
     "turnover_limited_days",
     "turnover_limited_cells",
     "cash_carry_over_cells",
@@ -94,6 +104,8 @@ MAX_KEYS = (
     "fee_matrix_max_diff",
     "allocation_gap_max_shares",
     "single_cap_max_weight",
+    "industry_cap_target_max_weight",
+    "industry_post_turnover_max_weight",
     "turnover_before_max",
     "turnover_after_max",
     "turnover_limit_error_max",
@@ -242,7 +254,7 @@ class _PreparedChunk:
     target_weights: pd.DataFrame
     targets: pd.DataFrame
     rank_rows: int
-    single_cap_stats: dict
+    risk_stats: dict
 
 
 def _logical_frame(frame: pd.DataFrame, window: ChunkWindow) -> pd.DataFrame:
@@ -348,8 +360,12 @@ def _prepare_chunks(
             strategy.rebalance,
             mask,
         )
-        target_weights, single_cap_stats = cap_single_weights(
-            target_weights, strategy.risk.max_single_weight
+        target_weights, risk_stats = cap_target_weights(
+            target_weights,
+            strategy.risk.max_single_weight,
+            data.industry_l1,
+            strategy.risk.max_industry_weight,
+            data.industry_labels,
         )
         prepared.append(
             _PreparedChunk(
@@ -357,7 +373,7 @@ def _prepare_chunks(
                 target_weights=target_weights,
                 targets=execution_targets(target_weights),
                 rank_rows=int(ranks.notna().sum().sum()),
-                single_cap_stats=single_cap_stats,
+                risk_stats=risk_stats,
             )
         )
         total_rank_rows += int(ranks.notna().sum().sum())
@@ -478,6 +494,7 @@ def _load_window(
         benchmark_code=strategy.benchmark.index_code,
         membership_end=params.end,
         stock_codes=stock_codes,
+        industry_level="L1" if strategy.risk.max_industry_weight is not None else None,
     )
     if window.warmup is None or state is None:
         return data

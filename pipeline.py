@@ -131,6 +131,7 @@ def iter_run(
                 list(spec.signal.factors),
                 universe=spec.universe,
                 benchmark_code=spec.benchmark.index_code,
+                industry_level="L1" if spec.risk.max_industry_weight is not None else None,
             )
             yield (
                 "load",

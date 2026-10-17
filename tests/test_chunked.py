@@ -15,6 +15,7 @@ from backtest.specs import (
     BenchmarkSpec,
     PortfolioSpec,
     RebalanceSpec,
+    RiskSpec,
     SignalSpec,
     StrategySpec,
 )
@@ -168,6 +169,26 @@ def test_chunked_matches_single_block(make_data):
     assert chunked.metadata["execution"]["chunk_count"] == 3
     assert len(chunked.metadata["chunks"]) == 3
     assert chunked.metadata["chunks"][1]["warmup"] == str(DATES[23].date())
+    _assert_same(single, chunked)
+
+
+def test_chunked_matches_single_block_with_industry_cap(make_data):
+    """行业面板跨资源块裁剪后，单块与分块结果仍逐位一致。"""
+    data = _panel(make_data)
+    industry = pd.DataFrame(
+        [[1, 1, 1, 2, 2, 3]] * len(DATES),
+        index=DATES,
+        columns=STOCKS,
+        dtype="int16",
+    )
+    data = __import__("dataclasses").replace(
+        data, industry_l1=industry, industry_labels={1: "A", 2: "B", 3: "C"}
+    )
+    strategy = _strategy(risk=RiskSpec(max_industry_weight=0.5))
+    params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 300_000.0)
+    single = _run_single(data, strategy, params)
+    chunked = _run_chunked(data, strategy, params, [24, 40])
+    assert single.metadata["calibration"]["industry_cap_days"] > 0
     _assert_same(single, chunked)
 
 

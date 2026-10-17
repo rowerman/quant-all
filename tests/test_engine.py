@@ -124,6 +124,29 @@ def test_engine_applies_single_cap_and_turnover_before_allocation(make_data):
     assert calibration["cash_clipped_cells"] == 0
 
 
+def test_engine_applies_industry_cap_on_signal_day(make_data):
+    score, price = _frames()
+    industry = pd.DataFrame(
+        [[1, 1, 2]] * len(DATES), index=DATES, columns=STOCKS, dtype="int16"
+    )
+    data = make_data(
+        dates=DATES, stocks=STOCKS, open=price.astype("float32"), close=price.astype("float32"),
+        factors={"MOM_20": score.astype("float32")}, industry_l1=industry,
+        industry_labels={1: "A 行业", 2: "B 行业"},
+    )
+    strategy = _strategy(
+        portfolio=PortfolioSpec(top_n=3),
+        risk=RiskSpec(max_industry_weight=0.5),
+    )
+    result = run_backtest(
+        data, strategy, BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
+    )
+    calibration = result.metadata["calibration"]
+    assert calibration["industry_cap_target_max_weight"] <= 0.5 + 1e-9
+    assert calibration["industry_cap_days"] > 0
+    assert calibration["cash_clipped_cells"] == 0
+
+
 def test_engine_holdings_match_target_weights(make_data):
     score, price = _frames()
     data = make_data(

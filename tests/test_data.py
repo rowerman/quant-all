@@ -10,6 +10,7 @@ from backtest.data import (
     PRICE_ADJUST,
     STATE_ADJUST,
     _load_field,
+    _load_industry_l1,
     _load_versions,
     load_benchmark,
     load_market_data,
@@ -147,6 +148,29 @@ def test_price_fields_use_adjusted_prices(monkeypatch):
     assert seen["total_mv"] == "raw"
     assert seen["is_st"] == "raw"
     assert seen["can_buy_open_next"] == "raw"
+
+
+def test_load_industry_l1_uses_closed_intervals_and_rejects_conflict(monkeypatch):
+    """行业调出日仍有效，下一日切换；同日跨一级行业必须报错。"""
+    index = pd.date_range("2024-01-02", periods=3, freq="B")
+    columns = pd.Index(["SZ000001"], name="stock_code")
+    base = pd.DataFrame(
+        {
+            "stock_code": ["SZ000001", "SZ000001"],
+            "l1_code": ["A", "B"], "l1_name": ["甲", "乙"],
+            "in_date": pd.to_datetime(["2024-01-02", "2024-01-04"]),
+            "out_date": pd.to_datetime(["2024-01-03", None]),
+        }
+    )
+    monkeypatch.setattr(quant, "load_sw_industry_member", lambda **kwargs: base)
+    panel, labels = _load_industry_l1("2024-01-02", "2024-01-04", index, columns, None)
+    assert panel.iloc[:, 0].tolist() == [1, 1, 2]
+    assert labels == {1: "A 甲", 2: "B 乙"}
+    conflict = base.copy()
+    conflict.loc[1, "in_date"] = pd.Timestamp("2024-01-03")
+    monkeypatch.setattr(quant, "load_sw_industry_member", lambda **kwargs: conflict)
+    with pytest.raises(DataAlignmentError, match="行业区间冲突"):
+        _load_industry_l1("2024-01-02", "2024-01-04", index, columns, None)
 
 
 def test_close_has_no_fake_gap_on_ex_dividend():

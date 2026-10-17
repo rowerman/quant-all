@@ -157,11 +157,13 @@ class RiskSpec:
     """
 
     max_single_weight: float | None = None
+    max_industry_weight: float | None = None
     max_one_way_turnover: float | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
             ("risk.max_single_weight", self.max_single_weight),
+            ("risk.max_industry_weight", self.max_industry_weight),
             ("risk.max_one_way_turnover", self.max_one_way_turnover),
         ):
             if value is None:
@@ -169,20 +171,25 @@ class RiskSpec:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise SpecError(f"{name} 必须是数字或 None")
             value = float(value)
-            if name.endswith("max_single_weight") and not 0.0 < value <= 1.0:
-                raise SpecError("risk.max_single_weight 必须在 (0, 1] 之间")
+            if name.endswith(("max_single_weight", "max_industry_weight")) and not 0.0 < value <= 1.0:
+                raise SpecError(f"{name} 必须在 (0, 1] 之间")
             if name.endswith("max_one_way_turnover") and not 0.0 <= value <= 1.0:
                 raise SpecError("risk.max_one_way_turnover 必须在 [0, 1] 之间")
 
     @property
     def disabled(self) -> bool:
         """返回是否没有启用任何风险约束。"""
-        return self.max_single_weight is None and self.max_one_way_turnover is None
+        return (
+            self.max_single_weight is None
+            and self.max_industry_weight is None
+            and self.max_one_way_turnover is None
+        )
 
     def to_dict(self) -> dict[str, float | None]:
         """转换为稳定的风险配置字典。"""
         return {
             "max_single_weight": self.max_single_weight,
+            "max_industry_weight": self.max_industry_weight,
             "max_one_way_turnover": self.max_one_way_turnover,
         }
 
