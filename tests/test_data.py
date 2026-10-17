@@ -173,6 +173,37 @@ def test_load_industry_l1_uses_closed_intervals_and_rejects_conflict(monkeypatch
         _load_industry_l1("2024-01-02", "2024-01-04", index, columns, None)
 
 
+def test_load_industry_l1_switches_classification_and_labels_carry_forward(monkeypatch):
+    """行业面板在分类切换日换组，carry-forward 标签单独标记。"""
+    index = pd.date_range("2021-12-09", periods=4, freq="B")
+    columns = pd.Index(["SZ000001"], name="stock_code")
+    frame = pd.DataFrame(
+        {
+            "stock_code": ["SZ000001", "SZ000001"],
+            "classification": ["SW2014", "SW2021"],
+            "l1_code": ["801010.SI", "801020.SI"],
+            "l1_name": ["农林牧渔", "基础化工"],
+            "l2_code": ["801016.SI", "801026.SI"],
+            "l2_name": ["种植业", "化学制品"],
+            "l3_code": ["850111.SI", "850211.SI"],
+            "l3_name": ["种子", "涂料"],
+            "in_date": pd.to_datetime(["2015-01-01", "2021-12-13"]),
+            "out_date": pd.to_datetime(["2021-12-12", None]),
+            "source_l3_code": ["850111.SI", "850211.SI"],
+            "carry_forward": [False, False],
+        }
+    )
+    monkeypatch.setattr(quant, "load_sw_industry_member", lambda **kwargs: frame)
+    panel, labels = _load_industry_l1(
+        "2021-12-10", "2021-12-15", index, columns, None
+    )
+    assert panel.iloc[:, 0].tolist() == [1, 1, 2, 2]
+    assert labels == {
+        1: "SW2014 801010.SI 农林牧渔",
+        2: "SW2021 801020.SI 基础化工",
+    }
+
+
 def test_close_has_no_fake_gap_on_ex_dividend():
     """除权日不做假跳空：SZ002594 在 2025-07-29 每 10 股送转 20 股。
 

@@ -258,10 +258,7 @@ def _industry_version(db_path: Path | str | None) -> dict | None:
     """读取申万历史行业内容摘要，老库缺表时降级为 None。"""
     try:
         frame = db_query(
-            "SELECT source, api, digest, rows, source_rows, stocks, history_rows, "
-            "current_snapshot_rows, overlap_segments_resolved, gap_segments_filled, gap_days_filled, "
-            "min_date, max_date, source_updated_at, built_at "
-            "FROM meta.sw_industry_manifest LIMIT 1",
+            "SELECT * FROM meta.sw_industry_manifest LIMIT 1",
             path=db_path,
         )
     except Exception as error:
@@ -270,19 +267,24 @@ def _industry_version(db_path: Path | str | None) -> dict | None:
     if frame.empty:
         return None
     row = frame.iloc[0]
-    return {
-        name: (None if pd.isna(row[name]) else str(row[name]))
-        for name in ("source", "api", "digest", "min_date", "max_date", "source_updated_at", "built_at")
-    } | {
-        "rows": int(row["rows"]),
-        "source_rows": int(row["source_rows"]),
-        "stocks": int(row["stocks"]),
-        "history_rows": int(row["history_rows"]),
-        "current_snapshot_rows": int(row["current_snapshot_rows"]),
-        "overlap_segments_resolved": int(row["overlap_segments_resolved"]),
-        "gap_segments_filled": int(row["gap_segments_filled"]),
-        "gap_days_filled": int(row["gap_days_filled"]),
+    text_fields = (
+        "source", "api", "digest", "min_date", "max_date",
+        "source_updated_at", "built_at", "classifications", "switch_date",
+    )
+    result = {
+        name: (None if name not in row or pd.isna(row[name]) else str(row[name]))
+        for name in text_fields
     }
+    for name in (
+        "rows", "source_rows", "stocks", "history_rows", "current_snapshot_rows",
+        "overlap_segments_resolved", "gap_segments_filled", "gap_days_filled",
+        "repair_rows", "carry_forward_rows", "carry_forward_stocks",
+        "empty_source_rows", "backfill_rows", "backfill_stocks",
+    ):
+        result[name] = (
+            int(row[name]) if name in row and not pd.isna(row[name]) else 0
+        )
+    return result
 
 
 def _load_versions(db_path: Path | str | None, factor_db: Path | str | None = None) -> dict:
@@ -310,13 +312,33 @@ def _load_industry_l1(
     frame = quant.load_sw_industry_member(
         start=start, end=end, stocks=list(columns), db_path=db_path
     )
-    codes = sorted(frame["l1_code"].dropna().astype(str).unique())
-    encoded = {code: position + 1 for position, code in enumerate(codes)}
-    names = (
-        frame.drop_duplicates("l1_code").set_index("l1_code")["l1_name"].astype(str).to_dict()
-        if not frame.empty else {}
+    if frame.empty:
+        return (
+            pd.DataFrame(np.zeros((len(index), len(columns)), dtype="int16"),
+                         index=index, columns=columns),
+            {},
+        )
+    frame = frame.copy()
+    if "classification" in frame.columns:
+        frame["group_code"] = (
+            frame["classification"].fillna("").astype(str)
+            + ":"
+            + frame["l1_code"].fillna("").astype(str)
+        )
+    else:
+        frame["group_code"] = frame["l1_code"].astype(str)
+    frame["group_label"] = frame.apply(
+        lambda row: _industry_label(row), axis=1
     )
-    labels = {encoded[code]: f"{code} {names.get(code, '')}".strip() for code in codes}
+    codes = sorted(frame["group_code"].dropna().astype(str).unique())
+    encoded = {code: position + 1 for position, code in enumerate(codes)}
+    labels = (
+        frame.drop_duplicates("group_code")
+        .set_index("group_code")["group_label"]
+        .astype(str)
+        .to_dict()
+    )
+    labels = {encoded[code]: labels[code] for code in codes}
     values = np.zeros((len(index), len(columns)), dtype="int16")
     column_positions = {str(code): position for position, code in enumerate(columns)}
     stamps = index.to_numpy(dtype="datetime64[ns]")
@@ -330,7 +352,7 @@ def _load_industry_l1(
         )
         if start_at >= end_at:
             continue
-        code = encoded[str(row.l1_code)]
+        code = encoded[str(row.group_code)]
         occupied = values[start_at:end_at, column]
         conflict = (occupied != 0) & (occupied != code)
         if conflict.any():
@@ -341,6 +363,20 @@ def _load_industry_l1(
             )
         occupied[occupied == 0] = code
     return pd.DataFrame(values, index=index, columns=columns), labels
+
+
+def _industry_label(row) -> str:
+    """生成行业组标签；旧库没有分类和 carry_forward 时保持旧格式。"""
+    code = str(row["l1_code"])
+    name = "" if pd.isna(row.get("l1_name")) else str(row["l1_name"])
+    classification = row.get("classification")
+    if classification is None or pd.isna(classification):
+        return f"{code} {name}".strip()
+    label = f"{classification} {code} {name}".strip()
+    carry = row.get("carry_forward")
+    if carry is not None and not pd.isna(carry) and bool(carry):
+        label += "（沿用）"
+    return label
 
 
 def _load_factor(
