@@ -501,6 +501,7 @@ def build_order_plan(
     liquidations: pd.DataFrame | None = None,
     seed_shares: pd.Series | None = None,
     seed_fixed_fees: pd.Series | None = None,
+    capacity_exempt: pd.DataFrame | None = None,
 ) -> OrderPlan:
     """把目标权重、探针成交明细与执行预算变成最终订单计划。
 
@@ -521,6 +522,7 @@ def build_order_plan(
         seed_shares: 分块回测的播种持股，写在预热行上；None 表示不需要播种。
         seed_fixed_fees: 分块回测预热行的固定费用（等于播种成交金额的相反数），
             使播种那笔的现金变化精确为 0。
+        capacity_exempt: 不受成交额参与率限制的格子，当前用于退市强制清算。
     """
     costs = costs or CostSpec()
     side, value = probe_matrices(probe, targets.index, targets.columns)
@@ -534,6 +536,12 @@ def build_order_plan(
         execution.cash_buffer,
         carry=carry,
         costs=costs,
+        amount_cny=data.amount_cny,
+        max_participation_rate=execution.max_participation_rate,
+        capacity_exempt=(
+            _liquidation_matrix(cells, targets.index, targets.columns)
+            if capacity_exempt is None else capacity_exempt
+        ),
     )
     if seed_shares is not None and len(shares.index):
         # 播种行：把上一块的收盘持股原样买回来，供后续交易日算真实差值；
@@ -557,6 +565,13 @@ def build_order_plan(
     side_source = np.where(unknown, side, estimated_side).astype("int8")
     value_source = np.where(unknown, value, estimated_value).astype("float64")
     mixed = np.where(allocated_direction != 0, allocated_direction, direction).astype("int8")
+    unavailable = allocation.loc[
+        allocation["capacity_unavailable"].astype(bool), ["trade_date", "stock_code"]
+    ].copy()
+    if not unavailable.empty:
+        unavailable["reason"] = "liquidity_unavailable"
+        rejection = pd.concat([rejection, unavailable[REJECTION_COLUMNS]], ignore_index=True)
+        rejection = rejection.sort_values(["trade_date", "stock_code", "reason"]).reset_index(drop=True)
     fees, fixed_fees = fee_matrices(
         targets.index, targets.columns, filtered.notna(), side_source, value_source, mixed, costs
     )

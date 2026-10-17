@@ -93,6 +93,29 @@ def test_engine_produces_lot_sized_orders_and_exact_fees(make_data):
     assert result.metrics["trading_days"] == len(DATES)
 
 
+def test_engine_applies_amount_participation_limit(make_data):
+    score, price = _frames()
+    amount = pd.DataFrame(20_000.0, index=DATES, columns=STOCKS)
+    data = make_data(
+        dates=DATES,
+        stocks=STOCKS,
+        open=price.astype("float32"),
+        close=(price + 0.5).astype("float32"),
+        amount_cny=amount.astype("float32"),
+        factors={"MOM_20": score.astype("float32")},
+    )
+    strategy = _strategy(execution=ExecutionSpec(max_participation_rate=0.5))
+    result = run_backtest(
+        data,
+        strategy,
+        BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0),
+    )
+    assert result.metadata["execution"]["max_participation_rate"] == pytest.approx(0.5)
+    assert result.metadata["calibration"]["liquidity_limited_cells"] > 0
+    for row in result.allocations.loc[result.allocations["capacity_limited"]].itertuples():
+        assert row.capacity_executed_value <= row.capacity_limit_value + 1e-9
+
+
 def test_engine_applies_single_cap_and_turnover_before_allocation(make_data):
     score = pd.DataFrame(
         {

@@ -40,6 +40,17 @@ def test_risk_configuration_round_trip_and_bounds():
         RiskSpec(max_industry_weight=0.0)
 
 
+def test_participation_rate_round_trip_and_bounds():
+    spec = StrategySpec(execution=ExecutionSpec(max_participation_rate=0.1))
+    restored = StrategySpec.from_dict(json.loads(spec.to_json()))
+    assert restored == spec
+    assert restored.execution.max_participation_rate == pytest.approx(0.1)
+    with pytest.raises(SpecError, match="max_participation_rate"):
+        ExecutionSpec(max_participation_rate=0.0)
+    with pytest.raises(SpecError, match="max_participation_rate"):
+        ExecutionSpec(max_participation_rate=1.1)
+
+
 def test_strategy_rejects_unknown_field():
     with pytest.raises(SpecError, match="未知字段"):
         StrategySpec.from_dict({"unknown": 1})

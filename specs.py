@@ -108,6 +108,7 @@ class ExecutionSpec:
     reject_limit_up_buy: bool = True
     reject_limit_down_sell: bool = True
     enforce_t_plus_1: bool = True
+    max_participation_rate: float | None = None
 
     def __post_init__(self) -> None:
         if type(self.lot_size) is not int or self.lot_size <= 0:
@@ -118,6 +119,13 @@ class ExecutionSpec:
             raise SpecError("execution.cash_buffer 必须是数字")
         if not 0.0 <= float(self.cash_buffer) < 0.5:
             raise SpecError("execution.cash_buffer 必须在 [0, 0.5) 之间")
+        if self.max_participation_rate is not None:
+            if isinstance(self.max_participation_rate, bool) or not isinstance(
+                self.max_participation_rate, (int, float)
+            ):
+                raise SpecError("execution.max_participation_rate 必须是数字或 None")
+            if not 0.0 < float(self.max_participation_rate) <= 1.0:
+                raise SpecError("execution.max_participation_rate 必须在 (0, 1] 之间")
 
 
 @dataclass(frozen=True)
@@ -222,6 +230,8 @@ class StrategySpec:
         payload = asdict(self)
         if self.risk.disabled:
             payload.pop("risk", None)
+        if self.execution.max_participation_rate is None:
+            payload["execution"].pop("max_participation_rate", None)
         return payload
 
     def to_json(self) -> str:

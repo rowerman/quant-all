@@ -36,9 +36,9 @@ from backtest.universe import (
 
 logger = get_logger("backtest.data")
 
-# 价格与市值用浮点宽表，其余都是可交易性/状态标记，用布尔宽表
+# 价格、成交额与市值用浮点宽表，其余都是可交易性/状态标记，用布尔宽表
 PRICE_FIELDS = ("open", "close")
-VALUE_FIELDS = ("total_mv",)
+VALUE_FIELDS = ("total_mv", "amount_cny")
 FLAG_FIELDS = (
     "can_buy_close",
     "can_buy_open_next",
@@ -87,8 +87,16 @@ class MarketData:
     benchmark: pd.Series | None = None
     benchmark_info: dict | None = None
     versions: dict | None = None
+    amount_cny: pd.DataFrame | None = None
 
     def __post_init__(self) -> None:
+        if self.amount_cny is None:
+            # 旧的合成夹具未提供成交额；关闭参与率时保持旧行为，启用时按成交额不可用处理。
+            object.__setattr__(
+                self,
+                "amount_cny",
+                pd.DataFrame(np.nan, index=self.open.index, columns=self.open.columns),
+            )
         panels = [getattr(self, name) for name in PANEL_FIELDS]
         shapes = {panel.shape for panel in panels}
         if len(shapes) != 1:

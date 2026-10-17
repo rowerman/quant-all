@@ -46,6 +46,12 @@ ALLOCATION_COLUMNS = [
     "status",
     "cash_limited",
     "cash_shrunk_shares",
+    "capacity_limit_value",
+    "capacity_requested_value",
+    "capacity_executed_value",
+    "capacity_limited",
+    "capacity_unavailable",
+    "capacity_shortfall_shares",
 ]
 
 # 分配统计的键名，引擎按它把「资金分配」阶段的进度事件单独报出来
@@ -57,6 +63,10 @@ ALLOCATION_STAT_KEYS = (
     "cash_shrunk_cells",
     "cash_limited_cells",
     "cash_limited_value",
+    "liquidity_limited_cells",
+    "liquidity_limited_value",
+    "liquidity_unavailable_cells",
+    "liquidity_shortfall_shares",
 )
 
 
@@ -122,6 +132,9 @@ def allocate_shares(
     cash_buffer: float,
     carry: pd.DataFrame | None = None,
     costs: CostSpec | None = None,
+    amount_cny: pd.DataFrame | None = None,
+    max_participation_rate: float | None = None,
+    capacity_exempt: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, dict]:
     """按预算把目标权重换成目标股数，返回 ``(股数矩阵, 逐格明细, 方向矩阵, 统计)``。
 
@@ -135,9 +148,14 @@ def allocate_shares(
         cash_buffer: 预留现金比例，取值 ``[0, 1)``。
         carry: 本轮已有现金补回目标；重试再次缺现金时继续传播，不新建补回事件。
         costs: 最终成交使用的佣金、印花税和滑点口径；None 表示零成本。
+        amount_cny: 执行日未复权成交额；None 表示不启用成交额参与率。
+        max_participation_rate: 单票成交额参与率；None 表示关闭。
+        capacity_exempt: 不受参与率限制的格子，当前用于退市强制清算。
     """
     if not 0.0 <= float(cash_buffer) < 1.0:
         raise ExecutionError(f"现金缓冲必须在 [0, 1) 之间：{cash_buffer}")
+    if max_participation_rate is not None and amount_cny is None:
+        raise ExecutionError("启用成交额参与率时缺少未复权成交额面板")
     costs = costs or CostSpec(
         commission_rate=0.0,
         minimum_commission=0.0,
@@ -146,14 +164,28 @@ def allocate_shares(
     )
     index = pd.DatetimeIndex(targets.index)
     columns = targets.columns
+    weights = targets.to_numpy(dtype="float64")
     prices = price.reindex(index=index, columns=columns).to_numpy(dtype="float64")
     base = baseline_shares.reindex(index=index, columns=columns).to_numpy(dtype="float64")
     budgets = budget.reindex(index=index).to_numpy(dtype="float64")
     cashes = open_cash.reindex(index=index).to_numpy(dtype="float64")
+    amounts = (
+        None
+        if amount_cny is None
+        else amount_cny.reindex(index=index, columns=columns).to_numpy(dtype="float64")
+    )
+    exempt = (
+        np.zeros(weights.shape, dtype=bool)
+        if capacity_exempt is None
+        else (
+            capacity_exempt.reindex(index=index, columns=columns).fillna(False).to_numpy(dtype=bool)
+            if isinstance(capacity_exempt, pd.DataFrame)
+            else np.asarray(capacity_exempt, dtype=bool)
+        )
+    )
     # 上一交易日收盘持股 = 执行日开盘时刻的真实持股（首日为空仓）
     previous = np.zeros_like(np.nan_to_num(base, nan=0.0))
     previous[1:] = np.nan_to_num(base, nan=0.0)[:-1]
-    weights = targets.to_numpy(dtype="float64")
     carried = (
         np.zeros(weights.shape, dtype=bool)
         if carry is None
@@ -170,6 +202,10 @@ def allocate_shares(
         "cash_shrunk_cells": 0,
         "cash_limited_cells": 0,
         "cash_limited_value": 0.0,
+        "liquidity_limited_cells": 0,
+        "liquidity_limited_value": 0.0,
+        "liquidity_unavailable_cells": 0,
+        "liquidity_shortfall_shares": 0.0,
     }
     for row in np.flatnonzero(~np.isnan(weights).all(axis=1)):
         cells = np.flatnonzero(~np.isnan(weights[row]))
@@ -268,6 +304,57 @@ def allocate_shares(
         shortfall = np.where(buying, intended - cell_shares, 0.0)
         shrunk = buying & (shortfall >= lot_size * 0.5)
         cash_limited = shrunk & ~carried[row, cells]
+
+        # 成交额参与率限制订单的持仓变化，而不是目标持仓总额。这样已有仓位的
+        # 部分卖出和补回买入都能在下一交易日继续推进；退市强平由规则层显式豁免。
+        capacity_limit = np.full(len(cells), np.nan, dtype="float64")
+        capacity_unavailable = np.zeros(len(cells), dtype=bool)
+        if max_participation_rate is not None and amounts is not None:
+            raw_amount = amounts[row, cells]
+            valid_amount = np.isfinite(raw_amount) & (raw_amount > 0)
+            capacity_limit = np.where(
+                valid_amount,
+                raw_amount * float(max_participation_rate),
+                0.0,
+            )
+            capacity_unavailable = ~valid_amount & ~exempt[row, cells]
+            capacity_limit = np.where(exempt[row, cells], np.nan, capacity_limit)
+            before_capacity = cell_shares.copy()
+            delta = before_capacity - previous_held
+            active_delta = np.abs(delta) >= lot_size * 0.5
+            capacity_unavailable &= active_delta
+            max_lots = np.floor(
+                np.divide(
+                    capacity_limit,
+                    np.maximum(tradable_price, 1e-12),
+                    out=np.zeros_like(capacity_limit),
+                    where=tradable_price > 0,
+                ) / lot_size
+            ) * lot_size
+            capped_delta = np.sign(delta) * np.minimum(np.abs(delta), max_lots)
+            capped_delta = np.where(capacity_unavailable, 0.0, capped_delta)
+            capped_delta = np.where(exempt[row, cells], delta, capped_delta)
+            cell_shares = previous_held + capped_delta
+            cell_shares = np.where(tradable, np.maximum(cell_shares, 0.0), 0.0)
+            capacity_shortfall = np.where(
+                active_delta,
+                np.maximum(np.abs(delta) - np.abs(capped_delta), 0.0),
+                0.0,
+            )
+            capacity_limited = (
+                active_delta
+                & (capacity_shortfall >= lot_size * 0.5)
+                & ~exempt[row, cells]
+            )
+            capacity_limited &= ~capacity_unavailable
+            capacity_requested_value = np.abs(delta) * tradable_price
+            capacity_executed_value = np.abs(capped_delta) * tradable_price
+        else:
+            capacity_shortfall = np.zeros(len(cells), dtype="float64")
+            capacity_limited = np.zeros(len(cells), dtype=bool)
+            capacity_requested_value = np.zeros(len(cells), dtype="float64")
+            capacity_executed_value = np.zeros(len(cells), dtype="float64")
+
         shares[row, cells[tradable]] = cell_shares[tradable]
         direction[row, cells[tradable]] = np.sign(
             cell_shares[tradable] - held[tradable]
@@ -281,9 +368,19 @@ def allocate_shares(
         stats["cash_limited_value"] += float(
             np.sum(np.where(cash_limited, shortfall * tradable_price, 0.0))
         )
+        stats["liquidity_limited_cells"] += int(capacity_limited.sum())
+        stats["liquidity_limited_value"] += float(
+            np.sum(np.where(capacity_limited, capacity_shortfall * tradable_price, 0.0))
+        )
+        stats["liquidity_unavailable_cells"] += int(capacity_unavailable.sum())
+        stats["liquidity_shortfall_shares"] += float(capacity_shortfall.sum())
         for position, cell in enumerate(cells):
             if not tradable[position]:
                 status = STATUS_NO_PRICE
+            elif capacity_unavailable[position]:
+                status = "liquidity_unavailable"
+            elif capacity_limited[position]:
+                status = "liquidity_limited"
             elif cell_weight[position] <= 0:
                 status = STATUS_FLAT
             elif bump[position]:
@@ -303,6 +400,12 @@ def allocate_shares(
                     "status": status,
                     "cash_limited": bool(cash_limited[position]),
                     "cash_shrunk_shares": float(shortfall[position]),
+                    "capacity_limit_value": float(capacity_limit[position]),
+                    "capacity_requested_value": float(capacity_requested_value[position]),
+                    "capacity_executed_value": float(capacity_executed_value[position]),
+                    "capacity_limited": bool(capacity_limited[position]),
+                    "capacity_unavailable": bool(capacity_unavailable[position]),
+                    "capacity_shortfall_shares": float(capacity_shortfall[position]),
                 }
             )
     records = (
@@ -323,15 +426,15 @@ def cash_carry(
     targets: pd.DataFrame,
     carry: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """推进现金补回状态，并产生下一交易日的补回目标。
+    """推进现金或流动性补回状态，并产生下一交易日的补回目标。
 
-    ``allocation`` 中的现金缩水有两种来源：原始调仓和已有补回。原始调仓产生
-    新的补回事件；已有补回如果尚未成交则继续向后传播，成交后停止传播。这样不会
-    把同一个补回事件在每次重试时重复登记，避免固定点在长链上来回摆动。
+    ``allocation`` 中的现金缩水和成交额限制都可能产生补回事件。原始调仓产生
+    新事件；已有补回如果尚未完成则继续向后传播，完成后停止传播。这样不会把同一
+    个事件在每次重试时重复登记，避免固定点在长链上来回摆动。
 
     参数:
         allocation: 逐格分配明细，含 ``trade_date``、``stock_code``、``target_weight``、
-            ``cash_limited``；None 表示还没有分配结果。
+        ``cash_limited``、``capacity_limited`` 或 ``capacity_unavailable``；None 表示还没有分配结果。
         targets: 执行日的原始目标权重矩阵（不含补回目标）。
         carry: 本轮传入的补回目标；用于判断 allocation 行是否属于已有补回事件。
     """
@@ -345,19 +448,21 @@ def cash_carry(
     values = targets.to_numpy(dtype="float64")
     next_values = next_carry.to_numpy(dtype="float64")
 
-    allocation_lookup: dict[tuple[pd.Timestamp, object], tuple[bool, float, float]] = {}
+    allocation_lookup: dict[tuple[pd.Timestamp, object], tuple[float, float, bool, float]] = {}
     if allocation is not None and not allocation.empty:
         for row in allocation.itertuples(index=False):
-            cash_limited = bool(row.cash_limited)
             shrunk = getattr(row, "cash_shrunk_shares", np.nan)
             if pd.isna(shrunk):
-                shrunk = 1.0 if cash_limited else 0.0
+                shrunk = 1.0 if bool(row.cash_limited) else 0.0
             else:
                 shrunk = float(shrunk)
+            capacity_shortfall = getattr(row, "capacity_shortfall_shares", 0.0)
+            capacity_shortfall = 0.0 if pd.isna(capacity_shortfall) else float(capacity_shortfall)
             allocation_lookup[(pd.Timestamp(row.trade_date), row.stock_code)] = (
-                cash_limited,
-                float(getattr(row, "allocated_shares", 0.0)),
                 shrunk,
+                capacity_shortfall,
+                bool(getattr(row, "capacity_unavailable", False)),
+                float(getattr(row, "allocated_shares", 0.0)),
             )
 
     # 先延续本轮已经存在、但尚未真正补齐的补回目标。
@@ -369,13 +474,25 @@ def cash_carry(
                 continue
             key = (pd.Timestamp(targets.index[row]), targets.columns[column])
             status = allocation_lookup.get(key)
-            filled = status is not None and status[1] > 0 and status[2] <= 0
+            filled = status is not None and status[0] <= 0 and status[1] <= 0 and not status[2]
             if status is None or not filled:
                 next_values[next_row, column] = previous_values[row, column]
 
     # 再把本轮新产生的现金缩水事件推到下一交易日；已有补回不重复起新事件。
     if allocation is not None and not allocation.empty:
-        limited = allocation[allocation["cash_limited"].astype(bool)]
+        capacity_limited = (
+            allocation["capacity_limited"].astype(bool)
+            if "capacity_limited" in allocation
+            else pd.Series(False, index=allocation.index)
+        )
+        capacity_unavailable = (
+            allocation["capacity_unavailable"].astype(bool)
+            if "capacity_unavailable" in allocation
+            else pd.Series(False, index=allocation.index)
+        )
+        limited = allocation.loc[
+            allocation["cash_limited"].astype(bool) | capacity_limited | capacity_unavailable
+        ]
         for row in limited.itertuples(index=False):
             position = targets.index.get_loc(pd.Timestamp(row.trade_date))
             column = targets.columns.get_loc(row.stock_code)
@@ -403,16 +520,49 @@ def cash_retry_filled(carry: pd.DataFrame, allocation: pd.DataFrame | None) -> i
         return 0
     rows = carry.index.get_indexer(pd.DatetimeIndex(allocation["trade_date"]))
     columns = carry.columns.get_indexer(allocation["stock_code"])
-    shrunk = (
+    cash_shrunk = (
         allocation["cash_shrunk_shares"].to_numpy(dtype="float64")
         if "cash_shrunk_shares" in allocation
         else allocation["cash_limited"].astype(bool).to_numpy(dtype="float64")
     )
+    capacity_shortfall = (
+        allocation["capacity_shortfall_shares"].to_numpy(dtype="float64")
+        if "capacity_shortfall_shares" in allocation
+        else np.zeros(len(allocation), dtype="float64")
+    )
+    unavailable = (
+        allocation["capacity_unavailable"].astype(bool).to_numpy()
+        if "capacity_unavailable" in allocation
+        else np.zeros(len(allocation), dtype=bool)
+    )
     filled = (
         (rows >= 0)
         & (columns >= 0)
-        & (shrunk <= 0)
-        & (allocation["allocated_shares"].to_numpy(dtype="float64") > 0)
+        & (cash_shrunk <= 0)
+        & (capacity_shortfall <= 0)
+        & ~unavailable
+    )
+    return int(carried[rows[filled], columns[filled]].sum())
+
+
+def liquidity_retry_filled(carry: pd.DataFrame, allocation: pd.DataFrame | None) -> int:
+    """数出由成交额限制产生、随后真正完成的补回格数。"""
+    if allocation is None or allocation.empty or "capacity_shortfall_shares" not in allocation:
+        return 0
+    carried = ~np.isnan(carry.to_numpy(dtype="float64"))
+    rows = carry.index.get_indexer(pd.DatetimeIndex(allocation["trade_date"]))
+    columns = carry.columns.get_indexer(allocation["stock_code"])
+    capacity_shortfall = allocation["capacity_shortfall_shares"].to_numpy(dtype="float64")
+    unavailable = (
+        allocation["capacity_unavailable"].astype(bool).to_numpy()
+        if "capacity_unavailable" in allocation
+        else np.zeros(len(allocation), dtype=bool)
+    )
+    filled = (
+        (rows >= 0)
+        & (columns >= 0)
+        & (capacity_shortfall <= 0)
+        & ~unavailable
     )
     return int(carried[rows[filled], columns[filled]].sum())
 
@@ -462,7 +612,7 @@ def pending_carry(
     if not len(targets.index):
         return out
     last = pd.Timestamp(targets.index[-1])
-    status: dict[str, tuple[bool, float, float]] = {}
+    status: dict[str, tuple[bool, float, float, bool]] = {}
     weights: dict[str, float] = {}
     if allocation is not None and not allocation.empty:
         for row in allocation.itertuples(index=False):
@@ -470,7 +620,14 @@ def pending_carry(
                 continue
             shrunk = getattr(row, "cash_shrunk_shares", np.nan)
             shrunk = float(shrunk) if not pd.isna(shrunk) else (1.0 if row.cash_limited else 0.0)
-            status[row.stock_code] = (bool(row.cash_limited), float(row.allocated_shares), shrunk)
+            capacity_shortfall = float(getattr(row, "capacity_shortfall_shares", 0.0) or 0.0)
+            unavailable = bool(getattr(row, "capacity_unavailable", False))
+            status[row.stock_code] = (
+                bool(row.cash_limited),
+                shrunk,
+                capacity_shortfall,
+                unavailable,
+            )
             weights[row.stock_code] = float(row.target_weight)
     previous = None
     if carry is not None and len(carry.index):
@@ -481,12 +638,12 @@ def pending_carry(
     if previous is not None:
         for column in previous.index[previous.notna()]:
             item = status.get(column)
-            filled = item is not None and item[1] > 0 and item[2] <= 0
+            filled = item is not None and item[1] <= 0 and item[2] <= 0 and not item[3]
             if not filled:
                 out[column] = float(previous[column])
     # 末日新产生的现金缩水推到下一交易日；已在旧补回里的不重复起事件
     for column, item in status.items():
-        if not item[0]:
+        if not (item[0] or item[2] > 0 or item[3]):
             continue
         if previous is not None and not pd.isna(previous.get(column, np.nan)):
             continue

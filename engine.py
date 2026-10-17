@@ -36,6 +36,7 @@ from backtest.allocation import (
     execution_price,
     extend_carry,
     pending_carry,
+    liquidity_retry_filled,
 )
 from backtest.config import MAX_ALLOCATION_ITERATIONS
 from backtest.data import PRICE_ADJUST, MarketData
@@ -428,10 +429,14 @@ def _same_masked_matrix(
 
 
 def _cash_event_signature(allocation: pd.DataFrame) -> tuple[tuple[str, str], ...]:
-    """提取新的现金补回事件，忽略重试日重新计算的股数。"""
+    """提取现金或流动性补回事件，忽略重试日重新计算的股数。"""
     if allocation.empty or "cash_limited" not in allocation:
         return ()
-    limited = allocation.loc[allocation["cash_limited"].astype(bool), ["trade_date", "stock_code"]]
+    mask = allocation["cash_limited"].astype(bool)
+    for column in ("capacity_limited", "capacity_unavailable"):
+        if column in allocation:
+            mask |= allocation[column].astype(bool)
+    limited = allocation.loc[mask, ["trade_date", "stock_code"]]
     return tuple(
         sorted((str(pd.Timestamp(row.trade_date)), str(row.stock_code))
                for row in limited.itertuples(index=False))
@@ -439,15 +444,28 @@ def _cash_event_signature(allocation: pd.DataFrame) -> tuple[tuple[str, str], ..
 
 
 def _cash_pending_on_last_day(allocation: pd.DataFrame, last_day: pd.Timestamp) -> int:
-    """统计最后交易日仍有现金缩水缺口的补回格。"""
+    """统计最后交易日仍有现金或流动性缺口的补回格。"""
     if allocation.empty:
         return 0
     rows = allocation.loc[pd.DatetimeIndex(allocation["trade_date"]) == last_day]
     if rows.empty:
         return 0
-    if "cash_shrunk_shares" in rows:
-        return int((rows["cash_shrunk_shares"].to_numpy(dtype="float64") > 0).sum())
-    return int(rows["cash_limited"].astype(bool).sum())
+    cash = (
+        rows["cash_shrunk_shares"].to_numpy(dtype="float64") > 0
+        if "cash_shrunk_shares" in rows
+        else rows["cash_limited"].astype(bool).to_numpy()
+    )
+    capacity = (
+        rows["capacity_shortfall_shares"].to_numpy(dtype="float64") > 0
+        if "capacity_shortfall_shares" in rows
+        else np.zeros(len(rows), dtype=bool)
+    )
+    unavailable = (
+        rows["capacity_unavailable"].astype(bool).to_numpy()
+        if "capacity_unavailable" in rows
+        else np.zeros(len(rows), dtype=bool)
+    )
+    return int((cash | capacity | unavailable).sum())
 
 
 def seed_inputs(
@@ -879,13 +897,37 @@ def run_backtest(
         "carry_iterations": int(carry_iterations),
         "carry_converged": bool(carry_converged),
         "cash_retry_filled_cells": cash_retry_filled(carry, plan.allocation),
+        "liquidity_retry_filled_cells": liquidity_retry_filled(carry, plan.allocation),
         "cash_pending_at_end_cells": pending_at_end,
+        "liquidity_pending_at_end_cells": int(
+            (
+                last_allocations.get(
+                    "capacity_shortfall_shares", pd.Series(0.0, index=last_allocations.index)
+                ).to_numpy(dtype="float64") > 0
+            ).sum()
+            + int(
+                last_allocations.get(
+                    "capacity_unavailable", pd.Series(False, index=last_allocations.index)
+                ).astype(bool).sum()
+            )
+        ),
         "cash_carry_over_cells": int(pending_at_end if chunk_boundary else 0),
         **risk_stats,
         **plan.plan_stats,
         **witnesses,
         **_weight_witnesses(plan, holdings),
     }
+    execution_metadata = {
+        "sizing": "target_amount",
+        "cash_buffer": float(strategy.execution.cash_buffer),
+        "lot_size": strategy.execution.lot_size,
+        "allocation_iterations": int(iteration),
+        "allocation_converged": bool(converged),
+        "carry_iterations": int(carry_iterations),
+        "carry_converged": bool(carry_converged),
+    }
+    if strategy.execution.max_participation_rate is not None:
+        execution_metadata["max_participation_rate"] = strategy.execution.max_participation_rate
     metadata = {
         "strategy": strategy.to_dict(),
         "strategy_hash": strategy.config_hash,
@@ -895,15 +937,7 @@ def run_backtest(
         "price_adjust": PRICE_ADJUST,
         "cash_retry_policy": "all_cash_shortfall_event",
         "risk": strategy.risk.to_dict(),
-        "execution": {
-            "sizing": "target_amount",
-            "cash_buffer": float(strategy.execution.cash_buffer),
-            "lot_size": strategy.execution.lot_size,
-            "allocation_iterations": int(iteration),
-            "allocation_converged": bool(converged),
-            "carry_iterations": int(carry_iterations),
-            "carry_converged": bool(carry_converged),
-        },
+        "execution": execution_metadata,
         "versions": data.versions,
         "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),
         "panel": {"trading_days": int(len(data.index)), "stocks": int(len(data.columns))},

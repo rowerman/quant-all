@@ -69,6 +69,7 @@ SUM_KEYS = (
     "retried_filled_cells",
     "cash_retry_attempts",
     "cash_retry_filled_cells",
+    "liquidity_retry_filled_cells",
     "allocated_cells",
     "bumped_one_lot_cells",
     "unaffordable_lot_cells",
@@ -76,6 +77,10 @@ SUM_KEYS = (
     "cash_shrunk_cells",
     "cash_limited_cells",
     "cash_limited_value",
+    "liquidity_limited_cells",
+    "liquidity_limited_value",
+    "liquidity_unavailable_cells",
+    "liquidity_shortfall_shares",
     "final_orders",
     "final_buys",
     "final_sells",
@@ -110,7 +115,11 @@ MAX_KEYS = (
     "turnover_after_max",
     "turnover_limit_error_max",
 )
-LAST_KEYS = ("pending_at_end_cells", "cash_pending_at_end_cells")
+LAST_KEYS = (
+    "pending_at_end_cells",
+    "cash_pending_at_end_cells",
+    "liquidity_pending_at_end_cells",
+)
 
 
 def _notify(progress: Progress | None, stage: str, **payload) -> None:

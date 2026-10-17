@@ -211,6 +211,46 @@ def test_allocate_shares_handles_empty_budget_and_missing_price():
     assert set(records["status"]) == {"no_price", "unaffordable"}
 
 
+def test_allocate_shares_limits_buy_by_daily_amount_participation():
+    targets = _frame([[np.nan], [1.0], [np.nan]], ["A"])
+    amount = _frame([[1_000.0], [1_000.0], [1_000.0]], ["A"])
+    shares, records, _, stats = allocate_shares(
+        targets,
+        pd.Series([100_000.0] * 3, index=DATES),
+        pd.Series([100_000.0] * 3, index=DATES),
+        _frame([[10.0], [10.0], [10.0]], ["A"]),
+        _frame([[0.0], [0.0], [0.0]], ["A"]),
+        100,
+        0.0,
+        amount_cny=amount,
+        max_participation_rate=0.1,
+    )
+    assert shares.loc[DATES[1], "A"] == 0.0
+    row = records.loc[records["trade_date"] == DATES[1]].iloc[0]
+    assert row["capacity_limited"]
+    assert row["capacity_shortfall_shares"] > 0
+    assert stats["liquidity_limited_cells"] == 1
+
+
+def test_allocate_shares_retries_when_amount_is_unavailable():
+    targets = _frame([[np.nan], [1.0], [np.nan]], ["A"])
+    amount = _frame([[1_000.0], [np.nan], [1_000.0]], ["A"])
+    _, records, _, stats = allocate_shares(
+        targets,
+        pd.Series([100_000.0] * 3, index=DATES),
+        pd.Series([100_000.0] * 3, index=DATES),
+        _frame([[10.0], [10.0], [10.0]], ["A"]),
+        _frame([[0.0], [0.0], [0.0]], ["A"]),
+        100,
+        0.0,
+        amount_cny=amount,
+        max_participation_rate=0.1,
+    )
+    row = records.loc[records["trade_date"] == DATES[1]].iloc[0]
+    assert row["capacity_unavailable"]
+    assert stats["liquidity_unavailable_cells"] == 1
+
+
 def test_cash_carry_moves_limited_buys_to_the_next_day():
     """被现金缩小的买单落到下一交易日，权重沿用当天的目标权重。"""
     columns = ["A", "B"]
@@ -230,6 +270,25 @@ def test_cash_carry_moves_limited_buys_to_the_next_day():
     assert np.isnan(carry.loc[DATES[1], "B"])
     assert carry.iloc[0].isna().all() and carry.iloc[2].isna().all()
     assert cash_carry(None, targets).isna().to_numpy().all()
+
+
+def test_cash_carry_moves_capacity_limited_buy_to_the_next_day():
+    """成交额容量造成的缺口沿同一补回状态机推进。"""
+    allocation = pd.DataFrame(
+        {
+            "trade_date": [DATES[0]],
+            "stock_code": ["A"],
+            "target_weight": [0.3],
+            "cash_limited": [False],
+            "cash_shrunk_shares": [0.0],
+            "capacity_limited": [True],
+            "capacity_unavailable": [False],
+            "capacity_shortfall_shares": [200.0],
+        }
+    )
+    targets = _frame([[np.nan]] * 3, ["A"])
+    carry = cash_carry(allocation, targets)
+    assert carry.loc[DATES[1], "A"] == pytest.approx(0.3)
 
 
 def test_cash_carry_continues_unfilled_retry_without_creating_duplicate_event():
