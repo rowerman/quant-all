@@ -14,12 +14,13 @@ class CalculationCancelled(Exception):
 
 
 @contextmanager
-def native_section(cancelled=None):
-    """保护一次原生操作；cancelled为可选的跨线程取消事件。"""
+def native_section(cancelled=None, on_wait=None):
+    """保护一次原生操作；取消事件和等待回调均可选。"""
     if cancelled is None:
         with CALCULATION_LOCK:
             yield
         return
+    reported_wait = False
     while not cancelled.is_set():
         if CALCULATION_LOCK.acquire(timeout=.1):
             try:
@@ -29,6 +30,9 @@ def native_section(cancelled=None):
             finally:
                 CALCULATION_LOCK.release()
             return
+        if on_wait is not None and not reported_wait:
+            on_wait()
+            reported_wait = True
     raise CalculationCancelled()
 
 
