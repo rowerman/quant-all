@@ -242,7 +242,7 @@ async function strategyPage(version){
     </div><p class="mini muted">固定口径：Top-N 选股、只做多、收盘生成信号、下一交易日开盘执行。</p></section>
     <section class="card"><h2>风险约束</h2><div class="form-grid">
       <label><span><input type="checkbox" name="max_single_enabled">启用单股上限</span><input name="max_single_weight" type="number" min="0.01" max="100" step="0.5" value="10" disabled required></label>
-      <label><span><input type="checkbox" name="max_industry_enabled">启用申万一级行业上限</span><input name="max_industry_weight" type="number" min="0.01" max="100" step="1" value="30" disabled required></label>
+      <label><span><input type="checkbox" name="max_industry_enabled">启用申万一级行业上限（按历史分类版本）</span><input name="max_industry_weight" type="number" min="0.01" max="100" step="1" value="30" disabled required></label>
       <label><span><input type="checkbox" name="turnover_enabled">启用单边换手上限</span><input name="max_one_way_turnover" type="number" min="0" max="100" step="1" value="30" disabled required></label>
     </div></section>
     <section class="card"><h2>执行规则</h2><div class="form-grid">
