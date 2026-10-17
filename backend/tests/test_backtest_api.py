@@ -55,6 +55,7 @@ def test_strategy_api_accepts_complete_supported_configuration(client):
             "execution": {
                 "lot_size": 100,
                 "cash_buffer": 0.03,
+                "max_participation_rate": 0.1,
                 "reject_suspended": True,
                 "reject_limit_up_buy": True,
                 "reject_limit_down_sell": False,
@@ -80,6 +81,7 @@ def test_strategy_api_accepts_complete_supported_configuration(client):
     assert detail["spec"]["signal"]["weights"] == [1.0, -0.5]
     assert detail["spec"]["rebalance"]["frequency"] == "weekly"
     assert detail["spec"]["costs"]["slippage"] == pytest.approx(0.0008)
+    assert detail["spec"]["execution"]["max_participation_rate"] == pytest.approx(0.1)
     assert detail["spec"]["risk"]["max_single_weight"] == pytest.approx(0.1)
     assert detail["spec"]["risk"]["max_industry_weight"] == pytest.approx(0.3)
     assert detail["spec"]["risk"]["max_one_way_turnover"] == pytest.approx(0.3)
