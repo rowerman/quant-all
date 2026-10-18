@@ -21,6 +21,7 @@ from backtest.coverage import benchmark_coverages, default_run_end, market_cover
 from backtest.costs import CostSpec, cost_model_summary
 from backtest.errors import BacktestError
 from backtest.pipeline import effective_spec
+from backtest.providers import list_providers, validate_strategy_provider
 from backtest.specs import BENCHMARK_OPTIONS, SpecError
 from backtest.universe import list_universes, resolve_universe
 
@@ -59,6 +60,7 @@ def options(store_path: str | None = None) -> dict:
     ]
     return {
         "strategies": strategies,
+        "providers": list_providers(),
         "universes": _universe_options(),
         "benchmarks": benchmarks,
         "factors": factors[["name", "family", "direction", "description"]].to_dict("records"),
@@ -257,6 +259,7 @@ def prepare(payload: dict, store_path: str | None = None) -> RunRequest:
     store = _store(store_path)
     store.ensure_builtins()
     spec = effective_spec(store.get_version(request.strategy_id, request.version), request)
+    validate_strategy_provider(spec)
     validate_window(spec.benchmark.index_code, request.start, request.end)
     return request
 

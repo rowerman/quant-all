@@ -113,6 +113,7 @@ def test_strategy_api_rejects_invalid_weights_and_costs(client):
 def test_backtest_options_expose_strategies_universes_and_limits(client):
     payload = client.get("/api/backtest/options").json()
     assert {row["strategy_id"] for row in payload["strategies"]} >= {MOM20_ID}
+    assert "momentum_timing" in {row["name"] for row in payload["providers"]}
     assert {"all_a", "index:000300.SH"} <= {row["key"] for row in payload["universes"]}
     assert {"H00300.CSI", "H00905.CSI", "000300.SH", "000905.SH"} == {
         row["code"] for row in payload["benchmarks"]
@@ -133,6 +134,56 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
     assert payload["costs"]["transfer_fee"] == "historical"
     assert payload["costs"]["fee_rounding"] == "cent"
     assert "stamp_tax_rate" not in payload["costs"]
+
+
+def test_strategy_api_creates_provider_strategy(client):
+    payload = {
+        "description": "提供者策略接口测试",
+        "spec": {
+            "name": "广度择时",
+            "signal": {
+                "provider": {
+                    "name": "momentum_timing",
+                    "version": "1",
+                    "params": {"top_n": 5, "min_breadth": 0.5},
+                },
+                "factors": ["MOM_20"],
+                "weights": [],
+            },
+            "portfolio": {
+                "selection": "provider",
+                "top_n": 5,
+                "weighting": "equal",
+                "long_only": True,
+            },
+            "rebalance": {
+                "frequency": "custom",
+                "signal_at": "close",
+                "execute_at": "next_open",
+            },
+        },
+    }
+    created = client.post("/api/strategies", json=payload)
+    assert created.status_code == 200
+    detail = client.get(f"/api/strategies/{created.json()['strategy_id']}").json()
+    assert detail["spec"]["signal"]["provider"]["name"] == "momentum_timing"
+    assert detail["spec"]["rebalance"]["frequency"] == "custom"
+
+
+def test_strategy_api_rejects_unknown_provider(client):
+    payload = {
+        "name": "未知提供者",
+        "signal": {
+            "provider": {"name": "missing_provider", "version": "1", "params": {}},
+            "factors": ["MOM_20"],
+            "weights": [],
+        },
+        "portfolio": {"selection": "provider", "top_n": 5},
+        "rebalance": {"frequency": "custom"},
+    }
+    created = client.post("/api/strategies", json=payload)
+    assert created.status_code == 400
+    assert "未注册" in created.json()["message"]
 
 
 def test_backtest_prepare_accepts_explicit_no_benchmark(client):
