@@ -115,6 +115,29 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
     assert payload["limits"]["trade_days"] > 0
     assert payload["limits"]["chunk_cells"] < payload["limits"]["panel_cells"]
     assert payload["limits"]["max_chunks"] >= 2
+    assert payload["costs"]["stamp_tax"] == "historical"
+    assert payload["costs"]["transfer_fee"] == "historical"
+    assert payload["costs"]["fee_rounding"] == "cent"
+    assert "stamp_tax_rate" not in payload["costs"]
+
+
+def test_strategy_without_stamp_tax_rate_uses_historical_schedule(client):
+    payload = {
+        "spec": {
+            "name": "历史成本",
+            "costs": {
+                "commission_rate": 0.0003,
+                "minimum_commission": 5.0,
+                "slippage": 0.0005,
+            },
+        }
+    }
+    created = client.post("/api/strategies", json=payload)
+    assert created.status_code == 200
+    detail = client.get(f"/api/strategies/{created.json()['strategy_id']}").json()
+    assert detail["spec"]["costs"]["stamp_tax_rate"] is None
+    assert detail["spec"]["costs"]["transfer_fee_enabled"] is True
+    assert detail["spec"]["costs"]["fee_rounding"] == "cent"
 
 
 def test_run_tables_and_metrics_are_readable(client, store):

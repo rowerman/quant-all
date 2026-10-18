@@ -17,6 +17,7 @@ from backtest import (
     run,
 )
 from backtest.config import CHUNK_CELL_BUDGET, MAX_CHUNKS, MAX_PANEL_CELLS, MAX_TRADE_DAYS
+from backtest.costs import CostSpec, cost_model_summary
 from backtest.errors import BacktestError
 from backtest.specs import BENCHMARK_OPTIONS, SpecError
 from backtest.universe import list_universes, resolve_universe
@@ -59,9 +60,12 @@ def options(store_path: str | None = None) -> dict:
         "costs": {
             "commission_rate": 0.0003,
             "minimum_commission": 5.0,
-            "stamp_tax_rate": 0.0005,
             "slippage": 0.0005,
             "dividend_tax_mode": "fifo_deferred",
+            "stamp_tax": "historical",
+            "transfer_fee": "historical",
+            "fee_rounding": "cent",
+            "schedule": cost_model_summary(CostSpec()),
         },
     }
 

@@ -126,7 +126,7 @@ async function backtestPage(version){
     <button type="submit">运行回测</button>
     <button type="button" id="backtest-cancel" class="secondary" disabled>取消</button>
   </form>
-  <div id="backtest-status" class="muted">默认成本：佣金 ${opts.costs.commission_rate}、最低佣金 ${opts.costs.minimum_commission} 元、卖出印花税 ${opts.costs.stamp_tax_rate}、滑点 ${opts.costs.slippage}。区间最多 ${opts.limits.trade_days} 个交易日；面板超过 ${(opts.limits.panel_cells/1e6).toFixed(0)} 百万格时自动按每块约 ${(opts.limits.chunk_cells/1e6).toFixed(1)} 百万格流式执行，最多 ${opts.limits.max_chunks} 块。</div>
+  <div id="backtest-status" class="muted">默认成本：佣金 ${opts.costs.commission_rate}、最低佣金 ${opts.costs.minimum_commission} 元、滑点 ${opts.costs.slippage}；印花税和过户费按历史生效日期自动计算。区间最多 ${opts.limits.trade_days} 个交易日；面板超过 ${(opts.limits.panel_cells/1e6).toFixed(0)} 百万格时自动按每块约 ${(opts.limits.chunk_cells/1e6).toFixed(1)} 百万格流式执行，最多 ${opts.limits.max_chunks} 块。</div>
   <section class="card"><div class="card-header"><h2>历史运行</h2><button type="button" id="compare-runs" class="secondary" disabled>对比所选运行</button></div><div id="run-list"></div></section>`;
   renderRuns(runs);
   preferredStrategyId=null;
@@ -253,9 +253,9 @@ async function strategyPage(version){
     <section class="card"><h2>交易成本</h2><div class="form-grid">
       <label>佣金率<input name="commission_rate" type="number" min="0" step="0.0001" value="${opts.costs.commission_rate}" required></label>
       <label>最低佣金（元）<input name="minimum_commission" type="number" min="0" step="0.1" value="${opts.costs.minimum_commission}" required></label>
-      <label>卖出印花税率<input name="stamp_tax_rate" type="number" min="0" step="0.0001" value="${opts.costs.stamp_tax_rate}" required></label>
       <label>滑点<input name="slippage" type="number" min="0" step="0.0001" value="${opts.costs.slippage}" required></label>
       <label>红利税<select name="dividend_tax_mode"><option value="fifo_deferred" selected>递延 FIFO</option><option value="disabled">关闭</option></select></label>
+      <label>印花税 / 过户费<input value="按历史分段自动计算" readonly></label>
     </div></section>
     <div id="strategy-status" class="muted">至少选择一个因子，权重不能全部为 0。</div>
     <div class="form-actions"><button type="submit">创建策略</button><a class="button-link secondary-link" href="#/backtest">取消</a></div>
@@ -280,7 +280,7 @@ async function strategyPage(version){
     const maxIndustryWeight=data.has('max_industry_enabled')?Number(data.get('max_industry_weight'))/100:null;
     const maxOneWayTurnover=data.has('turnover_enabled')?Number(data.get('max_one_way_turnover'))/100:null;
     const maxParticipationRate=data.has('max_participation_enabled')?Number(data.get('max_participation_rate'))/100:null;
-    const costs=['commission_rate','minimum_commission','stamp_tax_rate','slippage'].map(name=>Number(data.get(name)));
+    const costs=['commission_rate','minimum_commission','slippage'].map(name=>Number(data.get(name)));
     const dividendTaxMode=String(data.get('dividend_tax_mode')||'fifo_deferred');
     if(!String(data.get('name')).trim())return void(status.className='error',status.textContent='策略名称不能为空');
     if(!factorNames.length)return void(status.className='error',status.textContent='至少选择一个因子');
@@ -292,7 +292,7 @@ async function strategyPage(version){
     if(maxOneWayTurnover!==null&&(!Number.isFinite(maxOneWayTurnover)||maxOneWayTurnover<0||maxOneWayTurnover>1))return void(status.className='error',status.textContent='单边换手上限必须在 0 到 100% 之间');
     if(maxParticipationRate!==null&&(!Number.isFinite(maxParticipationRate)||maxParticipationRate<=0||maxParticipationRate>1))return void(status.className='error',status.textContent='成交额参与率必须在 0 到 100% 之间');
     if(costs.some(value=>!Number.isFinite(value)||value<0))return void(status.className='error',status.textContent='交易成本必须是非负数');
-    const payload={description:String(data.get('description')||''),spec:{name:String(data.get('name')).trim(),universe:data.get('universe'),signal:{factors:factorNames,weights:factorWeights,winsorize:data.has('winsorize'),standardize:data.has('standardize')},portfolio:{selection:'top_n',top_n:topN,weighting:data.get('weighting'),long_only:true},rebalance:{frequency:data.get('frequency'),signal_at:'close',execute_at:'next_open'},execution:{lot_size:100,cash_buffer:cashBuffer,max_participation_rate:maxParticipationRate,reject_suspended:data.has('reject_suspended'),reject_limit_up_buy:data.has('reject_limit_up_buy'),reject_limit_down_sell:data.has('reject_limit_down_sell'),enforce_t_plus_1:data.has('enforce_t_plus_1')},risk:{max_single_weight:maxSingleWeight,max_industry_weight:maxIndustryWeight,max_one_way_turnover:maxOneWayTurnover},costs:{commission_rate:costs[0],minimum_commission:costs[1],stamp_tax_rate:costs[2],slippage:costs[3],dividend_tax_mode:dividendTaxMode},benchmark:{index_code:data.get('benchmark')}}};
+    const payload={description:String(data.get('description')||''),spec:{name:String(data.get('name')).trim(),universe:data.get('universe'),signal:{factors:factorNames,weights:factorWeights,winsorize:data.has('winsorize'),standardize:data.has('standardize')},portfolio:{selection:'top_n',top_n:topN,weighting:data.get('weighting'),long_only:true},rebalance:{frequency:data.get('frequency'),signal_at:'close',execute_at:'next_open'},execution:{lot_size:100,cash_buffer:cashBuffer,max_participation_rate:maxParticipationRate,reject_suspended:data.has('reject_suspended'),reject_limit_up_buy:data.has('reject_limit_up_buy'),reject_limit_down_sell:data.has('reject_limit_down_sell'),enforce_t_plus_1:data.has('enforce_t_plus_1')},risk:{max_single_weight:maxSingleWeight,max_industry_weight:maxIndustryWeight,max_one_way_turnover:maxOneWayTurnover},costs:{commission_rate:costs[0],minimum_commission:costs[1],slippage:costs[2],dividend_tax_mode:dividendTaxMode},benchmark:{index_code:data.get('benchmark')}}};
     const submit=form.querySelector('[type=submit]');submit.disabled=true;status.textContent='正在创建策略…';
     try{const created=await request('/api/strategies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});preferredStrategyId=created.strategy_id;backtestOptions=null;location.hash='#/backtest';}
     catch(error){status.className='error';status.textContent=error.message;submit.disabled=false;}
@@ -346,14 +346,14 @@ async function runPage(runId,version){
     股票数:metadata.panel?metadata.panel.stocks:null,
     订单数:orders.length,拒单数:rejections.length,耗时秒:metadata.elapsed_seconds
   }]);
-  const labels={total_return:'累计收益',annual_return:'年化收益',annual_volatility:'年化波动',sharpe:'夏普',max_drawdown:'最大回撤',calmar:'卡玛',daily_win_rate:'日胜率',monthly_win_rate:'月胜率',turnover_annual:'年化换手',total_cost:'累计成本',benchmark_total_return:'基准累计',benchmark_annual_return:'基准年化',excess_annual_return:'年化超额',tracking_error:'跟踪误差',information_ratio:'信息比率',excess_win_rate:'超额胜率',trading_days:'交易日',months:'月数'};
-  const shown=['total_return','annual_return','annual_volatility','sharpe','max_drawdown','calmar','daily_win_rate','monthly_win_rate','turnover_annual','total_cost','benchmark_annual_return','excess_annual_return','information_ratio','excess_win_rate'];
+  const labels={total_return:'累计收益',annual_return:'年化收益',annual_volatility:'年化波动',sharpe:'夏普',max_drawdown:'最大回撤',calmar:'卡玛',daily_win_rate:'日胜率',monthly_win_rate:'月胜率',turnover_annual:'年化换手',cash_cost:'现金成本',total_cost:'累计成本（含滑点）',total_commission:'佣金',total_stamp_tax:'印花税',total_transfer_fee:'过户费',total_dividend_tax:'红利税',total_slippage_cost:'滑点成本',benchmark_total_return:'基准累计',benchmark_annual_return:'基准年化',excess_annual_return:'年化超额',tracking_error:'跟踪误差',information_ratio:'信息比率',excess_win_rate:'超额胜率',trading_days:'交易日',months:'月数'};
+  const shown=['total_return','annual_return','annual_volatility','sharpe','max_drawdown','calmar','daily_win_rate','monthly_win_rate','turnover_annual','cash_cost','total_cost','total_commission','total_stamp_tax','total_transfer_fee','total_dividend_tax','total_slippage_cost','benchmark_annual_return','excess_annual_return','information_ratio','excess_win_rate'];
   table(app.querySelector('#run-metrics'),shown.filter(key=>key in metrics).map(key=>({指标:labels[key],数值:rateKeys.has(key)?pct(metrics[key]):metrics[key]})));
   backtestChart(app.querySelector('#run-curves'),dates,series,'净值（起始 = 1）');
   backtestChart(app.querySelector('#run-curves'),dates,[{name:'回撤',data:column('drawdown'),area:true}],'回撤');
   if(daily.some(row=>row.excess_return!==null&&row.excess_return!==undefined))backtestChart(app.querySelector('#run-curves'),dates,[{name:'日超额收益',data:column('excess_return'),bar:true}],'日超额收益');
   backtestChart(app.querySelector('#run-cost'),dates,[{name:'换手（占前一日组合价值）',data:column('turnover'),bar:true}],'日换手');
-  backtestChart(app.querySelector('#run-cost'),dates,[{name:'当日交易成本（元）',data:column('cost'),bar:true}],'交易成本');
+  backtestChart(app.querySelector('#run-cost'),dates,[{name:'现金成本（元）',data:column('cost'),bar:true},{name:'滑点成本（元）',data:column('slippage_cost'),bar:true}],'交易成本与滑点');
   const reasonRows=Object.entries(reasonCounts).map(([reason,count])=>({拒单原因:reasonLabels[reason]||reason,笔数:count}));
   if(reasonRows.length)table(app.querySelector('#run-rejection'),reasonRows);
   else app.querySelector('#run-rejection').innerHTML='<p class="muted">本次运行没有规则拒单</p>';
@@ -362,7 +362,7 @@ async function runPage(runId,version){
   const calibration=metadata.calibration||{};
   const calibrationValue=key=>(key==='allocation_converged'||key==='carry_converged')?(calibration[key]?'是':'否'):(calibrationRates.has(key)?pct(calibration[key]):fmt(calibration[key]));
   table(app.querySelector('#run-calibration'),Object.keys(calibrationLabels).filter(key=>key in calibration).map(key=>({指标:calibrationLabels[key],数值:calibrationValue(key)})));
-  if(orders.length)table(app.querySelector('#run-orders'),orders.slice(-100).map(row=>({日期:String(row.trade_date).slice(0,10),股票:row.stock_code,方向:row.Side,股数:row.Size,价格:row.Price,费用:row.Fees})));
+  if(orders.length)table(app.querySelector('#run-orders'),orders.slice(-100).map(row=>({日期:String(row.trade_date).slice(0,10),股票:row.stock_code,方向:row.Side,股数:row.Size,价格:row.Price,现金费用:row.Fees,滑点:row.slippage_cost,总成本:row.total_cost})));
   else app.querySelector('#run-orders').innerHTML='<p class="muted">本次运行没有成交</p>';
   if(lastHoldings.length)table(app.querySelector('#run-holding'),lastHoldings.map(row=>({股票:row.stock_code,市值:row.market_value,权重:pct(row.weight)})));
   else app.querySelector('#run-holding').innerHTML='<p class="muted">期末没有持仓</p>';
