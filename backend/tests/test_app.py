@@ -5,6 +5,7 @@ from dataclasses import replace
 from threading import Event
 
 import pytest
+import quant
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
@@ -23,7 +24,7 @@ def test_routes_and_real_ic():
         options = client.get('/api/options').json()
         assert options['limits']['compare'] == 4
         factors = client.get('/api/factors').json()
-        assert len(factors) == 29
+        assert len(factors) == len(quant.load_factor_list(status='implemented'))
         assert client.get('/api/factors/MOM_20').json()['formula']
         result = client.get('/api/evaluate/stream', params={
             'factor': 'MOM_20', 'start': '2024-05-06', 'end': '2024-05-31', 'mode': 'ic'})
