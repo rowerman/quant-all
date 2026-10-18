@@ -115,13 +115,14 @@ async function backtestPage(version){
   const opts=await loadBacktestOptions();if(version!==routeVersion)return;
   const runs=await get('/api/backtests');if(version!==routeVersion)return;
   const d=opts.defaults;
+  const benchmarkOptions=opts.benchmarks.map(item=>`<option value="${esc(item.code)}" data-start="${esc(item.start||'')}" data-end="${esc(item.default_end||'')}" ${item.code===d.benchmark?'selected':''}>${esc(item.label)}${item.end?`（至 ${esc(item.end)}）`:''}</option>`).join('')+`<option value="" data-start="${esc(opts.coverage.market_start)}" data-end="${esc(opts.coverage.market_end)}">无基准（不计算超额）</option>`;
   app.innerHTML=`<div class="page-heading"><div><h1>策略回测</h1><p class="intro muted">VectorBT 负责组合执行与账本，项目负责 A 股规则与成本。目标权重在执行日按真实现金与持仓分配成符合所属板块申报单位的目标股数，并预留现金缓冲；被规则拦下或受现金限制的订单会按交易日继续补回。</p></div><a class="button-link" href="#/backtest/new">新建策略</a></div>
   <form id="backtest-form" class="controls">
     <label>策略<select name="strategy_id">${opts.strategies.map(row=>`<option value="${esc(row.strategy_id)}" ${row.strategy_id===preferredStrategyId?'selected':''}>${esc(row.name)} · v${row.current_version}</option>`).join('')}</select></label>
     <label>股票池<select name="universe">${opts.universes.map(item=>`<option value="${esc(item.key)}">${esc(item.label)}</option>`).join('')}</select></label>
-    <label>基准<select name="benchmark">${opts.benchmarks.map(item=>`<option value="${esc(item.code)}" ${item.code===d.benchmark?'selected':''}>${esc(item.label)}</option>`).join('')}</select></label>
-    <label>开始日期<input type="date" name="start" value="${esc(d.start)}" required></label>
-    <label>结束日期<input type="date" name="end" value="${esc(d.end)}" required></label>
+    <label>基准<select name="benchmark">${benchmarkOptions}</select></label>
+    <label>开始日期<input type="date" name="start" value="${esc(d.start)}" min="${esc(opts.coverage.market_start)}" required></label>
+    <label>结束日期<input type="date" name="end" value="${esc(d.end)}" max="${esc(opts.coverage.market_end)}" required></label>
     <label>初始资金<input type="number" name="init_cash" value="${d.init_cash}" min="10000" step="10000" required></label>
     <button type="submit">运行回测</button>
     <button type="button" id="backtest-cancel" class="secondary" disabled>取消</button>
@@ -131,6 +132,14 @@ async function backtestPage(version){
   renderRuns(runs);
   preferredStrategyId=null;
   const form=app.querySelector('#backtest-form'),status=app.querySelector('#backtest-status'),cancel=app.querySelector('#backtest-cancel');
+  const benchmarkSelect=form.querySelector('[name=benchmark]'),startInput=form.querySelector('[name=start]'),endInput=form.querySelector('[name=end]');
+  const syncBenchmarkBounds=()=>{
+    const option=benchmarkSelect.selectedOptions[0];
+    startInput.min=option.dataset.start||opts.coverage.market_start;
+    endInput.max=option.dataset.end||opts.coverage.market_end;
+  };
+  benchmarkSelect.addEventListener('change',syncBenchmarkBounds);
+  syncBenchmarkBounds();
   form.addEventListener('submit',async event=>{
     event.preventDefault();const local=new AbortController();controller=local;
     const query=new URLSearchParams(new FormData(form));

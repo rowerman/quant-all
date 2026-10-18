@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from backend import backtest_service
 from backend.app import create_app
+from backtest.coverage import benchmark_coverage, market_coverage
 from backtest.engine import BacktestResult
 from backtest.builtin import MOM20_ID
 from backtest.specs import BacktestParams, StrategySpec
@@ -110,7 +111,13 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
         row["code"] for row in payload["benchmarks"]
     }
     assert payload["defaults"]["benchmark"] == "H00300.CSI"
-    assert payload["defaults"]["end"] == "2026-10-14"
+    market = market_coverage()
+    benchmark = benchmark_coverage("H00300.CSI")
+    assert payload["defaults"]["end"] == min(str(market.end), str(benchmark.end))
+    assert payload["coverage"]["market_end"] == market.end
+    assert all(
+        {"start", "end", "default_end"} <= set(row) for row in payload["benchmarks"]
+    )
     assert {"name", "direction"} <= set(payload["factors"][0])
     assert payload["limits"]["trade_days"] > 0
     assert payload["limits"]["chunk_cells"] < payload["limits"]["panel_cells"]
@@ -119,6 +126,37 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
     assert payload["costs"]["transfer_fee"] == "historical"
     assert payload["costs"]["fee_rounding"] == "cent"
     assert "stamp_tax_rate" not in payload["costs"]
+
+
+def test_backtest_prepare_accepts_explicit_no_benchmark(client):
+    """null 或空字符串表示本次关闭基准，而不是沿用策略里的默认值。"""
+    for value in (None, ""):
+        request = backtest_service.prepare(
+            {
+                "strategy_id": MOM20_ID,
+                "start": "2024-01-01",
+                "end": "2024-02-01",
+                "benchmark": value,
+            }
+        )
+        assert request.clear_benchmark is True
+        assert request.benchmark is None
+
+
+def test_backtest_preflight_rejects_benchmark_start_gap(client):
+    """全历史请求必须在开跑前提示基准起始日。"""
+    response = client.get(
+        "/api/backtests/stream",
+        params={
+            "strategy_id": MOM20_ID,
+            "start": "2000-01-04",
+            "end": market_coverage().end,
+        },
+    )
+    assert response.status_code == 400
+    message = response.json()["message"]
+    assert "基准指数 H00300.CSI" in message
+    assert "benchmark=None" in message
 
 
 def test_strategy_without_stamp_tax_rate_uses_historical_schedule(client):

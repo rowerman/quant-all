@@ -17,8 +17,10 @@ from backtest import (
     run,
 )
 from backtest.config import CHUNK_CELL_BUDGET, MAX_CHUNKS, MAX_PANEL_CELLS, MAX_TRADE_DAYS
+from backtest.coverage import benchmark_coverages, default_run_end, market_coverage, validate_window
 from backtest.costs import CostSpec, cost_model_summary
 from backtest.errors import BacktestError
+from backtest.pipeline import effective_spec
 from backtest.specs import BENCHMARK_OPTIONS, SpecError
 from backtest.universe import list_universes, resolve_universe
 
@@ -40,14 +42,34 @@ def options(store_path: str | None = None) -> dict:
     import quant
 
     factors = quant.load_factor_list(status="implemented")
+    market = market_coverage()
+    coverages = benchmark_coverages([item["code"] for item in BENCHMARK_OPTIONS])
+    benchmarks = [
+        {
+            **item,
+            "start": coverages[item["code"]].start,
+            "end": coverages[item["code"]].end,
+            "default_end": (
+                None
+                if coverages[item["code"]].end is None
+                else min(str(market.end), str(coverages[item["code"]].end))
+            ),
+        }
+        for item in BENCHMARK_OPTIONS
+    ]
     return {
         "strategies": strategies,
         "universes": _universe_options(),
-        "benchmarks": [dict(item) for item in BENCHMARK_OPTIONS],
+        "benchmarks": benchmarks,
         "factors": factors[["name", "family", "direction", "description"]].to_dict("records"),
         "defaults": {
-            "start": "2024-01-01", "end": "2026-10-14", "init_cash": 1_000_000.0,
+            "start": "2024-01-01", "end": default_run_end("H00300.CSI"), "init_cash": 1_000_000.0,
             "benchmark": "H00300.CSI",
+        },
+        "coverage": {
+            "market_start": market.start,
+            "market_end": market.end,
+            "trading_days": market.trading_days,
         },
         "limits": {
             "trade_days": MAX_TRADE_DAYS,
@@ -196,7 +218,7 @@ def get_run_metrics(run_id: str, store_path: str | None = None) -> dict:
     return _store(store_path).get_metrics(run_id)
 
 
-def prepare(payload: dict) -> RunRequest:
+def prepare(payload: dict, store_path: str | None = None) -> RunRequest:
     """校验回测请求，非法参数在开流前就报错。
 
     参数:
@@ -215,7 +237,12 @@ def prepare(payload: dict) -> RunRequest:
     universe = payload.get("universe")
     if universe is not None:
         resolve_universe(universe)
-    benchmark = payload.get("benchmark")
+    has_benchmark = "benchmark" in payload
+    raw_benchmark = payload.get("benchmark")
+    clear_benchmark = has_benchmark and (
+        raw_benchmark is None or str(raw_benchmark).strip() == ""
+    )
+    benchmark = None if clear_benchmark else raw_benchmark
     request = RunRequest(
         strategy_id=str(strategy_id),
         start=start,
@@ -224,15 +251,20 @@ def prepare(payload: dict) -> RunRequest:
         init_cash=float(init_cash),
         universe=universe,
         benchmark=benchmark,
+        clear_benchmark=clear_benchmark,
     )
     request.params  # 触发区间与初始资金校验
+    store = _store(store_path)
+    store.ensure_builtins()
+    spec = effective_spec(store.get_version(request.strategy_id, request.version), request)
+    validate_window(spec.benchmark.index_code, request.start, request.end)
     return request
 
 
 def run_strategy(payload: dict, store_path: str | None = None) -> dict:
     """同步跑完一次回测并保存结果。"""
     store = _store(store_path)
-    request = prepare(payload)
+    request = prepare(payload, store_path)
     return run(store, request)
 
 
