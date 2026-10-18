@@ -1,4 +1,4 @@
-"""因子截面信号、调仓日和目标权重。"""
+"""信号路由：因子 Top-N 或外部目标权重提供者，以及调仓日和目标权重。"""
 
 from __future__ import annotations
 
@@ -6,12 +6,15 @@ import numpy as np
 import pandas as pd
 
 from backtest.data import MarketData
-from backtest.errors import DataAlignmentError
+from backtest.errors import DataAlignmentError, SpecError
 from backtest.logging_conf import get_logger
-from backtest.specs import PortfolioSpec, RebalanceSpec, SignalSpec
+from backtest.providers import get_provider
+from backtest.specs import PortfolioSpec, RebalanceSpec, SignalSpec, StrategySpec
 from backtest.universe import MIN_LISTED_DAYS
 
 logger = get_logger("backtest.signals")
+
+WEIGHT_EPS = 1e-9
 
 
 def rebalance_mask(index: pd.DatetimeIndex, frequency: str) -> pd.Series:
@@ -23,6 +26,8 @@ def rebalance_mask(index: pd.DatetimeIndex, frequency: str) -> pd.Series:
     """
     if frequency == "daily":
         return pd.Series(True, index=index)
+    if frequency == "custom":
+        raise SpecError("frequency=custom 只用于目标权重提供者")
     periods = pd.Series(index.to_period("W-FRI" if frequency == "weekly" else "M"), index=index)
     return periods.ne(periods.shift(-1)).fillna(True)
 
@@ -144,4 +149,82 @@ def build_target_weights(
         weights.loc[day] = 0.0
         weights.loc[day, chosen] = _weights_for(day, chosen, data, portfolio)
     return weights, ranks
+
+
+def validate_provider_weights(
+    frame: pd.DataFrame,
+    data: MarketData,
+    eligible: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """校验提供者返回的目标权重矩阵。
+
+    整行 ``NaN`` 表示不调仓；非空行必须是有限、非负权重，单行合计不超过 1，
+    且正权重只能落在 eligible 股票上。
+    """
+    if not isinstance(frame, pd.DataFrame):
+        raise DataAlignmentError("目标权重提供者必须返回 DataFrame")
+    if not frame.index.equals(data.index) or not frame.columns.equals(data.columns):
+        raise DataAlignmentError("目标权重提供者的日期或股票列与行情面板不一致")
+    try:
+        values = frame.to_numpy(dtype="float64")
+    except (TypeError, ValueError) as error:
+        raise DataAlignmentError(f"目标权重提供者返回了非数值权重：{error}") from error
+    active = ~np.isnan(values).all(axis=1)
+    if np.isnan(values[active]).any():
+        raise DataAlignmentError("目标权重提供者的非空调仓行不能包含部分 NaN")
+    if not np.isfinite(values[active]).all():
+        raise DataAlignmentError("目标权重提供者返回了无穷值")
+    if (values[active] < -WEIGHT_EPS).any():
+        raise DataAlignmentError("目标权重提供者返回了负权重；当前只支持多头")
+    sums = values[active].sum(axis=1)
+    if (sums > 1.0 + WEIGHT_EPS).any():
+        raise DataAlignmentError("目标权重提供者单行权重合计不能超过 1")
+    pool = eligible_mask(data) if eligible is None else eligible
+    if not pool.index.equals(data.index) or not pool.columns.equals(data.columns):
+        raise DataAlignmentError("eligible 矩阵与行情面板不一致")
+    invalid = (values > WEIGHT_EPS) & ~pool.to_numpy(dtype=bool)
+    if invalid.any():
+        rows, columns = np.where(invalid)
+        samples = [
+            f"{data.index[row].date()}:{data.columns[column]}"
+            for row, column in zip(rows[:5], columns[:5])
+        ]
+        raise DataAlignmentError(
+            "目标权重提供者给不可买入股票分配了正权重："
+            + ", ".join(samples)
+            + ("..." if len(rows) > 5 else "")
+        )
+    return pd.DataFrame(values, index=data.index, columns=data.columns, dtype="float64")
+
+
+def rank_provider_weights(weights: pd.DataFrame) -> pd.DataFrame:
+    """按正权重降序派生提供者排名。"""
+    return weights.where(weights > 0).rank(axis=1, ascending=False, method="first")
+
+
+def build_signal_targets(
+    data: MarketData,
+    strategy: StrategySpec,
+    rebalance_days: pd.Series | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """按策略类型生成信号日目标权重和排名。
+
+    因子策略沿用原有 Top-N 逻辑；提供者策略由注册对象返回权重，拒绝外部再传
+    调仓日掩码，避免两套调仓口径同时生效。
+    """
+    if strategy.signal.provider is None:
+        return build_target_weights(
+            data,
+            strategy.signal,
+            strategy.portfolio,
+            strategy.rebalance,
+            rebalance_days,
+        )
+    if rebalance_days is not None:
+        raise SpecError("目标权重提供者自行决定调仓日，不能同时传 rebalance_days")
+    provider = get_provider(strategy.signal.provider)
+    pool = eligible_mask(data)
+    raw = provider.build(data, pool, dict(strategy.signal.provider.params))
+    weights = validate_provider_weights(raw, data, pool)
+    return weights, rank_provider_weights(weights)
 

@@ -14,6 +14,8 @@
   - `universe.py`
 - 信号与订单
   - `signals.py`
+  - `providers.py`
+  - `strategies/`
   - `orders.py`
 - 执行与指标
   - `engine.py`
@@ -36,6 +38,7 @@
   - `tests/test_metrics.py`
   - `tests/test_orders.py`
   - `tests/test_signals.py`
+  - `tests/test_providers.py`
   - `tests/test_specs.py`
   - `tests/test_store.py`
   - `tests/test_universe.py`
@@ -73,10 +76,11 @@
 
 - 功能：把因子变成目标权重，再按 A 股规则生成可提交订单计划。
 - 定位：策略逻辑和交易规则的核心层。
-- 调用：`data.MarketData`、`specs`、`universe`、`logging_conf`。
+- 调用：`data.MarketData`、`specs`、`universe`、`providers`、`logging_conf`。
 - 被调用：`engine`。
-- 核心逻辑位置：`signals.py:build_target_weights`、`orders.py:apply_rules`、`orders.py:build_order_plan`。
-- 下级模块：`signals.py`、`orders.py`。
+- 核心逻辑位置：`signals.py:build_signal_targets`、`signals.py:build_target_weights`、
+  `providers.py:get_provider`、`orders.py:apply_rules`、`orders.py:build_order_plan`。
+- 下级模块：`signals.py`、`providers.py`、`strategies/`、`orders.py`。
 
 ### 执行与指标
 

@@ -10,10 +10,12 @@ from backtest.config import MAX_CHUNKS
 from backtest.data import MarketData, load_market_data
 from backtest.errors import ResourceLimitError, RunCancelled
 from backtest.orders import liquidation_cells
+from backtest.providers import register_provider
 from backtest.specs import (
     BacktestParams,
     BenchmarkSpec,
     PortfolioSpec,
+    ProviderSpec,
     RebalanceSpec,
     RiskSpec,
     SignalSpec,
@@ -33,6 +35,37 @@ BENCHMARK_INFO = {
     "start": str(DATES[0].date()),
     "end": str(DATES[-1].date()),
 }
+
+
+class WeeklyTopTwoProvider:
+    """每周一按 MOM_20 选前两只等权，用于验证提供者分块一致性。"""
+
+    name = "test_chunk_weekly_top2"
+    version = "1"
+    description = "测试用周频 Top-2 提供者"
+    required_factors = ("MOM_20",)
+
+    def build(self, data, eligible, params):
+        score = data.factors["MOM_20"].astype("float64")
+        weights = pd.DataFrame(
+            np.nan, index=data.index, columns=data.columns, dtype="float64"
+        )
+        for day in data.index[data.index.dayofweek == 0]:
+            chosen = (
+                score.loc[day]
+                .where(eligible.loc[day])
+                .dropna()
+                .sort_values(ascending=False)
+                .head(2)
+                .index
+            )
+            weights.loc[day] = 0.0
+            if len(chosen):
+                weights.loc[day, chosen] = 1.0 / len(chosen)
+        return weights
+
+
+register_provider(WeeklyTopTwoProvider())
 
 
 def _panel(make_data, *, block_buy_row=None, suspended_row=None) -> MarketData:
@@ -92,6 +125,22 @@ def _strategy(**overrides) -> StrategySpec:
         "signal": SignalSpec(factors=("MOM_20",), weights=(1.0,), standardize=False),
         "portfolio": PortfolioSpec(top_n=4),
         "rebalance": RebalanceSpec(frequency="weekly"),
+    }
+    fields.update(overrides)
+    return StrategySpec(**fields)
+
+
+def _provider_strategy(**overrides) -> StrategySpec:
+    """默认周一的 Top-2 提供者策略。"""
+    fields = {
+        "signal": SignalSpec(
+            factors=("MOM_20",),
+            weights=(),
+            standardize=False,
+            provider=ProviderSpec("test_chunk_weekly_top2"),
+        ),
+        "portfolio": PortfolioSpec(selection="provider"),
+        "rebalance": RebalanceSpec(frequency="custom"),
     }
     fields.update(overrides)
     return StrategySpec(**fields)
@@ -169,6 +218,20 @@ def test_chunked_matches_single_block(make_data):
     assert chunked.metadata["execution"]["chunk_count"] == 3
     assert len(chunked.metadata["chunks"]) == 3
     assert chunked.metadata["chunks"][1]["warmup"] == str(DATES[23].date())
+    _assert_same(single, chunked)
+
+
+def test_chunked_matches_single_block_with_provider(make_data):
+    """提供者策略跨资源块时目标权重和全部结果表逐位一致。"""
+    data = _panel(make_data)
+    strategy = _provider_strategy()
+    params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 300_000.0)
+
+    single = _run_single(data, strategy, params)
+    chunked = _run_chunked(data, strategy, params, [24, 40])
+
+    assert chunked.metadata["signal"]["kind"] == "provider"
+    assert chunked.metadata["signal"]["name"] == "test_chunk_weekly_top2"
     _assert_same(single, chunked)
 
 

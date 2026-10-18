@@ -57,8 +57,9 @@ from backtest.orders import (
     execution_targets,
     writeoff_cells,
 )
+from backtest.providers import signal_metadata
 from backtest.risk import cap_target_weights, constrain_one_way_turnover, industry_weight_witnesses
-from backtest.signals import build_target_weights
+from backtest.signals import build_signal_targets
 from backtest.specs import BacktestParams, StrategySpec
 from backtest.trading_rules import RULE_VERSION, rule_summary
 
@@ -692,6 +693,7 @@ def run_backtest(
     rebalance_days: pd.Series | None = None,
     liquidations: pd.DataFrame | None = None,
     chunk_boundary: bool = False,
+    target_override: tuple[pd.DataFrame, pd.DataFrame] | None = None,
 ) -> BacktestResult:
     """执行一次 VectorBT 回测。
 
@@ -706,6 +708,8 @@ def run_backtest(
         liquidations: 整段区间的退市零价值核销候选；None 表示按本面板现算。
         chunk_boundary: 本块之后还有下一块。块末仍有现金补回待办时记为跨块携带，
             不算未收敛。
+        target_override: 分块回测准备好的 ``(目标权重, 排名)``；None 表示按当前面板
+            现场生成信号。提供者策略必须由分块准备阶段传入，避免在段内重复调用。
     """
     if not data.index.size:
         raise ExecutionError("回测数据为空")
@@ -724,9 +728,21 @@ def run_backtest(
         raise ExecutionError(f"预热行数 {warmup_rows} 不小于面板交易日数 {len(data.index)}")
     started = time.perf_counter()
     valuation = data.close.ffill(axis=0)
-    target_weights, ranks = build_target_weights(
-        data, strategy.signal, strategy.portfolio, strategy.rebalance, rebalance_days
-    )
+    if target_override is None:
+        target_weights, ranks = build_signal_targets(data, strategy, rebalance_days)
+    else:
+        prepared_weights, prepared_ranks = target_override
+        missing_days = data.index.difference(prepared_weights.index)
+        missing_stocks = data.columns.difference(prepared_weights.columns)
+        if len(missing_days) or len(missing_stocks):
+            raise ExecutionError(
+                "分块目标权重没有覆盖本段面板："
+                f"缺 {len(missing_days)} 个交易日、{len(missing_stocks)} 只股票"
+            )
+        target_weights = prepared_weights.reindex(
+            index=data.index, columns=data.columns
+        )
+        ranks = prepared_ranks.reindex(index=data.index, columns=data.columns)
     target_weights, concentration_stats = cap_target_weights(
         target_weights,
         strategy.risk.max_single_weight,
@@ -1113,6 +1129,7 @@ def run_backtest(
         "price_adjust": PRICE_ADJUST,
         "cash_retry_policy": "all_cash_shortfall_event",
         "risk": strategy.risk.to_dict(),
+        "signal": signal_metadata(strategy.signal),
         "execution": execution_metadata,
         "versions": data.versions,
         "execution_backend": "ledger",

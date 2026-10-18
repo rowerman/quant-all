@@ -16,6 +16,7 @@ from backtest.config import DEFAULT_BACKTEST_DB
 from backtest.engine import BacktestResult
 from backtest.errors import BacktestError, RunConflictError, RunNotFoundError
 from backtest.metrics import summarize
+from backtest.providers import validate_strategy_provider
 from backtest.specs import BacktestParams, StrategySpec
 
 RESULT_TABLES = (
@@ -119,6 +120,7 @@ class BacktestStore:
 
     def create_strategy(self, spec: StrategySpec, description: str = "") -> tuple[str, int]:
         """创建策略并保存第一版配置。"""
+        validate_strategy_provider(spec)
         strategy_id = uuid.uuid4().hex
         now = self._now()
         with self._connect() as conn:
@@ -136,6 +138,7 @@ class BacktestStore:
         返回:
             ``(当前版本, 是否新建了版本)``。
         """
+        validate_strategy_provider(spec)
         now = self._now()
         with self._connect() as conn:
             row = conn.execute(
@@ -167,6 +170,7 @@ class BacktestStore:
 
     def save_version(self, strategy_id: str, spec: StrategySpec, description: str = "") -> int:
         """为已有策略追加不可变版本。"""
+        validate_strategy_provider(spec)
         now = self._now()
         with self._connect() as conn:
             current = conn.execute(

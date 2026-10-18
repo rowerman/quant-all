@@ -19,6 +19,7 @@ from backtest.data import estimate_panel, load_market_data
 from backtest.engine import BacktestResult
 from backtest.errors import BacktestError, RunCancelled, SpecError
 from backtest.logging_conf import get_logger
+from backtest.providers import signal_metadata, validate_strategy_provider
 from backtest.specs import BacktestParams, BenchmarkSpec, StrategySpec
 from backtest.store import BacktestStore
 from backtest.universe import resolve_universe
@@ -101,6 +102,7 @@ def iter_run(
         should_cancel: 可选取消检查，返回 True 时在当前阶段边界退出。
     """
     spec = effective_spec(store.get_version(request.strategy_id, request.version), request)
+    validate_strategy_provider(spec)
     params = request.params
     # 覆盖检查放在运行记录和面板读取之前，避免可预期的缺日留下失败运行。
     validate_window(spec.benchmark.index_code, params.start, params.end)
@@ -120,6 +122,7 @@ def iter_run(
             "universe": spec.universe,
             "benchmark": spec.benchmark.index_code,
             "factors": list(spec.signal.factors),
+            "signal": signal_metadata(spec.signal),
             "params": {"start": params.start, "end": params.end, "init_cash": params.init_cash},
         },
     )

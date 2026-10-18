@@ -34,16 +34,73 @@ def _date(value: str, name: str) -> str:
 
 
 @dataclass(frozen=True)
+class ProviderSpec:
+    """外部目标权重提供者配置。
+
+    ``name`` 与 ``version`` 必须对应 ``backtest.strategies`` 中注册的提供者；
+    ``params`` 是提供者自己的参数，必须是可稳定序列化的 JSON 对象。
+    """
+
+    name: str
+    version: str = "1"
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise SpecError("signal.provider.name 必须是非空字符串")
+        version = str(self.version).strip()
+        if not version:
+            raise SpecError("signal.provider.version 必须是非空字符串")
+        object.__setattr__(self, "version", version)
+        if not isinstance(self.params, dict):
+            raise SpecError("signal.provider.params 必须是对象")
+        try:
+            encoded = json.dumps(
+                self.params, ensure_ascii=False, sort_keys=True, allow_nan=False
+            )
+            normalized = json.loads(encoded)
+        except (TypeError, ValueError) as error:
+            raise SpecError(f"signal.provider.params 必须是可 JSON 序列化的对象：{error}") from error
+        if not isinstance(normalized, dict):
+            raise SpecError("signal.provider.params 必须是对象")
+        object.__setattr__(self, "params", normalized)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ProviderSpec":
+        """从策略 JSON 恢复提供者配置。"""
+        if not isinstance(payload, dict):
+            raise SpecError("signal.provider 必须是对象")
+        known = {"name", "version", "params"}
+        unknown = set(payload) - known
+        if unknown:
+            raise SpecError(f"signal.provider 包含未知字段：{sorted(unknown)}")
+        return cls(
+            name=payload.get("name", ""),
+            version=payload.get("version", "1"),
+            params=payload.get("params", {}),
+        )
+
+
+@dataclass(frozen=True)
 class SignalSpec:
-    """因子截面信号定义。"""
+    """信号定义：默认是因子线性组合，也可交给外部目标权重提供者。"""
 
     factors: tuple[str, ...] = ("MOM_20",)
     weights: tuple[float, ...] = (1.0,)
     winsorize: bool = False
     standardize: bool = True
+    provider: ProviderSpec | None = None
 
     def __post_init__(self) -> None:
-        if not self.factors or any(not isinstance(item, str) or not item for item in self.factors):
+        if any(not isinstance(item, str) or not item for item in self.factors):
+            raise SpecError("signal.factors 必须是非空因子名序列")
+        if self.provider is not None:
+            if not isinstance(self.provider, ProviderSpec):
+                raise SpecError("signal.provider 必须是 ProviderSpec 或 None")
+            if self.weights:
+                raise SpecError("使用 signal.provider 时 signal.weights 必须为空")
+            return
+        if not self.factors:
             raise SpecError("signal.factors 必须是非空因子名序列")
         if len(self.weights) != len(self.factors):
             raise SpecError("signal.weights 数量必须与 factors 一致")
@@ -66,8 +123,8 @@ class PortfolioSpec:
     long_only: bool = True
 
     def __post_init__(self) -> None:
-        if self.selection != "top_n":
-            raise SpecError("第一版只支持 selection='top_n'")
+        if self.selection not in ("top_n", "provider"):
+            raise SpecError("selection 只支持 top_n/provider")
         if type(self.top_n) is not int or self.top_n <= 0:
             raise SpecError("portfolio.top_n 必须是正整数")
         if self.weighting not in ("equal", "market_cap"):
@@ -85,8 +142,8 @@ class RebalanceSpec:
     execute_at: str = "next_open"
 
     def __post_init__(self) -> None:
-        if self.frequency not in ("daily", "weekly", "monthly"):
-            raise SpecError("frequency 只支持 daily/weekly/monthly")
+        if self.frequency not in ("daily", "weekly", "monthly", "custom"):
+            raise SpecError("frequency 只支持 daily/weekly/monthly/custom")
         if self.signal_at != "close" or self.execute_at != "next_open":
             raise SpecError("第一版固定为收盘生成信号、下一交易日开盘执行")
 
@@ -217,10 +274,24 @@ class StrategySpec:
             raise SpecError("策略 version 必须是正整数")
         if self.universe != "all_a" and not self.universe.startswith("index:"):
             raise SpecError("universe 必须是 all_a 或 index:<指数代码>")
+        using_provider = self.signal.provider is not None
+        if using_provider:
+            if self.portfolio.selection != "provider":
+                raise SpecError("使用 signal.provider 时 portfolio.selection 必须为 provider")
+            if self.rebalance.frequency != "custom":
+                raise SpecError("使用 signal.provider 时 rebalance.frequency 必须为 custom")
+        else:
+            if self.portfolio.selection != "top_n":
+                raise SpecError("未使用 signal.provider 时 portfolio.selection 必须为 top_n")
+            if self.rebalance.frequency == "custom":
+                raise SpecError("rebalance.frequency=custom 只用于 signal.provider")
 
     def to_dict(self) -> dict[str, Any]:
         """转换为稳定的嵌套字典。"""
         payload = asdict(self)
+        signal_payload = payload.get("signal")
+        if isinstance(signal_payload, dict) and signal_payload.get("provider") is None:
+            signal_payload.pop("provider", None)
         if self.risk.disabled:
             payload.pop("risk", None)
         if self.execution.max_participation_rate is None:
@@ -262,6 +333,10 @@ class StrategySpec:
                 raise SpecError(f"策略配置 {name} 必须是对象")
             if kind is SignalSpec:
                 value = dict(value)
+                if "provider" in value and value["provider"] is not None:
+                    value["provider"] = ProviderSpec.from_dict(value["provider"])
+                    value.setdefault("factors", [])
+                    value.setdefault("weights", [])
                 if "factors" in value:
                     value["factors"] = tuple(value["factors"])
                 if "weights" in value:

@@ -20,13 +20,25 @@ from backtest.orders import (
     writeoff_cells,
 )
 from backtest.pipeline import RunRequest, iter_run, run
-from backtest.signals import build_target_weights, eligible_mask, rebalance_mask
+from backtest.providers import (
+    TargetWeightProvider,
+    get_provider,
+    list_providers,
+    register_provider,
+)
+from backtest.signals import (
+    build_signal_targets,
+    build_target_weights,
+    eligible_mask,
+    rebalance_mask,
+)
 from backtest.specs import (
     BacktestParams,
     BenchmarkSpec,
     CostSpec,
     ExecutionSpec,
     PortfolioSpec,
+    ProviderSpec,
     RebalanceSpec,
     RiskSpec,
     SignalSpec,
@@ -51,6 +63,7 @@ __all__ = [
     "MarketData",
     "OrderPlan",
     "PortfolioSpec",
+    "ProviderSpec",
     "RebalanceSpec",
     "RiskSpec",
     "ResourceLimitError",
@@ -59,17 +72,22 @@ __all__ = [
     "SignalSpec",
     "SpecError",
     "StrategySpec",
+    "TargetWeightProvider",
     "build_order_plan",
+    "build_signal_targets",
     "build_target_weights",
     "eligible_mask",
     "execution_targets",
     "iter_run",
+    "get_provider",
     "liquidation_cells",
     "writeoff_cells",
     "list_universes",
+    "list_providers",
     "load_market_data",
     "membership_frame",
     "rebalance_mask",
+    "register_provider",
     "resolve_universe",
     "run",
     "run_backtest",

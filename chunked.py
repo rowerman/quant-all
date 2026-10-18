@@ -47,7 +47,7 @@ from backtest.orders import (
     writeoff_cells,
 )
 from backtest.risk import cap_target_weights
-from backtest.signals import build_target_weights, rebalance_mask
+from backtest.signals import build_signal_targets, rebalance_mask
 from backtest.specs import BacktestParams, StrategySpec
 from backtest.universe import resolve_universe, universe_stocks
 
@@ -286,6 +286,7 @@ class _PreparedChunk:
     targets: pd.DataFrame
     rank_rows: int
     risk_stats: dict
+    ranks: pd.DataFrame | None = None
 
 
 def _logical_frame(frame: pd.DataFrame, window: ChunkWindow) -> pd.DataFrame:
@@ -302,6 +303,14 @@ def _concat_logical(
     return pd.concat(
         [_logical_frame(frame, item.window) for frame, item in zip(frames, prepared, strict=True)]
     ).sort_index()
+
+
+def _concat_prepared(
+    frames: list[pd.DataFrame], prepared: list[_PreparedChunk]
+) -> pd.DataFrame:
+    """拼接准备阶段矩阵，保留预热行并按日期去重。"""
+    combined = pd.concat(frames).sort_index()
+    return combined[~combined.index.duplicated(keep="last")]
 
 
 def _segment_windows(
@@ -376,7 +385,11 @@ def _prepare_chunks(
     should_cancel: Cancelled | None,
 ) -> list[_PreparedChunk]:
     """逐块计算一次信号目标，后续固定点轮次复用。"""
-    mask = rebalance_mask(days, strategy.rebalance.frequency)
+    mask = (
+        None
+        if strategy.signal.provider is not None
+        else rebalance_mask(days, strategy.rebalance.frequency)
+    )
     prepared: list[_PreparedChunk] = []
     total_rank_rows = 0
     total_rebalance_days = 0
@@ -384,20 +397,18 @@ def _prepare_chunks(
         _check_cancelled(should_cancel)
         _report_chunk(progress, "prepare", position, len(windows), window)
         data = loader(window, None)
-        target_weights, ranks = build_target_weights(
-            data,
-            strategy.signal,
-            strategy.portfolio,
-            strategy.rebalance,
-            mask,
-        )
-        target_weights, risk_stats = cap_target_weights(
-            target_weights,
-            strategy.risk.max_single_weight,
-            data.industry_l1,
-            strategy.risk.max_industry_weight,
-            data.industry_labels,
-        )
+        target_weights, ranks = build_signal_targets(data, strategy, mask)
+        if strategy.signal.provider is None:
+            target_weights, risk_stats = cap_target_weights(
+                target_weights,
+                strategy.risk.max_single_weight,
+                data.industry_l1,
+                strategy.risk.max_industry_weight,
+                data.industry_labels,
+            )
+        else:
+            # 提供者路径由每个执行段统一做风险封顶，避免这里先封顶后统计被清零。
+            risk_stats = {}
         prepared.append(
             _PreparedChunk(
                 window=window,
@@ -405,6 +416,7 @@ def _prepare_chunks(
                 targets=execution_targets(target_weights),
                 rank_rows=int(ranks.notna().sum().sum()),
                 risk_stats=risk_stats,
+                ranks=None if strategy.signal.provider is None else ranks,
             )
         )
         total_rank_rows += int(ranks.notna().sum().sum())
@@ -438,7 +450,20 @@ def run_windows(
     logger.info("因果分段回测：区间=%s~%s 共 %d 个资源块", params.start, params.end, len(windows))
     prepared = _prepare_chunks(windows, strategy, days, loader, progress, should_cancel)
     segments = _segment_windows(days, prepared)
-    mask = rebalance_mask(days, strategy.rebalance.frequency)
+    mask = (
+        None
+        if strategy.signal.provider is not None
+        else rebalance_mask(days, strategy.rebalance.frequency)
+    )
+    provider_targets = provider_ranks = None
+    if strategy.signal.provider is not None:
+        provider_targets = _concat_prepared(
+            [item.target_weights for item in prepared], prepared
+        )
+        rank_frames = [item.ranks for item in prepared]
+        if any(frame is None for frame in rank_frames):
+            raise ResourceLimitError("提供者策略缺少分块排名结果")
+        provider_ranks = _concat_prepared(rank_frames, prepared)
     results: list[tuple[ChunkWindow, BacktestResult]] = []
     state: ChunkState | None = None
     for position, window in enumerate(segments, start=1):
@@ -456,6 +481,12 @@ def run_windows(
                 segment_count=len(segments),
             )
 
+        override = None
+        if provider_targets is not None and provider_ranks is not None:
+            override = (
+                provider_targets.reindex(index=data.index, columns=data.columns),
+                provider_ranks.reindex(index=data.index, columns=data.columns),
+            )
         result = engine.run_backtest(
             data,
             strategy,
@@ -466,6 +497,7 @@ def run_windows(
             rebalance_days=mask,
             liquidations=liquidations,
             chunk_boundary=position < len(segments),
+            target_override=override,
         )
         if result.final_state is None:
             raise ResourceLimitError("调仓段执行没有返回可交接状态")
@@ -831,6 +863,7 @@ def _stitch(
         "cost_model": first.metadata.get("cost_model"),
         "cash_retry_policy": first.metadata.get("cash_retry_policy"),
         "risk": first.metadata.get("risk"),
+        "signal": first.metadata.get("signal"),
         "execution": {
             **first.metadata.get("execution", {}),
             "mode": "causal_segmented",
