@@ -61,6 +61,7 @@ def options(store_path: str | None = None) -> dict:
             "minimum_commission": 5.0,
             "stamp_tax_rate": 0.0005,
             "slippage": 0.0005,
+            "dividend_tax_mode": "fifo_deferred",
         },
     }
 
