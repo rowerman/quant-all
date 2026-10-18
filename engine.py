@@ -60,6 +60,7 @@ from backtest.orders import (
 from backtest.providers import signal_metadata
 from backtest.risk import cap_target_weights, constrain_one_way_turnover, industry_weight_witnesses
 from backtest.signals import build_signal_targets
+from backtest.snapshot import build_input_snapshot, data_snapshot_from_market_data
 from backtest.specs import BacktestParams, StrategySpec
 from backtest.trading_rules import RULE_VERSION, rule_summary
 
@@ -1120,6 +1121,12 @@ def run_backtest(
     }
     if strategy.execution.max_participation_rate is not None:
         execution_metadata["max_participation_rate"] = strategy.execution.max_participation_rate
+    snapshot = build_input_snapshot(
+        strategy,
+        data.data_snapshot
+        if data.data_snapshot is not None
+        else data_snapshot_from_market_data(data),
+    )
     metadata = {
         "strategy": strategy.to_dict(),
         "strategy_hash": strategy.config_hash,
@@ -1132,6 +1139,8 @@ def run_backtest(
         "signal": signal_metadata(strategy.signal),
         "execution": execution_metadata,
         "versions": data.versions,
+        "snapshot": snapshot.to_dict(),
+        "snapshot_id": snapshot.snapshot_id,
         "execution_backend": "ledger",
         "cost_model": cost_model_summary(strategy.costs),
         "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),

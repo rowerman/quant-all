@@ -11,13 +11,15 @@ import importlib
 import inspect
 import pkgutil
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import pandas as pd
 
-from backtest.data import MarketData
 from backtest.errors import SpecError
 from backtest.specs import ProviderSpec, SignalSpec, StrategySpec
+
+if TYPE_CHECKING:
+    from backtest.data import MarketData
 
 
 @runtime_checkable
@@ -35,7 +37,7 @@ class TargetWeightProvider(Protocol):
 
     def build(
         self,
-        data: MarketData,
+        data: "MarketData",
         eligible: pd.DataFrame,
         params: dict[str, Any],
     ) -> pd.DataFrame:
@@ -109,16 +111,22 @@ def get_provider(spec: ProviderSpec | str) -> TargetWeightProvider:
     return provider
 
 
-def _code_sha256(provider: TargetWeightProvider) -> str:
-    """读取提供者类所在源码文件并计算哈希。"""
+def _code_source(provider: TargetWeightProvider) -> tuple[str, str]:
+    """读取提供者模块源码并返回源码文本和 SHA-256。"""
     source = inspect.getsourcefile(type(provider))
     if source and Path(source).is_file():
-        return hashlib.sha256(Path(source).read_bytes()).hexdigest()
+        payload = Path(source).read_text(encoding="utf-8")
+        return payload, hashlib.sha256(payload.encode("utf-8")).hexdigest()
     try:
         text = inspect.getsource(type(provider))
     except (OSError, TypeError) as error:
         raise SpecError(f"无法读取目标权重提供者源码：{type(provider).__name__}") from error
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return text, hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _code_sha256(provider: TargetWeightProvider) -> str:
+    """读取提供者模块源码并计算哈希。"""
+    return _code_source(provider)[1]
 
 
 def _metadata(provider: TargetWeightProvider) -> dict[str, Any]:
@@ -136,6 +144,24 @@ def _metadata(provider: TargetWeightProvider) -> dict[str, Any]:
 def provider_metadata(spec: ProviderSpec) -> dict[str, Any]:
     """返回当前注册提供者的元数据。"""
     return _metadata(get_provider(spec))
+
+
+def provider_snapshot_metadata(spec: ProviderSpec) -> dict[str, Any]:
+    """返回提供者的完整快照信息，包含模块源码。
+
+    该接口只供回测输入快照使用；常规运行元数据的 :func:`signal_metadata`
+    不包含源码正文，避免接口和日志膨胀。
+
+    参数:
+        spec: 策略中的提供者配置。
+    """
+    provider = get_provider(spec)
+    payload = _metadata(provider)
+    source, digest = _code_source(provider)
+    payload["params"] = dict(spec.params)
+    payload["source"] = source
+    payload["source_sha256"] = digest
+    return payload
 
 
 def list_providers() -> list[dict[str, Any]]:

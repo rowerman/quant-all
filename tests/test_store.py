@@ -8,7 +8,12 @@ import pytest
 
 from backtest import BacktestParams, BacktestResult, StrategySpec
 from backtest.builtin import BUILTINS, MOM20_ID
-from backtest.errors import BacktestError, RunConflictError, RunNotFoundError
+from backtest.errors import (
+    BacktestError,
+    RunConflictError,
+    RunNotFoundError,
+    SnapshotConflictError,
+)
 from backtest.specs import PortfolioSpec
 from backtest.store import BacktestStore
 
@@ -77,6 +82,79 @@ def test_run_lifecycle_reports_status_and_list(store):
     assert runs[0]["run_id"] == run_id
     assert runs[0]["strategy_hash"] == "abc"
     assert runs[0]["metrics"] == {"total_return": 0.01}
+
+
+def test_run_lifecycle_persists_snapshot_id(store):
+    strategy_id, version = store.create_strategy(StrategySpec())
+    snapshot = {
+        "snapshot_id": "a" * 64,
+        "schema_version": "backtest_input_snapshot_v1",
+        "created_at": "2026-10-18T00:00:00+00:00",
+        "scope": {"start": "2024-01-01", "end": "2024-01-05", "universe": "all_a"},
+        "components": {"market": {"digest": "m"}},
+    }
+    store.record_snapshot(snapshot)
+    run_id = store.start_run(
+        strategy_id,
+        version,
+        BacktestParams("2024-01-01", "2024-01-05"),
+        snapshot_id=snapshot["snapshot_id"],
+    )
+    store.finish_run(run_id, _result(metadata={"snapshot_id": snapshot["snapshot_id"]}))
+    record = store.get_run(run_id)
+    assert record["snapshot_id"] == snapshot["snapshot_id"]
+    assert store.list_runs()[0]["snapshot_id"] == snapshot["snapshot_id"]
+    assert store.get_snapshot(snapshot["snapshot_id"])["scope"]["universe"] == "all_a"
+
+
+def test_snapshot_registration_is_immutable(store):
+    snapshot = {
+        "snapshot_id": "b" * 64,
+        "schema_version": "backtest_input_snapshot_v1",
+        "created_at": "2026-10-18T00:00:00+00:00",
+        "scope": {"start": "2024-01-01", "end": "2024-01-05", "universe": "all_a"},
+        "components": {"market": {"digest": "m"}},
+    }
+    store.record_snapshot(snapshot)
+    store.record_snapshot({**snapshot, "created_at": "2026-10-18T01:00:00+00:00"})
+    with pytest.raises(SnapshotConflictError, match="内容不同"):
+        store.record_snapshot(
+            {**snapshot, "components": {"market": {"digest": "changed"}}}
+        )
+
+
+def test_store_migrates_old_run_table_for_snapshot_id(tmp_path):
+    path = tmp_path / "backtest.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE SCHEMA bt")
+    con.execute(
+        """CREATE TABLE bt.run (
+            run_id VARCHAR PRIMARY KEY,
+            strategy_id VARCHAR,
+            strategy_version INTEGER,
+            start_date DATE,
+            end_date DATE,
+            init_cash DOUBLE,
+            status VARCHAR,
+            metadata_json VARCHAR,
+            error_message VARCHAR,
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP
+        )"""
+    )
+    con.close()
+
+    store = BacktestStore(path)
+    with store._connect() as conn:
+        columns = {row[0] for row in conn.execute("DESCRIBE bt.run").fetchall()}
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'bt'"
+            ).fetchall()
+        }
+    assert {"universe", "benchmark", "snapshot_id"} <= columns
+    assert {"input_snapshot", "provider_revision"} <= tables
 
 
 def test_delete_run_removes_run_and_all_result_rows(store):

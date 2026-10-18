@@ -23,6 +23,7 @@ from quant.db import query as db_query
 from backtest.config import FACTOR_DB, MAX_PANEL_CELLS, MAX_TRADE_DAYS
 from backtest.errors import DataAlignmentError, ResourceLimitError
 from backtest.logging_conf import get_logger
+from backtest.snapshot import build_data_snapshot
 from backtest.specs import TOTAL_RETURN_BENCHMARKS
 from backtest.trading_rules import VALID_BOARDS
 from backtest.universe import (
@@ -66,7 +67,8 @@ class MarketData:
     ``board`` 是每股所属板块，交易单位按它解析；
     ``membership`` 只在指数成分池下存在，为 True 表示当日属于成分。
     ``is_delisting`` 标记退市整理期，``delist_date`` 决定退市日核销；
-    ``versions`` 是数据与因子版本。
+    ``versions`` 是数据与因子版本；``data_snapshot`` 是本次取数范围的内容摘要，
+    用于与策略规则合成运行级 ``snapshot_id``。
     """
 
     open: pd.DataFrame
@@ -92,6 +94,7 @@ class MarketData:
     amount_cny: pd.DataFrame | None = None
     corporate_actions: pd.DataFrame | None = None
     is_delisting: pd.DataFrame | None = None
+    data_snapshot: dict | None = None
 
     def __post_init__(self) -> None:
         if self.is_delisting is None:
@@ -196,6 +199,7 @@ class MarketData:
             benchmark_info=benchmark_info,
             versions=self.versions,
             corporate_actions=corporate_actions,
+            data_snapshot=None,
             **frames,
         )
 
@@ -621,6 +625,7 @@ def load_market_data(
     membership_end: str | None = None,
     stock_codes: tuple[str, ...] | None = None,
     industry_level: str | None = None,
+    data_snapshot: dict | None = None,
 ) -> MarketData:
     """从主库和因子目录读取回测输入。
 
@@ -637,6 +642,7 @@ def load_market_data(
         stock_codes: 外部固定的股票列；None 表示按本区间解析股票池。分块回测传整段
             区间的股票并集，保证每块列集合一致，持仓不会因股票暂时不在本块池内而丢失。
         industry_level: None 表示不加载行业；第一版只支持 ``L1``。
+        data_snapshot: 整段回测的数据快照；None 表示按本次读取范围现算。
     """
     if industry_level not in (None, "L1"):
         raise ValueError("industry_level 第一版只支持 None/L1")
@@ -727,6 +733,19 @@ def load_market_data(
         _load_industry_l1(start, end, index, columns, db_path)
         if industry_level == "L1" else (None, None)
     )
+    if data_snapshot is None:
+        data_snapshot = build_data_snapshot(
+            start,
+            end,
+            factor_names,
+            universe=universe,
+            db_path=db_path,
+            factor_dir=factor_dir,
+            benchmark_code=benchmark_code,
+            membership_end=membership_end,
+            stock_codes=stocks,
+            industry_level=industry_level,
+        )
     return MarketData(
         factors=factors,
         list_date=list_date,
@@ -739,6 +758,7 @@ def load_market_data(
         benchmark_info=benchmark_info,
         versions=_load_versions(db_path),
         corporate_actions=corporate_actions,
+        data_snapshot=data_snapshot,
         **frames,
     )
 

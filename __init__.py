@@ -9,6 +9,7 @@ from backtest.errors import (
     ExecutionError,
     ResourceLimitError,
     RunCancelled,
+    SnapshotConflictError,
     SpecError,
 )
 from backtest.metrics import summarize
@@ -31,6 +32,11 @@ from backtest.signals import (
     build_target_weights,
     eligible_mask,
     rebalance_mask,
+)
+from backtest.snapshot import (
+    InputSnapshot,
+    build_data_snapshot,
+    build_input_snapshot,
 )
 from backtest.specs import (
     BacktestParams,
@@ -69,10 +75,14 @@ __all__ = [
     "ResourceLimitError",
     "RunCancelled",
     "RunRequest",
+    "SnapshotConflictError",
     "SignalSpec",
     "SpecError",
     "StrategySpec",
     "TargetWeightProvider",
+    "InputSnapshot",
+    "build_data_snapshot",
+    "build_input_snapshot",
     "build_order_plan",
     "build_signal_targets",
     "build_target_weights",

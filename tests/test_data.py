@@ -69,6 +69,16 @@ def test_market_data_crop_is_a_noop_inside_range(make_data):
     assert data.crop(str(index[0].date()), str(index[-1].date())) is data
 
 
+def test_market_data_crop_drops_narrowed_snapshot(make_data):
+    index = pd.date_range("2024-01-29", periods=4, freq="B")
+    data = make_data(
+        dates=index,
+        data_snapshot={"scope": {"start": "2024-01-29", "end": "2024-02-01"}},
+    )
+    cropped = data.crop(str(index[1].date()), str(index[2].date()))
+    assert cropped.data_snapshot is None
+
+
 def test_load_market_data_reads_real_panel():
     """真实库短区间冒烟：形状、类型与基准对齐。"""
     data = load_market_data("2026-08-03", "2026-08-14", ["MOM_20"])
@@ -82,6 +92,11 @@ def test_load_market_data_reads_real_panel():
     assert data.benchmark.notna().all()
     assert data.benchmark_info["return_type"] == "total_return"
     assert data.versions["dataset"]["data_version"].startswith("tushare_fullA_")
+    assert data.data_snapshot["scope"]["price_adjust"] == "raw"
+    assert set(data.data_snapshot["components"]) >= {
+        "market", "calendar", "universe", "factors",
+        "corporate_actions", "industry", "benchmark",
+    }
     assert data.delist_date is not None
     assert set(data.board.unique()) <= {"主板", "创业板", "科创板", "北交所"}
     for name in PANEL_FIELDS:

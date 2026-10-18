@@ -133,6 +133,27 @@ def membership_frame(
     return membership
 
 
+def membership_rows(
+    spec: UniverseSpec,
+    end: str,
+    *,
+    db_path: Path | str | None = None,
+) -> pd.DataFrame:
+    """返回指数池在截止日前的月末成分明细。
+
+    这是 :func:`membership_frame` 的数据源，也用于回测输入快照；
+    每行表示某个生效月份包含的一只股票。
+
+    参数:
+        spec: 指数成分池定义。
+        end: 回测截止日。
+        db_path: 行情库路径。
+    """
+    if not spec.is_index:
+        raise SpecError(f"股票池 {spec.key} 不是指数成分池，没有成分数据")
+    return _member_rows(spec, end, db_path)
+
+
 def universe_stocks(
     spec: UniverseSpec,
     start: str,

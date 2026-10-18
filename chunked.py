@@ -48,6 +48,11 @@ from backtest.orders import (
 )
 from backtest.risk import cap_target_weights
 from backtest.signals import build_signal_targets, rebalance_mask
+from backtest.snapshot import (
+    build_data_snapshot,
+    build_input_snapshot,
+    data_snapshot_from_market_data,
+)
 from backtest.specs import BacktestParams, StrategySpec
 from backtest.universe import resolve_universe, universe_stocks
 
@@ -442,6 +447,7 @@ def run_windows(
     benchmark: pd.Series | None = None,
     benchmark_info: dict | None = None,
     liquidations: pd.DataFrame | None = None,
+    data_snapshot: dict | None = None,
     progress: Progress | None = None,
     should_cancel: Cancelled | None = None,
 ) -> BacktestResult:
@@ -514,6 +520,7 @@ def run_windows(
         strategy,
         params,
         time.perf_counter() - started,
+        data_snapshot=data_snapshot,
         resource_windows=windows,
     )
 
@@ -526,6 +533,7 @@ def _load_window(
     db_path=None,
     factor_dir=None,
     stock_codes: tuple[str, ...] | None = None,
+    data_snapshot: dict | None = None,
 ) -> MarketData:
     """按窗口取数：带上预热行，并把预热行的价格补成上一块收盘时的估值价。"""
     data = load_market_data(
@@ -539,6 +547,7 @@ def _load_window(
         membership_end=params.end,
         stock_codes=stock_codes,
         industry_level="L1" if strategy.risk.max_industry_weight is not None else None,
+        data_snapshot=data_snapshot,
     )
     if window.warmup is None or state is None:
         return data
@@ -557,6 +566,12 @@ def run_loaded(
 
     小面板与数据库分块面板共用 :func:`run_windows`，因此资源切块不会改变求解边界。
     """
+    data = data.crop(params.start, params.end)
+    if data.data_snapshot is None:
+        data = replace(
+            data,
+            data_snapshot=data_snapshot_from_market_data(data),
+        )
     window = ChunkWindow(params.start, params.end)
 
     def loader(part: ChunkWindow, state: ChunkState | None) -> MarketData:
@@ -572,6 +587,7 @@ def run_loaded(
         benchmark=data.benchmark,
         benchmark_info=data.benchmark_info,
         liquidations=writeoff_cells(data),
+        data_snapshot=data.data_snapshot,
         progress=progress,
         should_cancel=should_cancel,
     )
@@ -607,6 +623,7 @@ def run_chunked(
     db_path=None,
     factor_dir=None,
     windows: list[ChunkWindow] | None = None,
+    data_snapshot: dict | None = None,
 ) -> BacktestResult:
     """分块执行一次回测，返回拼接后的整段结果。
 
@@ -619,6 +636,7 @@ def run_chunked(
         db_path: 行情库路径。
         factor_dir: 因子数据根目录。
         windows: 直接指定分块窗口；None 表示按预算自动切块。
+        data_snapshot: 整段数据快照；None 表示现算。
     """
     windows = windows or plan_chunks(
         params.start, params.end, strategy.universe, db_path=db_path, cell_budget=cell_budget
@@ -627,6 +645,20 @@ def run_chunked(
     stock_codes = _global_stock_codes(
         strategy.universe, params.start, params.end, db_path
     )
+    if data_snapshot is None:
+        snapshot_spec = resolve_universe(strategy.universe)
+        data_snapshot = build_data_snapshot(
+            params.start,
+            params.end,
+            list(strategy.signal.factors),
+            universe=strategy.universe,
+            db_path=db_path,
+            factor_dir=factor_dir,
+            benchmark_code=strategy.benchmark.index_code,
+            membership_end=params.end,
+            stock_codes=None if snapshot_spec.key == "all_a" else stock_codes,
+            industry_level="L1" if strategy.risk.max_industry_weight is not None else None,
+        )
     liquidations = load_writeoff_candidates(params.start, params.end, db_path=db_path)
     benchmark, benchmark_info = load_benchmark(
         strategy.benchmark.index_code, params.start, params.end, days, db_path
@@ -637,11 +669,13 @@ def run_chunked(
         params,
         days=days,
         loader=lambda window, state: _load_window(
-            window, state, strategy, params, db_path, factor_dir, stock_codes
+            window, state, strategy, params, db_path, factor_dir, stock_codes,
+            data_snapshot,
         ),
         benchmark=benchmark,
         benchmark_info=benchmark_info,
         liquidations=liquidations,
+        data_snapshot=data_snapshot,
         progress=progress,
         should_cancel=should_cancel,
     )
@@ -712,6 +746,7 @@ def _stitch(
     strategy: StrategySpec,
     params: BacktestParams,
     elapsed: float,
+    data_snapshot: dict | None = None,
     resource_windows: list[ChunkWindow] | None = None,
 ) -> BacktestResult:
     """把各调仓段结果拼成一次运行的标准化输出。
@@ -724,6 +759,7 @@ def _stitch(
         strategy: 策略配置。
         params: 整段区间与初始资金。
         elapsed: 分块执行总耗时。
+        data_snapshot: 整段数据摘要；优先于首个执行段的元数据。
         resource_windows: 原始资源窗口；只用于记录取数切块，不参与求解。
     """
     orders_parts: list[pd.DataFrame] = []
@@ -852,6 +888,11 @@ def _stitch(
     calibration = _aggregate_calibration([item.metadata["calibration"] for _, item in results])
     calibration.update(weight_witnesses(target_weights, holdings))
     first = results[0][1]
+    full_snapshot = (
+        build_input_snapshot(strategy, data_snapshot).to_dict()
+        if data_snapshot is not None
+        else first.metadata.get("snapshot")
+    )
     metadata = {
         "strategy": first.metadata.get("strategy"),
         "strategy_hash": first.metadata.get("strategy_hash"),
@@ -873,6 +914,12 @@ def _stitch(
             "allocation_converged": calibration["allocation_converged"],
         },
         "versions": first.metadata.get("versions"),
+        "snapshot": full_snapshot,
+        "snapshot_id": (
+            None
+            if not isinstance(full_snapshot, dict)
+            else full_snapshot.get("snapshot_id")
+        ),
         "vectorbt_version": first.metadata.get("vectorbt_version"),
         "panel": {"trading_days": int(len(days)), "stocks": int(len(target_weights.columns))},
         "rank_rows": int(sum(item.metadata.get("rank_rows", 0) or 0 for _, item in results)),

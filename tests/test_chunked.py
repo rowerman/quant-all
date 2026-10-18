@@ -1,5 +1,7 @@
 """分块回测的等价性测试：分块结果必须与不分块逐位一致。"""
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -21,6 +23,7 @@ from backtest.specs import (
     SignalSpec,
     StrategySpec,
 )
+from backtest.snapshot import data_snapshot_from_market_data
 
 DATES = pd.date_range("2024-01-29", periods=60, freq="B")
 STOCKS = ["SH600000", "SH600001", "SH600002", "SH600003", "SZ000001", "SZ000002"]
@@ -173,6 +176,10 @@ def _loader(data: MarketData):
 
 def _run_chunked(data: MarketData, strategy: StrategySpec, params: BacktestParams, cuts: list[int]):
     """按给定切点跑一次分块回测。"""
+    data = replace(
+        data,
+        data_snapshot=data.data_snapshot or data_snapshot_from_market_data(data),
+    )
     return run_windows(
         _windows(cuts),
         strategy,
@@ -182,11 +189,16 @@ def _run_chunked(data: MarketData, strategy: StrategySpec, params: BacktestParam
         benchmark=data.benchmark,
         benchmark_info=data.benchmark_info,
         liquidations=liquidation_cells(data),
+        data_snapshot=data.data_snapshot,
     )
 
 
 def _run_single(data: MarketData, strategy: StrategySpec, params: BacktestParams):
     """用一个资源窗口运行，作为资源分块等价性的基准。"""
+    data = replace(
+        data,
+        data_snapshot=data.data_snapshot or data_snapshot_from_market_data(data),
+    )
     return run_loaded(data, strategy, params)
 
 
@@ -204,6 +216,15 @@ def _assert_same(single, chunked) -> None:
     )
     assert single.metrics == chunked.metrics
     assert single.metadata["calibration"] == chunked.metadata["calibration"]
+    assert single.metadata["snapshot_id"] == chunked.metadata["snapshot_id"]
+    assert (
+        single.metadata["snapshot"]["components"]
+        == chunked.metadata["snapshot"]["components"]
+    )
+    assert (
+        single.metadata["snapshot"]["scope"]
+        == chunked.metadata["snapshot"]["scope"]
+    )
 
 
 def test_chunked_matches_single_block(make_data):

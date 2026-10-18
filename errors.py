@@ -51,3 +51,9 @@ class RunConflictError(BacktestError):
     """回测运行当前状态不允许执行请求的操作。"""
 
     code = "BT-602"
+
+
+class SnapshotConflictError(BacktestError):
+    """输入快照或提供者源码版本发生冲突。"""
+
+    code = "BT-701"

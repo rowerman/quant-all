@@ -20,6 +20,7 @@ from backtest.engine import BacktestResult
 from backtest.errors import BacktestError, RunCancelled, SpecError
 from backtest.logging_conf import get_logger
 from backtest.providers import signal_metadata, validate_strategy_provider
+from backtest.snapshot import build_data_snapshot, build_input_snapshot
 from backtest.specs import BacktestParams, BenchmarkSpec, StrategySpec
 from backtest.store import BacktestStore
 from backtest.universe import resolve_universe
@@ -106,9 +107,21 @@ def iter_run(
     params = request.params
     # 覆盖检查放在运行记录和面板读取之前，避免可预期的缺日留下失败运行。
     validate_window(spec.benchmark.index_code, params.start, params.end)
+    data_snapshot = build_data_snapshot(
+        params.start,
+        params.end,
+        list(spec.signal.factors),
+        universe=spec.universe,
+        benchmark_code=spec.benchmark.index_code,
+        membership_end=params.end,
+        industry_level="L1" if spec.risk.max_industry_weight is not None else None,
+    )
+    snapshot = build_input_snapshot(spec, data_snapshot)
+    store.record_snapshot(snapshot.to_dict())
     run_id = store.start_run(
         request.strategy_id, spec.version, params,
         universe=spec.universe, benchmark=spec.benchmark.index_code,
+        snapshot_id=snapshot.snapshot_id,
     )
     logger.info("运行 %s：策略=%s 区间=%s~%s", run_id, spec.name, params.start, params.end)
     yield (
@@ -123,6 +136,7 @@ def iter_run(
             "benchmark": spec.benchmark.index_code,
             "factors": list(spec.signal.factors),
             "signal": signal_metadata(spec.signal),
+            "snapshot_id": snapshot.snapshot_id,
             "params": {"start": params.start, "end": params.end, "init_cash": params.init_cash},
         },
     )
@@ -145,6 +159,7 @@ def iter_run(
                 universe=spec.universe,
                 benchmark_code=spec.benchmark.index_code,
                 industry_level="L1" if spec.risk.max_industry_weight is not None else None,
+                data_snapshot=data_snapshot,
             )
             yield (
                 "load",
@@ -154,6 +169,7 @@ def iter_run(
                     "factors": list(data.factors),
                     "membership": data.membership is not None,
                     "benchmark": data.benchmark is not None,
+                    "snapshot_id": snapshot.snapshot_id,
                 },
             )
             runner = lambda report: run_loaded(  # noqa: E731
@@ -170,6 +186,7 @@ def iter_run(
                     "membership": spec.universe != "all_a",
                     "benchmark": spec.benchmark.index_code is not None,
                     "chunks": len(windows),
+                    "snapshot_id": snapshot.snapshot_id,
                 },
             )
             runner = lambda report: run_chunked(  # noqa: E731
@@ -178,6 +195,7 @@ def iter_run(
                 progress=report,
                 should_cancel=should_cancel,
                 windows=windows,
+                data_snapshot=data_snapshot,
             )
         worker = Thread(target=_run_in_thread, args=(runner, events), daemon=True)
         worker.start()
@@ -218,6 +236,7 @@ def iter_run(
         {
             "run_id": run_id,
             "strategy_hash": result.metadata["strategy_hash"],
+            "snapshot_id": result.metadata.get("snapshot_id"),
             "orders": int(len(result.orders)),
             "rejections": int(len(result.rejections)),
             "calibration": result.metadata["calibration"],

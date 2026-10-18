@@ -14,7 +14,12 @@ import pandas as pd
 from backtest.builtin import BUILTINS
 from backtest.config import DEFAULT_BACKTEST_DB
 from backtest.engine import BacktestResult
-from backtest.errors import BacktestError, RunConflictError, RunNotFoundError
+from backtest.errors import (
+    BacktestError,
+    RunConflictError,
+    RunNotFoundError,
+    SnapshotConflictError,
+)
 from backtest.metrics import summarize
 from backtest.providers import validate_strategy_provider
 from backtest.specs import BacktestParams, StrategySpec
@@ -92,12 +97,37 @@ class BacktestStore:
                 started_at TIMESTAMP,
                 finished_at TIMESTAMP,
                 universe VARCHAR,
-                benchmark VARCHAR
+                benchmark VARCHAR,
+                snapshot_id VARCHAR
             )"""
         )
         # 老库没有这两列：股票池与基准原来只在 metadata_json 里，SQL 里筛不了
         conn.execute("ALTER TABLE bt.run ADD COLUMN IF NOT EXISTS universe VARCHAR")
         conn.execute("ALTER TABLE bt.run ADD COLUMN IF NOT EXISTS benchmark VARCHAR")
+        conn.execute("ALTER TABLE bt.run ADD COLUMN IF NOT EXISTS snapshot_id VARCHAR")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS bt.input_snapshot (
+                snapshot_id VARCHAR PRIMARY KEY,
+                schema_version VARCHAR,
+                created_at TIMESTAMP,
+                start_date DATE,
+                end_date DATE,
+                universe VARCHAR,
+                benchmark VARCHAR,
+                payload_json VARCHAR
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS bt.provider_revision (
+                provider_name VARCHAR,
+                provider_version VARCHAR,
+                source_sha256 VARCHAR,
+                module VARCHAR,
+                required_factors VARCHAR,
+                first_seen_at TIMESTAMP,
+                PRIMARY KEY(provider_name, provider_version, source_sha256)
+            )"""
+        )
         for table in RESULT_TABLES:
             conn.execute(f"CREATE TABLE IF NOT EXISTS bt.{table} (run_id VARCHAR)")
 
@@ -213,7 +243,11 @@ class BacktestStore:
             if row is None:
                 raise RunNotFoundError(f"回测运行不存在：{run_id}")
             columns = [item[0] for item in conn.execute("DESCRIBE bt.run").fetchall()]
-        return dict(zip(columns, row))
+        record = dict(zip(columns, row))
+        if not record.get("snapshot_id") and record.get("metadata_json"):
+            metadata = json.loads(record["metadata_json"])
+            record["snapshot_id"] = metadata.get("snapshot_id")
+        return record
 
     def delete_run(self, run_id: str) -> None:
         """事务删除一次已结束运行及其全部结果表记录。
@@ -246,7 +280,8 @@ class BacktestStore:
         with self._connect() as conn:
             frame = conn.execute(
                 "SELECT run_id, strategy_id, strategy_version, start_date, end_date, init_cash, "
-                "status, started_at, finished_at, error_message, universe, benchmark, metadata_json "
+                "status, started_at, finished_at, error_message, universe, benchmark, "
+                "snapshot_id, metadata_json "
                 "FROM bt.run "
                 "ORDER BY started_at DESC NULLS LAST LIMIT ?",
                 [int(limit)],
@@ -258,6 +293,7 @@ class BacktestStore:
             # 老运行只在元数据里有这两项，取不到就留空
             record["universe"] = record.get("universe") or metadata.get("universe")
             record["benchmark"] = record.get("benchmark") or benchmark_code(metadata.get("benchmark"))
+            record["snapshot_id"] = record.get("snapshot_id") or metadata.get("snapshot_id")
             record["elapsed_seconds"] = metadata.get("elapsed_seconds")
             record["metrics"] = metadata.get("metrics")
         return records
@@ -307,6 +343,135 @@ class BacktestStore:
             raise BacktestError(f"策略版本不存在：{strategy_id} v{version}")
         return replace(StrategySpec.from_dict(json.loads(row[0])), version=version)
 
+    def record_snapshot(self, snapshot: dict) -> str:
+        """登记不可变输入快照，并检查提供者同版本源码冲突。
+
+        参数:
+            snapshot: 包含 ``snapshot_id``、``scope`` 与 ``components`` 的字典。
+
+        返回:
+            ``snapshot_id``。
+        """
+        if not isinstance(snapshot, dict):
+            raise SnapshotConflictError("输入快照必须是对象")
+        snapshot_id = snapshot.get("snapshot_id")
+        if not isinstance(snapshot_id, str) or len(snapshot_id) != 64:
+            raise SnapshotConflictError("输入快照缺少有效的 snapshot_id")
+        schema_version = str(snapshot.get("schema_version") or "")
+        if not schema_version:
+            raise SnapshotConflictError("输入快照缺少 schema_version")
+        stored_payload = json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        identity_payload = json.dumps(
+            {
+                "schema_version": schema_version,
+                "scope": snapshot.get("scope"),
+                "components": snapshot.get("components"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        scope = snapshot.get("scope") or {}
+        provider = (
+            snapshot.get("components", {})
+            .get("rules", {})
+            .get("provider")
+        )
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT payload_json FROM bt.input_snapshot WHERE snapshot_id = ?",
+                [snapshot_id],
+            ).fetchone()
+            if existing is not None:
+                stored_identity = json.loads(existing[0])
+                normalized = json.dumps(
+                    {
+                        "schema_version": stored_identity.get("schema_version"),
+                        "scope": stored_identity.get("scope"),
+                        "components": stored_identity.get("components"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
+                if normalized != identity_payload:
+                    raise SnapshotConflictError(
+                        f"输入快照 {snapshot_id} 已存在但内容不同"
+                    )
+            else:
+                conn.execute(
+                    "INSERT INTO bt.input_snapshot VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        snapshot_id,
+                        schema_version,
+                        snapshot.get("created_at") or self._now(),
+                        scope.get("start"),
+                        scope.get("end"),
+                        scope.get("universe"),
+                        scope.get("benchmark"),
+                        stored_payload,
+                    ],
+                )
+            if isinstance(provider, dict):
+                name = str(provider.get("name") or "")
+                version = str(provider.get("version") or "")
+                source_sha256 = str(provider.get("source_sha256") or "")
+                if not name or not version or not source_sha256:
+                    raise SnapshotConflictError(
+                        "提供者快照必须包含名称、版本和源码哈希"
+                    )
+                revisions = {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT source_sha256 FROM bt.provider_revision "
+                        "WHERE provider_name = ? AND provider_version = ?",
+                        [name, version],
+                    ).fetchall()
+                }
+                if revisions and source_sha256 not in revisions:
+                    raise SnapshotConflictError(
+                        f"提供者 {name} v{version} 已记录不同源码；请提升 version"
+                    )
+                conn.execute(
+                    "INSERT OR IGNORE INTO bt.provider_revision "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        name,
+                        version,
+                        source_sha256,
+                        str(provider.get("module") or ""),
+                        json.dumps(
+                            provider.get("required_factors") or [],
+                            ensure_ascii=False,
+                        ),
+                        self._now(),
+                    ],
+                )
+        return snapshot_id
+
+    def get_snapshot(self, snapshot_id: str) -> dict:
+        """按标识读取不可变输入快照。
+
+        参数:
+            snapshot_id: 快照 SHA-256。
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM bt.input_snapshot WHERE snapshot_id = ?",
+                [snapshot_id],
+            ).fetchone()
+        if row is None:
+            raise RunNotFoundError(f"输入快照不存在：{snapshot_id}")
+        return json.loads(row[0])
+
     def start_run(
         self,
         strategy_id: str,
@@ -314,13 +479,15 @@ class BacktestStore:
         params: BacktestParams,
         universe: str | None = None,
         benchmark: str | None = None,
+        snapshot_id: str | None = None,
     ) -> str:
-        """登记一次运行，记录本次实际使用的股票池与基准。"""
+        """登记一次运行，记录本次实际使用的股票池、基准与输入快照。"""
         run_id = uuid.uuid4().hex
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO bt.run (run_id, strategy_id, strategy_version, start_date, end_date, "
-                "init_cash, status, universe, benchmark, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "init_cash, status, universe, benchmark, snapshot_id, started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     run_id,
                     strategy_id,
@@ -331,6 +498,7 @@ class BacktestStore:
                     "running",
                     universe,
                     benchmark,
+                    snapshot_id,
                     self._now(),
                 ],
             )
@@ -385,12 +553,37 @@ class BacktestStore:
             frames.append((table, payload))
         metadata = dict(result.metadata)
         metadata["metrics"] = result.metrics
+        snapshot = metadata.get("snapshot")
+        snapshot_id = metadata.get("snapshot_id")
+        if isinstance(snapshot, dict):
+            snapshot_id = self.record_snapshot(snapshot)
+            metadata["snapshot_id"] = snapshot_id
         with self._connect() as conn:
+            current_snapshot = conn.execute(
+                "SELECT snapshot_id FROM bt.run WHERE run_id = ?", [run_id]
+            ).fetchone()
+            if (
+                current_snapshot is not None
+                and current_snapshot[0]
+                and snapshot_id
+                and str(current_snapshot[0]) != str(snapshot_id)
+            ):
+                raise SnapshotConflictError(
+                    f"运行 {run_id} 起始快照与结果快照不一致"
+                )
             for table, payload in frames:
                 self._write_frame(conn, table, payload)
             conn.execute(
-                "UPDATE bt.run SET status = ?, metadata_json = ?, finished_at = ? WHERE run_id = ?",
-                ["success", json.dumps(metadata, ensure_ascii=False, default=str), self._now(), run_id],
+                "UPDATE bt.run SET status = ?, metadata_json = ?, "
+                "snapshot_id = coalesce(?, snapshot_id), "
+                "finished_at = ? WHERE run_id = ?",
+                [
+                    "success",
+                    json.dumps(metadata, ensure_ascii=False, default=str),
+                    snapshot_id,
+                    self._now(),
+                    run_id,
+                ],
             )
 
     def fail_run(self, run_id: str, error: Exception) -> None:
