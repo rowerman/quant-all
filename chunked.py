@@ -107,6 +107,10 @@ SUM_KEYS = (
     "t_plus_1_blocked_cells",
     "t_plus_1_blocked_shares",
     "t_plus_1_blocked_value",
+    "corporate_action_events",
+    "dividend_income",
+    "dividend_tax",
+    "fractional_cash",
 )
 MAX_KEYS = (
     "fee_matrix_max_diff",
@@ -122,6 +126,8 @@ LAST_KEYS = (
     "pending_at_end_cells",
     "cash_pending_at_end_cells",
     "liquidity_pending_at_end_cells",
+    "dividend_receivable_at_end",
+    "dividend_tax_pending_at_end",
 )
 
 
@@ -421,8 +427,6 @@ def run_windows(
     segments = _segment_windows(days, prepared)
     mask = rebalance_mask(days, strategy.rebalance.frequency)
     results: list[tuple[ChunkWindow, BacktestResult]] = []
-    open_parts: list[pd.DataFrame] = []
-    mark_parts: list[pd.DataFrame] = []
     state: ChunkState | None = None
     for position, window in enumerate(segments, start=1):
         _check_cancelled(should_cancel)
@@ -452,21 +456,6 @@ def run_windows(
         )
         if result.final_state is None:
             raise ResourceLimitError("调仓段执行没有返回可交接状态")
-        if len(result.orders):
-            order_days = pd.DatetimeIndex(result.orders["trade_date"])
-            rows = data.index.get_indexer(order_days)
-            cols = data.columns.get_indexer(result.orders["stock_code"])
-            open_parts.append(
-                pd.DataFrame(
-                    {
-                        "trade_date": order_days.to_numpy(),
-                        "stock_code": result.orders["stock_code"].to_numpy(),
-                        "open": data.open.to_numpy()[rows, cols],
-                    }
-                )
-            )
-            mark_parts.append(valuation.loc[order_days.unique()])
-        mark_parts.append(valuation.iloc[[-1]])
         state = result.final_state
         results.append((window, replace(result, portfolio=None)))
         del data, result, valuation
@@ -474,8 +463,6 @@ def run_windows(
 
     return _stitch(
         results,
-        open_parts,
-        mark_parts,
         days,
         benchmark,
         benchmark_info,
@@ -632,104 +619,6 @@ POSITION_COLUMNS = (
 )
 
 
-def _positions_frame(rows: list[dict]) -> pd.DataFrame:
-    """把拼接后的持仓记录整理成结果表。"""
-    if not rows:
-        return pd.DataFrame(columns=list(POSITION_COLUMNS))
-    frame = pd.DataFrame(rows)
-    frame["Position Id"] = np.arange(len(frame), dtype="int64")
-    return frame[list(POSITION_COLUMNS)].reset_index(drop=True)
-
-
-def _trade_stats(life: dict) -> tuple[float, float]:
-    """按 VectorBT 的口径算出持仓的盈亏与收益率。"""
-    entry_value = life["size"] * life["entry_price"]
-    exit_value = life["size"] * life["exit_price"]
-    pnl = (exit_value - entry_value) - life["entry_fees"] - life["exit_fees"]
-    return pnl, pnl / entry_value
-
-
-def _mark_exit_price(life: dict, price: float) -> float:
-    """开仓状态下按最新价重算出场价（VectorBT 在每笔成交与区间末都会做这一步）。"""
-    open_size = abs(life["position"])
-    previous = life["exit_price"]
-    if previous is None or not np.isfinite(previous):
-        return float(price)
-    exit_size_sum = life["size"] - open_size
-    return (exit_size_sum * previous + open_size * float(price)) / life["size"]
-
-
-def _replay_positions(
-    orders: pd.DataFrame,
-    opens: pd.DataFrame,
-    marks: pd.DataFrame,
-    days: pd.DatetimeIndex,
-    columns: pd.Index,
-    init_cash: float,
-    slippage: float,
-) -> pd.DataFrame:
-    """用整段区间的成交单重放一遍 VectorBT，得到跨块连续的持仓表。
-
-    分块运行时每块开头会把上一块收盘持股当成一次买入播种，直接拼各块的持仓表会把
-    跨块持仓拆成多段。这里把整段区间的成交单（与不分块时逐笔一致）交给 VectorBT
-    重跑一遍记账：成交价按记录的成交价、滑点设为 0、费用按记录的逐笔费用放进固定费用，
-    因此每一笔的股数、成交价与费用都和正式运行相同，持仓表也与不分块一致。
-
-    参数:
-        orders: 整段区间的成交明细，含 ``trade_date``、``stock_code``、``Size``、``Price``、
-            ``Fees``、``Side``。
-        opens: 每笔成交对应的原始开盘价，含 ``trade_date``、``stock_code``、``open``。
-        marks: 成交日与区间末的估值价（收盘价前向填充），用来重估持仓。
-        days: 整段区间的交易日索引。
-        columns: 股票列。
-        init_cash: 初始资金。
-        slippage: 滑点比例。
-    """
-    import vectorbt as vbt
-
-    price = pd.DataFrame(np.nan, index=days, columns=columns, dtype="float32")
-    close = marks.reindex(index=days, columns=columns).astype("float32")
-    size = pd.DataFrame(np.nan, index=days, columns=columns, dtype="float64")
-    fixed_fees = pd.DataFrame(0.0, index=days, columns=columns, dtype="float64")
-    if not orders.empty:
-        rows = days.get_indexer(pd.DatetimeIndex(orders["trade_date"]))
-        cols = columns.get_indexer(orders["stock_code"])
-        kept = (rows >= 0) & (cols >= 0)
-        rows, cols = rows[kept], cols[kept]
-        moved = orders.loc[kept]
-        signed = np.where(moved["Side"].to_numpy() == "Buy", 1.0, -1.0)
-        opening = (
-            opens.set_index(["trade_date", "stock_code"])["open"]
-            .reindex(
-                pd.MultiIndex.from_arrays(
-                    [moved["trade_date"].to_numpy(), moved["stock_code"].to_numpy()]
-                )
-            )
-            .to_numpy(dtype="float64")
-        )
-        price.to_numpy()[rows, cols] = opening
-        size.to_numpy()[rows, cols] = orders["Size"].to_numpy(dtype="float64")[kept] * signed
-        fixed_fees.to_numpy()[rows, cols] = orders["Fees"].to_numpy(dtype="float64")[kept]
-    portfolio = vbt.Portfolio.from_orders(
-        close=close,
-        size=size,
-        size_type="amount",
-        price=price,
-        fees=0.0,
-        fixed_fees=fixed_fees,
-        slippage=float(slippage),
-        val_price=price,
-        size_granularity=100,
-        init_cash=float(init_cash),
-        cash_sharing=True,
-        call_seq="auto",
-        allow_partial=True,
-        log=True,
-        freq="1D",
-    )
-    return portfolio.positions.records_readable.copy()
-
-
 def _aggregate_calibration(items: list[dict]) -> dict:
     """按口径把各块的校准字段聚合成整段运行的校准。
 
@@ -745,7 +634,12 @@ def _aggregate_calibration(items: list[dict]) -> dict:
     for key in MAX_KEYS:
         merged[key] = max(float(item.get(key, 0) or 0) for item in items)
     for key in LAST_KEYS:
-        merged[key] = int(items[-1].get(key, 0) or 0)
+        value = items[-1].get(key, 0) or 0
+        merged[key] = (
+            float(value)
+            if key in ("dividend_receivable_at_end", "dividend_tax_pending_at_end")
+            else int(value)
+        )
     merged["cash_buffer"] = items[0].get("cash_buffer")
     merged["allocation_iterations"] = max(int(item.get("allocation_iterations", 0) or 0) for item in items)
     merged["carry_iterations"] = max(int(item.get("carry_iterations", 0) or 0) for item in items)
@@ -763,8 +657,6 @@ def _aggregate_calibration(items: list[dict]) -> dict:
 
 def _stitch(
     results: list[tuple[ChunkWindow, BacktestResult]],
-    open_parts: list[pd.DataFrame],
-    mark_parts: list[pd.DataFrame],
     days: pd.DatetimeIndex,
     benchmark: pd.Series | None,
     benchmark_info: dict | None,
@@ -777,8 +669,6 @@ def _stitch(
 
     参数:
         results: 各调仓执行段的窗口与结果。
-        open_parts: 各块成交对应的开盘价明细，用来重放持仓表。
-        mark_parts: 各块成交日与区间末的估值价，用来重放持仓表。
         days: 整段区间的交易日索引。
         benchmark: 整段区间的基准收盘价。
         benchmark_info: 基准口径说明。
@@ -792,9 +682,15 @@ def _stitch(
     rejection_parts: list[pd.DataFrame] = []
     liquidation_parts: list[pd.DataFrame] = []
     allocation_parts: list[pd.DataFrame] = []
+    corporate_action_parts: list[pd.DataFrame] = []
     target_parts: list[pd.DataFrame] = []
     value_parts: list[pd.Series] = []
     cash_parts: list[pd.Series] = []
+    dividend_income_parts: list[pd.Series] = []
+    dividend_tax_parts: list[pd.Series] = []
+    dividend_receivable_parts: list[pd.Series] = []
+    fractional_cash_parts: list[pd.Series] = []
+    position_parts: list[pd.DataFrame] = []
     order_offset = 0
     for window, result in results:
         warmup = None if window.warmup is None else pd.Timestamp(window.warmup)
@@ -811,6 +707,7 @@ def _stitch(
             (result.rejections, rejection_parts),
             (result.liquidations, liquidation_parts),
             (result.allocations, allocation_parts),
+            (result.corporate_actions, corporate_action_parts),
         ):
             if frame.empty:
                 continue
@@ -824,8 +721,25 @@ def _stitch(
         target_parts.append(target)
         value_parts.append(daily["portfolio_value"])
         cash_parts.append(daily["cash"])
+        dividend_income_parts.append(
+            daily.get("dividend_income", pd.Series(0.0, index=daily.index))
+        )
+        dividend_tax_parts.append(
+            daily.get("dividend_tax", pd.Series(0.0, index=daily.index))
+        )
+        dividend_receivable_parts.append(
+            daily.get("dividend_receivable", pd.Series(0.0, index=daily.index))
+        )
+        fractional_cash_parts.append(
+            daily.get("fractional_cash", pd.Series(0.0, index=daily.index))
+        )
+        positions = result.positions.copy()
+        if warmup is not None and "Status" in positions:
+            positions = positions.loc[positions["Status"].astype(str) != "Open"]
+        position_parts.append(positions)
 
-    orders = pd.concat(orders_parts, ignore_index=True) if orders_parts else pd.DataFrame()
+    nonempty_orders = [frame for frame in orders_parts if not frame.empty]
+    orders = pd.concat(nonempty_orders, ignore_index=True) if nonempty_orders else pd.DataFrame()
     holdings = (
         pd.concat(holding_parts, ignore_index=True)
         if holding_parts
@@ -842,6 +756,11 @@ def _stitch(
     allocations = (
         pd.concat(allocation_parts, ignore_index=True) if allocation_parts else pd.DataFrame()
     )
+    corporate_actions = (
+        pd.concat(corporate_action_parts, ignore_index=True)
+        if corporate_action_parts
+        else pd.DataFrame()
+    )
     target_weights = pd.concat(target_parts)
     target_weights = target_weights.reindex(index=days).sort_index()
     target_weights = target_weights.reindex(columns=sorted(target_weights.columns))
@@ -850,27 +769,22 @@ def _stitch(
     target_weights.index.name = native_target_index.name
     value = pd.concat(value_parts).sort_index()
     cash = pd.concat(cash_parts).sort_index()
-    opens = pd.concat(open_parts, ignore_index=True) if open_parts else pd.DataFrame(
-        columns=["trade_date", "stock_code", "open"]
-    )
-    marks = pd.concat(mark_parts).groupby(level=0).last() if mark_parts else pd.DataFrame()
-    positions = _replay_positions(
+    if position_parts:
+        positions = pd.concat(position_parts, ignore_index=True)
+        if not positions.empty:
+            positions["Position Id"] = np.arange(len(positions), dtype="int64")
+    else:
+        positions = pd.DataFrame(columns=POSITION_COLUMNS)
+    daily = derive_daily(
+        value,
+        cash,
         orders,
-        opens,
-        marks,
-        days,
-        target_weights.columns,
-        params.init_cash,
-        float(strategy.costs.slippage),
+        benchmark,
+        pd.concat(dividend_income_parts).sort_index(),
+        pd.concat(dividend_tax_parts).sort_index(),
+        pd.concat(dividend_receivable_parts).sort_index(),
+        pd.concat(fractional_cash_parts).sort_index(),
     )
-    # VectorBT 的可读持仓表沿用输入索引的时间精度；整段交易日索引在拼接时可能被
-    # pandas 升成 ns。按块内原生结果恢复 dtype，保证分块与单块结果逐位、逐类型一致。
-    native_positions = next((item.positions for _, item in results if not item.positions.empty), None)
-    if native_positions is not None:
-        for column in ("Entry Timestamp", "Exit Timestamp"):
-            if column in positions and column in native_positions:
-                positions[column] = positions[column].astype(native_positions[column].dtype)
-    daily = derive_daily(value, cash, orders, benchmark)
     calibration = _aggregate_calibration([item.metadata["calibration"] for _, item in results])
     calibration.update(weight_witnesses(target_weights, holdings))
     first = results[0][1]
@@ -881,6 +795,7 @@ def _stitch(
         "universe": strategy.universe,
         "benchmark": benchmark_info,
         "price_adjust": first.metadata.get("price_adjust"),
+        "execution_backend": first.metadata.get("execution_backend"),
         "cash_retry_policy": first.metadata.get("cash_retry_policy"),
         "risk": first.metadata.get("risk"),
         "execution": {
@@ -895,6 +810,11 @@ def _stitch(
         "vectorbt_version": first.metadata.get("vectorbt_version"),
         "panel": {"trading_days": int(len(days)), "stocks": int(len(target_weights.columns))},
         "rank_rows": int(sum(item.metadata.get("rank_rows", 0) or 0 for _, item in results)),
+        "corporate_action_manifest": (
+            first.metadata.get("versions", {}).get("corporate_actions")
+            if isinstance(first.metadata.get("versions"), dict)
+            else None
+        ),
         "chunks": [
             {
                 "index": index,
@@ -946,5 +866,6 @@ def _stitch(
         metadata=metadata,
         liquidations=liquidations,
         allocations=allocations,
-        final_state=None,
+        corporate_actions=corporate_actions,
+        final_state=results[-1][1].final_state,
     )

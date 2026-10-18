@@ -137,11 +137,14 @@ class CostSpec:
     minimum_commission: float = 5.0
     stamp_tax_rate: float = 0.0005
     slippage: float = 0.0005
+    dividend_tax_mode: str = "fifo_deferred"
 
     def __post_init__(self) -> None:
         values = (self.commission_rate, self.minimum_commission, self.stamp_tax_rate, self.slippage)
         if any(float(item) < 0 for item in values):
             raise SpecError("交易成本不能为负数")
+        if self.dividend_tax_mode not in ("fifo_deferred", "disabled"):
+            raise SpecError("costs.dividend_tax_mode 只支持 fifo_deferred/disabled")
 
 
 @dataclass(frozen=True)

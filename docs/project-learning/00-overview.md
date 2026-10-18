@@ -1,5 +1,8 @@
 # VectorBT A 股回测项目学习报告
 
+> V48 起正式回测执行改为 `backtest/ledger.py` 原始价账本；本文关于 VectorBT
+> 负责现金与持仓的描述是历史学习材料，当前口径见 `docs/backtest/corporate_action_ledger.md`。
+
 分析范围：`/home/hanwen/quant/backtest`，分析日期 `2026-10-15`，当前提交 `66f564d`。本报告只读分析源码、测试、已有 `docs/backtest/` 文档及直接依赖接口；没有执行构建、启动或测试命令。
 
 ## 1. 技术栈与并发

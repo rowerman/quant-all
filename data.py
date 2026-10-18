@@ -4,12 +4,9 @@
 十年全 A 面板实测峰值从约 2.0GB 降到约 1.3GB。指数成分池还会先把成分并集
 传给读取层，只取可能用到的股票。
 
-价格字段用**前复权**口径（含现金分红与送转），交易标记与市值用原始口径。
-前复权与后复权的收益完全一致，区别只在价格水平：前复权以该股在库内最后一个有效
-交易日的因子为基准，价格水平贴近最近的真实价，因此「100 股」这一手数语义不会被
-复权因子放大（后复权下最小手数的真实金额会放大 f 倍，实测十年中证500 未建仓格从
-4.7% 涨到 13.2%，集中在高价股上）。代价是前复权价格水平会随行情库截止日变化，
-运行元数据里记了数据版本用于追溯。
+价格字段使用**原始价**，交易标记、市值和成交额同样使用原始口径。现金分红、送转
+和拆并由 `corporate_actions` 交给执行账本逐日处理，避免把前复权合成股数当成真
+实交易股数。
 """
 
 from __future__ import annotations
@@ -50,8 +47,8 @@ FLAG_FIELDS = (
 )
 PANEL_FIELDS = PRICE_FIELDS + FLAG_FIELDS + VALUE_FIELDS
 
-# 价格走前复权口径（收益与后复权一致，手数语义贴近真实股数），标记与市值走原始口径
-PRICE_ADJUST = "qfq"
+# 执行账本使用真实成交价；公司行动在 ledger 中单独入账
+PRICE_ADJUST = "raw"
 STATE_ADJUST = "raw"
 
 # 退市强制清算候选的列，与 backtest.orders.LIQUIDATION_COLUMNS 一致
@@ -60,7 +57,7 @@ LIQUIDATION_COLUMNS = ("trade_date", "stock_code", "price", "delist_date")
 
 @dataclass(frozen=True)
 class MarketData:
-    """VectorBT 所需的行情与交易规则宽表。
+    """执行账本所需的行情、规则与公司行动宽表。
 
     所有价格与标记面板共用同一个交易日索引和同一套股票列；
     ``factors`` 是「因子名 → 宽表」，``list_date`` 是每股上市日；
@@ -88,6 +85,7 @@ class MarketData:
     benchmark_info: dict | None = None
     versions: dict | None = None
     amount_cny: pd.DataFrame | None = None
+    corporate_actions: pd.DataFrame | None = None
 
     def __post_init__(self) -> None:
         if self.amount_cny is None:
@@ -148,6 +146,16 @@ class MarketData:
         }
         benchmark = None if self.benchmark is None else self.benchmark.reindex(self.index[mask])
         benchmark_info = None if self.benchmark_info is None else dict(self.benchmark_info)
+        corporate_actions = (
+            None
+            if self.corporate_actions is None
+            else self.corporate_actions.copy()
+        )
+        if corporate_actions is not None and not corporate_actions.empty:
+            stamps = pd.to_datetime(corporate_actions["ex_date"])
+            corporate_actions = corporate_actions.loc[
+                (stamps >= pd.Timestamp(start)) & (stamps <= pd.Timestamp(end))
+            ].reset_index(drop=True)
         if benchmark_info is not None and benchmark is not None and len(benchmark):
             benchmark_info["start"] = str(pd.Timestamp(benchmark.index[0]).date())
             benchmark_info["end"] = str(pd.Timestamp(benchmark.index[-1]).date())
@@ -161,6 +169,7 @@ class MarketData:
             benchmark=benchmark,
             benchmark_info=benchmark_info,
             versions=self.versions,
+            corporate_actions=corporate_actions,
             **frames,
         )
 
@@ -294,11 +303,26 @@ def _load_versions(db_path: Path | str | None, factor_db: Path | str | None = No
         db_path: 行情库路径。
         factor_db: 因子目录库路径；None 表示用默认路径。
     """
-    return {
+    result = {
         "dataset": _dataset_version(db_path),
         "factors": _factor_version(FACTOR_DB if factor_db is None else factor_db),
         "industry": _industry_version(db_path),
     }
+    try:
+        actions = db_query(
+            "SELECT * FROM meta.corporate_action_manifest LIMIT 1",
+            path=db_path,
+        )
+        result["corporate_actions"] = (
+            None if actions.empty else {
+                str(key): (None if pd.isna(value) else value)
+                for key, value in actions.iloc[0].items()
+            }
+        )
+    except Exception as error:
+        logger.warning("读取公司行动版本失败：%s", error)
+        result["corporate_actions"] = None
+    return result
 
 
 def _load_industry_l1(
@@ -621,6 +645,20 @@ def load_market_data(
         list(factors),
     )
     benchmark, benchmark_info = load_benchmark(benchmark_code, start, end, index, db_path)
+    corporate_actions = quant.load_corporate_actions(
+        start=start,
+        end=end,
+        stocks=list(columns),
+        db_path=db_path,
+    )
+    if not corporate_actions.empty:
+        corporate_actions["ex_date"] = pd.to_datetime(corporate_actions["ex_date"])
+        corporate_actions["record_date"] = pd.to_datetime(
+            corporate_actions["record_date"], errors="coerce"
+        )
+        corporate_actions["pay_date"] = pd.to_datetime(
+            corporate_actions["pay_date"], errors="coerce"
+        )
     industry_l1, industry_labels = (
         _load_industry_l1(start, end, index, columns, db_path)
         if industry_level == "L1" else (None, None)
@@ -635,6 +673,7 @@ def load_market_data(
         benchmark=benchmark,
         benchmark_info=benchmark_info,
         versions=_load_versions(db_path),
+        corporate_actions=corporate_actions,
         **frames,
     )
 

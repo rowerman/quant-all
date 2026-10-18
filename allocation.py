@@ -122,6 +122,29 @@ def execution_cash(cash: pd.Series, init_cash: float) -> pd.Series:
     return pd.Series(values, index=index)
 
 
+def opening_budget(
+    opening_cash: pd.Series,
+    opening_assets: pd.DataFrame,
+    price: pd.DataFrame,
+) -> pd.Series:
+    """按账本给出的开盘前现金与持股计算当日组合价值。
+
+    参数:
+        opening_cash: 当日开盘可用现金。
+        opening_assets: 当日开盘前持股，已经包含除权送转。
+        price: 执行价宽表。
+    """
+    if not opening_cash.index.equals(opening_assets.index):
+        raise ExecutionError("开盘现金与持股日期不一致")
+    values = opening_assets.reindex(
+        index=opening_cash.index, columns=opening_assets.columns
+    ).astype("float64")
+    prices = price.reindex(
+        index=opening_cash.index, columns=opening_assets.columns
+    ).astype("float64").fillna(0.0)
+    return opening_cash.astype("float64") + (values * prices).sum(axis=1)
+
+
 def allocate_shares(
     targets: pd.DataFrame,
     budget: pd.Series,
@@ -135,6 +158,7 @@ def allocate_shares(
     amount_cny: pd.DataFrame | None = None,
     max_participation_rate: float | None = None,
     capacity_exempt: pd.DataFrame | None = None,
+    opening_shares: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, dict]:
     """按预算把目标权重换成目标股数，返回 ``(股数矩阵, 逐格明细, 方向矩阵, 统计)``。
 
@@ -183,9 +207,16 @@ def allocate_shares(
             else np.asarray(capacity_exempt, dtype=bool)
         )
     )
-    # 上一交易日收盘持股 = 执行日开盘时刻的真实持股（首日为空仓）
-    previous = np.zeros_like(np.nan_to_num(base, nan=0.0))
-    previous[1:] = np.nan_to_num(base, nan=0.0)[:-1]
+    # 执行日开盘前持股已经包含当日公司行动；没有显式传入时退回旧的平移口径。
+    if opening_shares is None:
+        previous = np.zeros_like(np.nan_to_num(base, nan=0.0))
+        previous[1:] = np.nan_to_num(base, nan=0.0)[:-1]
+        pre_trade = np.nan_to_num(base, nan=0.0)
+    else:
+        pre_trade = opening_shares.reindex(index=index, columns=columns).fillna(0.0).to_numpy(
+            dtype="float64"
+        )
+        previous = pre_trade
     carried = (
         np.zeros(weights.shape, dtype=bool)
         if carry is None
@@ -211,7 +242,7 @@ def allocate_shares(
         cells = np.flatnonzero(~np.isnan(weights[row]))
         if not len(cells):
             continue
-        held = np.nan_to_num(base[row, cells], nan=0.0)
+        held = np.nan_to_num(pre_trade[row, cells], nan=0.0)
         # 目标权重按「执行日开盘时刻的组合价值」解释：重试日只有少数格子下单，
         # 若拿这些格子自己的市值当基准，补单量会被压成目标的一个零头。
         usable = budgets[row] * (1.0 - float(cash_buffer))

@@ -1,12 +1,14 @@
-"""基于 VectorBT 的回测执行器。
+"""回测执行器：信号、规则、分配与原始价账本。
 
-一次回测跑三遍 VectorBT：
+一次回测跑三遍执行账本：
 
 1. **探针**：无规则、无费用，只为拿到每格的买卖方向和真实成交额；
 2. **基准**：规则照过滤、费用照收，按 ``1 - cash_buffer`` 的目标百分比下单，
    它的逐日现金与持股数用来算「执行日开盘时刻的组合价值」，也就是资金分配的预算；
-3. **最终**：按分配出的目标股数（交易单位整数倍）下单，得到权威的现金、持仓、
+3. **最终**：按分配出的目标股数下单，得到权威的现金、持仓、
    费用与净值。
+
+账本使用原始价，并处理现金分红、送转、拆并、应收分红和 FIFO 红利税。
 
 分配预算必须来自带费用的基准遍：探针一遍是免费的，累计费用拖累会让它的净值
 系统性偏高，直接拿来当预算会超买。
@@ -35,6 +37,7 @@ from backtest.allocation import (
     execution_cash,
     execution_price,
     extend_carry,
+    opening_budget,
     pending_carry,
     liquidity_retry_filled,
 )
@@ -42,6 +45,7 @@ from backtest.config import MAX_ALLOCATION_ITERATIONS
 from backtest.data import PRICE_ADJUST, MarketData
 from backtest.errors import ExecutionError
 from backtest.logging_conf import get_logger
+from backtest.ledger import LedgerPortfolio, LedgerSnapshot
 from backtest.metrics import summarize
 from backtest.orders import (
     PROBE_COLUMNS,
@@ -75,6 +79,7 @@ class ChunkState:
     last_prices: pd.Series
     rule_state: RuleState
     carry: pd.Series
+    ledger_state: LedgerSnapshot | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +115,7 @@ class BacktestResult:
     metadata: dict
     liquidations: pd.DataFrame = field(default_factory=pd.DataFrame)
     allocations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    corporate_actions: pd.DataFrame = field(default_factory=pd.DataFrame)
     final_state: "ChunkState | None" = None
 
 
@@ -129,8 +135,10 @@ def _run_portfolio(
     fixed_fees: pd.DataFrame | None,
     size_type: str = "targetpercent",
     init_cash: float | None = None,
+    initial_state: LedgerSnapshot | None = None,
+    warmup_rows: int = 0,
 ):
-    """调用一次 VectorBT 的 ``from_orders``。
+    """调用原始价执行账本。
 
     参数:
         data: 回测输入面板。
@@ -141,14 +149,14 @@ def _run_portfolio(
         strategy: 策略配置。
         fees: 逐格费率；None 表示免费。
         fixed_fees: 逐格固定费用；None 表示没有。
-        size_type: VectorBT 的下单量口径。
+        size_type: 目标权重 / 目标股数 / 有符号订单股数。
         init_cash: 初始资金；None 表示用回测参数里的初始资金。分块回测从第二块起
             用「交接现金 + 交接持仓按播种价估值」当初始资金。
+        initial_state: 上一块交接的账本状态。
+        warmup_rows: 预热行数；这些行只保留价格，不执行订单。
     """
     try:
-        import vectorbt as vbt
-
-        return vbt.Portfolio.from_orders(
+        return LedgerPortfolio.from_orders(
             close=valuation,
             size=targets,
             size_type=size_type,
@@ -160,14 +168,14 @@ def _run_portfolio(
             init_cash=float(params.init_cash if init_cash is None else init_cash),
             cash_sharing=True,
             call_seq="auto",
-            # 100 股取整后必然与原目标有零头，allow_partial=False 会把订单整笔拒掉
-            allow_partial=True,
-            raise_reject=False,
-            log=True,
-            freq="1D",
+            corporate_actions=data.corporate_actions,
+            dividend_tax_mode=strategy.costs.dividend_tax_mode,
+            costs=None if fees is None else strategy.costs,
+            initial_state=initial_state,
+            warmup_rows=warmup_rows,
         )
-    except Exception as error:  # VectorBT 内部异常统一转成回测错误
-        raise ExecutionError(f"VectorBT 执行失败：{error}") from error
+    except Exception as error:
+        raise ExecutionError(f"执行账本失败：{error}") from error
 
 
 def _state_frames(portfolio) -> tuple[pd.Series, pd.DataFrame]:
@@ -194,7 +202,7 @@ def _order_records(portfolio, label: str) -> pd.DataFrame:
     except Exception as error:
         raise ExecutionError(f"无法提取 VectorBT 订单记录：{error}") from error
     if frame.empty:
-        return pd.DataFrame(columns=["Order Id", "Column", "Timestamp", "Size", "Price", "Fees", "Side"])
+        return pd.DataFrame(columns=["Order Id", "stock_code", "trade_date", "Size", "Price", "Fees", "Side"])
     frame = frame.rename(columns={"Column": "stock_code", "Timestamp": "trade_date"})
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
     logger.info("%s：订单 %d 笔", label, len(frame))
@@ -220,6 +228,10 @@ def derive_daily(
     cash: pd.Series,
     orders: pd.DataFrame,
     benchmark: pd.Series | None = None,
+    dividend_income: pd.Series | None = None,
+    dividend_tax: pd.Series | None = None,
+    dividend_receivable: pd.Series | None = None,
+    fractional_cash: pd.Series | None = None,
 ) -> pd.DataFrame:
     """由组合价值、现金与成交明细推导标准化日结果。
 
@@ -239,19 +251,41 @@ def derive_daily(
     )
     daily.index = pd.DatetimeIndex(daily.index)
     daily["holdings_value"] = daily["portfolio_value"] - daily["cash"]
+    if dividend_receivable is not None:
+        receivable = pd.Series(dividend_receivable).reindex(daily.index).fillna(0.0)
+        daily["dividend_receivable"] = receivable
+        daily["holdings_value"] = daily["holdings_value"] - receivable
+    else:
+        daily["dividend_receivable"] = 0.0
+    daily["dividend_income"] = (
+        pd.Series(0.0, index=daily.index)
+        if dividend_income is None
+        else pd.Series(dividend_income).reindex(daily.index).fillna(0.0)
+    )
+    daily["dividend_tax"] = (
+        pd.Series(0.0, index=daily.index)
+        if dividend_tax is None
+        else pd.Series(dividend_tax).reindex(daily.index).fillna(0.0)
+    )
+    daily["fractional_cash"] = (
+        pd.Series(0.0, index=daily.index)
+        if fractional_cash is None
+        else pd.Series(fractional_cash).reindex(daily.index).fillna(0.0)
+    )
     daily["return"] = daily["portfolio_value"].pct_change().fillna(0.0)
     daily["nav"] = daily["portfolio_value"] / float(daily["portfolio_value"].iloc[0])
     daily["drawdown"] = daily["nav"] / daily["nav"].cummax() - 1.0
     if not orders.empty:
         stamp = pd.DatetimeIndex(orders["trade_date"])
-        daily["cost"] = orders["Fees"].astype(float).groupby(stamp).sum().reindex(daily.index).fillna(0.0)
+        trading_cost = orders["Fees"].astype(float).groupby(stamp).sum().reindex(daily.index).fillna(0.0)
+        daily["cost"] = trading_cost + daily["dividend_tax"]
         traded = (orders["Size"].abs() * orders["Price"].astype(float)).groupby(stamp).sum()
         daily["turnover"] = (
             traded.reindex(daily.index).fillna(0.0)
             / daily["portfolio_value"].shift(1).replace(0, np.nan)
         )
     else:
-        daily["cost"] = 0.0
+        daily["cost"] = daily["dividend_tax"]
         daily["turnover"] = 0.0
     if benchmark is not None:
         benchmark = benchmark.reindex(daily.index).astype(float)
@@ -263,6 +297,14 @@ def derive_daily(
 
 def _daily_frame(portfolio, orders: pd.DataFrame, benchmark: pd.Series | None) -> pd.DataFrame:
     """标准化每日组合结果。"""
+    if hasattr(portfolio, "daily"):
+        daily = portfolio.daily().copy()
+        if benchmark is not None:
+            benchmark = benchmark.reindex(daily.index).astype(float)
+            daily["benchmark_return"] = benchmark.pct_change().fillna(0.0)
+            daily["benchmark_nav"] = (1.0 + daily["benchmark_return"]).cumprod()
+            daily["excess_return"] = daily["return"] - daily["benchmark_return"]
+        return daily
     return derive_daily(portfolio.value(), portfolio.cash(), orders, benchmark)
 
 
@@ -297,6 +339,7 @@ def _holdings_frame(portfolio) -> pd.DataFrame:
 def _fee_witnesses(
     orders: pd.DataFrame,
     plan: OrderPlan,
+    costs,
 ) -> dict:
     """核对最终成交的费用是否按逐格费率矩阵收准。
 
@@ -311,16 +354,17 @@ def _fee_witnesses(
     if (rows < 0).any() or (cols < 0).any():
         raise ExecutionError("成交明细落在目标面板之外，无法核对费用")
     value = orders["Size"].abs().to_numpy() * orders["Price"].astype(float).to_numpy()
-    expected = (
-        plan.fees.to_numpy()[rows, cols].astype("float64") * value
-        + plan.fixed_fees.to_numpy()[rows, cols].astype("float64")
-    )
+    sells = orders["Side"].astype(str).str.lower().eq("sell").to_numpy()
+    expected = np.maximum(
+        float(costs.minimum_commission),
+        value * float(costs.commission_rate),
+    ) + np.where(sells, value * float(costs.stamp_tax_rate), 0.0)
     actual = orders["Fees"].astype(float).to_numpy()
     return {
         "final_orders": int(len(orders)),
         "final_buys": int(orders["Side"].astype(str).str.lower().eq("buy").sum()),
         "final_sells": int(orders["Side"].astype(str).str.lower().eq("sell").sum()),
-        "fallback_fee_orders": int((plan.estimate_side[rows, cols] == 0).sum()),
+        "fallback_fee_orders": 0,
         "fee_matrix_max_diff": float(np.max(np.abs(expected - actual))) if len(actual) else 0.0,
     }
 
@@ -387,6 +431,7 @@ def _liquidation_records(plan: OrderPlan, orders: pd.DataFrame) -> pd.DataFrame:
         frame.loc[missing, "price"] = frame.loc[missing, "reference_price"]
         frame["size"] = frame["size"].fillna(0.0)
     frame["value"] = frame["size"].abs() * frame["price"].astype("float64")
+    frame["size"] = frame["size"].abs()
     return frame[columns]
 
 
@@ -649,24 +694,21 @@ def run_backtest(
     execution_industries = (
         None if data.industry_l1 is None else data.industry_l1.shift(1, fill_value=0)
     )
-    seed_plan = None
     init_cash = float(params.init_cash)
     if initial_state is not None:
-        seed_plan = seed_inputs(
-            initial_state, data, valuation, float(strategy.costs.slippage)
-        )
-        # 播种的现金变化为 0，组合直接从上一块收盘的现金起步
         init_cash = float(initial_state.cash)
-    probe_size = targets if seed_plan is None else _with_seed_row(targets, seed_plan.percent)
+    initial_ledger = None if initial_state is None else initial_state.ledger_state
     probe = _run_portfolio(
         data,
         valuation,
-        probe_size,
+        targets,
         params,
         strategy,
         None,
-        None if seed_plan is None else _with_seed_fixed_fees(None, targets.index, targets.columns, seed_plan),
+        None,
         init_cash=init_cash,
+        initial_state=initial_ledger,
+        warmup_rows=warmup_rows,
     )
     probe_orders = _probe_frame(_order_records(probe, "探针运行"))
     if warmup_rows:
@@ -688,19 +730,15 @@ def run_backtest(
         warmup_rows,
     )
     baseline_size = baseline_targets * budget_scale
-    baseline_fixed_fees = baseline_fixed
-    if seed_plan is not None:
-        baseline_size = _with_seed_row(baseline_size, seed_plan.percent)
-        baseline_fixed_fees = _with_seed_fixed_fees(
-            baseline_fixed, targets.index, targets.columns, seed_plan
-        )
     baseline = _run_portfolio(
         data, valuation, baseline_size, params, strategy,
-        baseline_fees, baseline_fixed_fees, init_cash=init_cash,
+        baseline_fees, baseline_fixed, init_cash=init_cash,
+        initial_state=initial_ledger,
+        warmup_rows=warmup_rows,
     )
     state_cash, state_shares = _state_frames(baseline)
-    if seed_plan is not None:
-        _check_seed_cash(state_cash, initial_state, "基准遍")
+    state_open_cash = baseline.opening_cash()
+    state_open_shares = baseline.opening_assets()
     del baseline
     _notify(
         progress,
@@ -748,15 +786,16 @@ def run_backtest(
     effective_targets = targets
     risk_stats = dict(concentration_stats)
     for iteration in range(1, MAX_ALLOCATION_ITERATIONS + 1):
-        budget = execution_budget(state_cash, state_shares, price, init_cash)
-        cash_open = execution_cash(state_cash, init_cash)
+        budget = opening_budget(state_open_cash, state_open_shares, price)
+        cash_open = state_open_cash
         effective_targets, turnover_stats = constrain_one_way_turnover(
             targets,
             budget,
             cash_open,
             price,
-            state_shares,
+            state_open_shares,
             strategy.risk.max_one_way_turnover,
+            opening_shares=True,
         )
         industry_stats = industry_weight_witnesses(
             effective_targets, execution_industries, strategy.risk.max_industry_weight
@@ -768,8 +807,7 @@ def run_backtest(
             initial_state=None if initial_state is None else initial_state.rule_state,
             warmup_rows=warmup_rows,
             liquidations=liquidations,
-            seed_shares=None if seed_plan is None else seed_plan.shares,
-            seed_fixed_fees=None if seed_plan is None else seed_plan.fixed_fees,
+            opening_shares=state_open_shares,
         )
         if (
             previous_shares is not None
@@ -797,10 +835,12 @@ def run_backtest(
         portfolio = _run_portfolio(
             data, valuation, candidate.shares, params, strategy, candidate.fees,
             candidate.fixed_fees, size_type="targetamount", init_cash=init_cash,
+            initial_state=initial_ledger,
+            warmup_rows=warmup_rows,
         )
         state_cash, state_shares = _state_frames(portfolio)
-        if seed_plan is not None:
-            _check_seed_cash(state_cash, initial_state, "最终遍")
+        state_open_cash = portfolio.opening_cash()
+        state_open_shares = portfolio.opening_assets()
         plan = candidate
         last_plan_carry = carry
         previous_shares = candidate.shares
@@ -872,11 +912,16 @@ def run_backtest(
 
     orders = _order_records(portfolio, "最终运行")
     orders = _drop_warmup_orders(orders, data.index, warmup_rows)
-    witnesses = {**_fee_witnesses(orders, plan), **_clipped_cells(plan, portfolio)}
+    witnesses = {**_fee_witnesses(orders, plan, strategy.costs), **_clipped_cells(plan, portfolio)}
     _notify(progress, "execute", **witnesses)
 
     daily = _daily_frame(portfolio, orders, data.benchmark)
     holdings = _holdings_frame(portfolio)
+    action_records = (
+        portfolio.corporate_action_records()
+        if hasattr(portfolio, "corporate_action_records")
+        else pd.DataFrame()
+    )
     liquidation_records = _liquidation_records(plan, orders)
     # 区间末仍被现金限制、来不及补回的格子（末日的补回目标没有下一交易日可落）
     last_allocations = plan.allocation.loc[
@@ -912,6 +957,16 @@ def run_backtest(
             )
         ),
         "cash_carry_over_cells": int(pending_at_end if chunk_boundary else 0),
+        "corporate_action_events": int(len(action_records)),
+        "dividend_income": float(daily.get("dividend_income", pd.Series(dtype=float)).sum()),
+        "dividend_tax": float(daily.get("dividend_tax", pd.Series(dtype=float)).sum()),
+        "dividend_receivable_at_end": float(
+            daily.get("dividend_receivable", pd.Series(dtype=float)).iloc[-1]
+        ) if len(daily) else 0.0,
+        "dividend_tax_pending_at_end": float(
+            portfolio.dividend_tax_pending().iloc[-1]
+        ) if hasattr(portfolio, "dividend_tax_pending") and len(daily) else 0.0,
+        "fractional_cash": float(daily.get("fractional_cash", pd.Series(dtype=float)).sum()),
         **risk_stats,
         **plan.plan_stats,
         **witnesses,
@@ -925,6 +980,8 @@ def run_backtest(
         "allocation_converged": bool(converged),
         "carry_iterations": int(carry_iterations),
         "carry_converged": bool(carry_converged),
+        "backend": "ledger",
+        "dividend_tax_mode": strategy.costs.dividend_tax_mode,
     }
     if strategy.execution.max_participation_rate is not None:
         execution_metadata["max_participation_rate"] = strategy.execution.max_participation_rate
@@ -939,6 +996,7 @@ def run_backtest(
         "risk": strategy.risk.to_dict(),
         "execution": execution_metadata,
         "versions": data.versions,
+        "execution_backend": "ledger",
         "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),
         "panel": {"trading_days": int(len(data.index)), "stocks": int(len(data.columns))},
         "rank_rows": int(ranks.notna().sum().sum()),
@@ -966,6 +1024,7 @@ def run_backtest(
         metadata=metadata,
         liquidations=liquidation_records,
         allocations=plan.allocation,
+        corporate_actions=action_records,
         final_state=ChunkState(
             cash=float(state_cash.iloc[-1]),
             shares=state_shares.iloc[-1].astype("float64"),
@@ -973,6 +1032,7 @@ def run_backtest(
             last_prices=execution_price(data.open, valuation).iloc[-1].astype("float64"),
             rule_state=plan.rule_state,
             carry=pending_carry(carry, plan.allocation, effective_targets),
+            ledger_state=portfolio.snapshot() if hasattr(portfolio, "snapshot") else None,
         ),
     )
 

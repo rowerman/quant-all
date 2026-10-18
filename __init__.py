@@ -1,4 +1,4 @@
-"""基于 VectorBT 的 A 股日频回测适配层。"""
+"""A 股日频回测：原始价执行账本与现有风险/分配机制。"""
 
 from backtest.builtin import BUILTINS, MOM20_ID, MULTIFACTOR_ID
 from backtest.data import MarketData, load_market_data

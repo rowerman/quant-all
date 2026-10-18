@@ -27,6 +27,7 @@ RESULT_TABLES = (
     "holding",
     "liquidation",
     "allocation",
+    "corporate_action",
 )
 
 
@@ -358,6 +359,7 @@ class BacktestStore:
         rejection = result.rejections.copy()
         liquidation = result.liquidations.copy()
         allocation = result.allocations.copy()
+        corporate_action = result.corporate_actions.copy()
         target_weight = result.target_weights.stack(future_stack=True).dropna().rename("target_weight").reset_index()
         target_weight.columns = ["trade_date", "stock_code", "target_weight"]
         frames = []
@@ -369,6 +371,7 @@ class BacktestStore:
             ("rejection", rejection),
             ("liquidation", liquidation),
             ("allocation", allocation),
+            ("corporate_action", corporate_action),
             ("target_weight", target_weight),
         ):
             if frame.empty:

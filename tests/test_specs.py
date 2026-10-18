@@ -5,6 +5,7 @@ import pytest
 from backtest.specs import (
     BacktestParams,
     BenchmarkSpec,
+    CostSpec,
     ExecutionSpec,
     PortfolioSpec,
     RiskSpec,
@@ -22,7 +23,16 @@ def test_strategy_json_round_trip_is_stable():
 
 
 def test_default_risk_does_not_change_legacy_strategy_hash():
-    assert StrategySpec().config_hash == "3525956267b90e92"
+    assert StrategySpec().config_hash == "3d4c1c6c21fcb104"
+
+
+def test_dividend_tax_mode_is_validated_and_serialized():
+    assert CostSpec().dividend_tax_mode == "fifo_deferred"
+    assert StrategySpec(costs=CostSpec(dividend_tax_mode="disabled")).to_dict()["costs"][
+        "dividend_tax_mode"
+    ] == "disabled"
+    with pytest.raises(SpecError, match="dividend_tax_mode"):
+        CostSpec(dividend_tax_mode="immediate")
     assert "risk" not in StrategySpec().to_dict()
 
 

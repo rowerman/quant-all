@@ -503,6 +503,7 @@ def build_order_plan(
     seed_shares: pd.Series | None = None,
     seed_fixed_fees: pd.Series | None = None,
     capacity_exempt: pd.DataFrame | None = None,
+    opening_shares: pd.DataFrame | None = None,
 ) -> OrderPlan:
     """把目标权重、探针成交明细与执行预算变成最终订单计划。
 
@@ -524,6 +525,7 @@ def build_order_plan(
         seed_fixed_fees: 分块回测预热行的固定费用（等于播种成交金额的相反数），
             使播种那笔的现金变化精确为 0。
         capacity_exempt: 不受成交额参与率限制的格子，当前用于退市强制清算。
+        opening_shares: 执行日开盘前持股，已经包含当日公司行动；None 时退回旧平移口径。
     """
     costs = costs or CostSpec()
     side, value = probe_matrices(probe, targets.index, targets.columns)
@@ -543,9 +545,12 @@ def build_order_plan(
             _liquidation_matrix(cells, targets.index, targets.columns)
             if capacity_exempt is None else capacity_exempt
         ),
+        opening_shares=opening_shares,
     )
     prior_holdings = (
-        baseline_shares.reindex(index=targets.index, columns=targets.columns)
+        opening_shares.reindex(index=targets.index, columns=targets.columns).fillna(0.0)
+        if opening_shares is not None
+        else baseline_shares.reindex(index=targets.index, columns=targets.columns)
         .shift(1)
         .fillna(0.0)
     )
@@ -568,7 +573,11 @@ def build_order_plan(
     # 上一交易日收盘的目标持股」就是这一笔的真实方向与金额；用基准遍的当日收盘
     # 持股会错位一天（那边已经是执行后的持仓），股数差会系统性变成 0。
     # 没有估计的格子退回探针成交额，两者都没有就按意图方向计费。
-    previous_shares = shares.ffill(axis=0).shift(1).fillna(0.0)
+    previous_shares = (
+        opening_shares.reindex(index=targets.index, columns=targets.columns).fillna(0.0)
+        if opening_shares is not None
+        else shares.ffill(axis=0).shift(1).fillna(0.0)
+    )
     prices = price.reindex(index=targets.index, columns=targets.columns).to_numpy(dtype="float64")
     delta = shares.to_numpy(dtype="float64") - previous_shares.to_numpy(dtype="float64")
     estimated_side = np.where(np.isfinite(delta), np.sign(delta), 0.0).astype("int8")

@@ -1,0 +1,151 @@
+"""原始价执行账本的公司行动、分红和红利税黄金用例。"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from backtest.ledger import LedgerPortfolio, _tax_rate
+from backtest.specs import CostSpec
+
+
+def _prices(values, dates, columns=("A",)):
+    """构造账本使用的价格宽表。"""
+    return pd.DataFrame(values, index=dates, columns=columns, dtype="float64")
+
+
+def _action(dates, **overrides):
+    """构造一条公司行动记录。"""
+    row = {
+        "stock_code": "A",
+        "ex_date": dates[1],
+        "record_date": dates[0],
+        "pay_date": dates[1],
+        "share_multiplier": 1.0,
+        "cash_div_per_share": 0.0,
+        "action_type": "cash",
+        "source": "test",
+        "source_event_key": "event-1",
+    }
+    row.update(overrides)
+    return pd.DataFrame([row])
+
+
+def test_split_keeps_value_and_moves_to_true_share_count():
+    dates = pd.date_range("2024-01-02", periods=3, freq="B")
+    close = _prices([10.0, 5.0, 5.0], dates)
+    open_price = _prices([10.0, 5.0, 5.0], dates)
+    targets = _prices([100.0, 200.0, 200.0], dates)
+    actions = _action(dates, share_multiplier=2.0, action_type="stock")
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=open_price,
+        init_cash=1_000.0, corporate_actions=actions,
+    )
+
+    assert portfolio.assets().iloc[-1, 0] == 200
+    assert portfolio.value().tolist() == pytest.approx([1_000.0, 1_000.0, 1_000.0])
+    assert portfolio.orders.records_readable["Size"].tolist() == [100.0]
+
+
+def test_cash_dividend_is_receivable_until_pay_date():
+    dates = pd.date_range("2024-01-02", periods=4, freq="B")
+    close = _prices([10.0, 9.5, 9.5, 9.5], dates)
+    open_price = close.copy()
+    targets = _prices([100.0, 100.0, 100.0, 0.0], dates)
+    actions = _action(dates, cash_div_per_share=0.5, pay_date=dates[2])
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=open_price,
+        init_cash=1_000.0, corporate_actions=actions,
+    )
+
+    assert portfolio.receivables().tolist() == pytest.approx([0.0, 50.0, 0.0, 0.0])
+    assert portfolio.cash().tolist() == pytest.approx([0.0, 0.0, 50.0, 990.0])
+    assert portfolio.value().tolist() == pytest.approx([1_000.0, 1_000.0, 1_000.0, 990.0])
+    assert portfolio.dividend_income().sum() == pytest.approx(50.0)
+
+
+def test_fractional_share_is_cashed_out():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    close = _prices([10.0, 10.0], dates)
+    targets = _prices([100.0, 100.0], dates)
+    # 100 × 1.005 = 100.5，向下取整后 0.5 股按 10 元折现。
+    actions = _action(dates, share_multiplier=1.005, action_type="stock")
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=close,
+        init_cash=1_000.0, corporate_actions=actions,
+    )
+
+    assert portfolio.assets().iloc[-1, 0] == 100
+    assert portfolio.cash().iloc[-1] == pytest.approx(5.0)
+    assert portfolio.fractional_cash().sum() == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize(
+    ("entry", "sell", "rate"),
+    [
+        ("2024-01-01", "2024-01-31", 0.20),
+        ("2024-01-01", "2024-06-30", 0.10),
+        ("2024-01-01", "2025-01-02", 0.0),
+    ],
+)
+def test_dividend_tax_rate_by_holding_period(entry, sell, rate):
+    assert _tax_rate(pd.Timestamp(entry), pd.Timestamp(sell)) == pytest.approx(rate)
+
+
+def test_fifo_dividend_tax_is_deducted_when_lots_are_sold():
+    dates = pd.date_range("2024-01-02", periods=4, freq="B")
+    close = _prices([10.0, 10.0, 9.5, 9.5], dates)
+    # 第一天买 100，第二天登记分红 50，第三天卖出；持有不足一个月，税率 20%。
+    targets = _prices([100.0, 100.0, 0.0, 0.0], dates)
+    actions = _action(dates, cash_div_per_share=0.5, pay_date=dates[2])
+    costs = CostSpec(commission_rate=0.0, minimum_commission=0.0, stamp_tax_rate=0.0, slippage=0.0)
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=close,
+        init_cash=1_000.0, corporate_actions=actions, costs=costs,
+    )
+
+    assert portfolio.dividend_tax().sum() == pytest.approx(10.0)
+    assert portfolio.corporate_action_records()["kind"].tolist().count("dividend_tax") == 1
+    assert portfolio.cash().iloc[-1] == pytest.approx(990.0)
+
+
+def test_disabled_dividend_tax_keeps_gross_cash():
+    dates = pd.date_range("2024-01-02", periods=4, freq="B")
+    close = _prices([10.0, 10.0, 9.5, 9.5], dates)
+    targets = _prices([100.0, 100.0, 0.0, 0.0], dates)
+    actions = _action(dates, cash_div_per_share=0.5, pay_date=dates[2])
+    costs = CostSpec(commission_rate=0.0, minimum_commission=0.0, stamp_tax_rate=0.0, slippage=0.0)
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=close,
+        init_cash=1_000.0, corporate_actions=actions, costs=costs,
+        dividend_tax_mode="disabled",
+    )
+
+    assert portfolio.dividend_tax().sum() == 0.0
+    assert portfolio.cash().iloc[-1] == pytest.approx(1_000.0)
+
+
+def test_snapshot_carries_lots_and_receivables_across_chunks():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    close = _prices([10.0, 9.5], dates)
+    targets = _prices([100.0, 100.0], dates)
+    actions = _action(dates, cash_div_per_share=0.5, pay_date=dates[1])
+    first = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=close,
+        init_cash=1_000.0, corporate_actions=actions,
+    )
+    snapshot = first.snapshot()
+    second = LedgerPortfolio.from_orders(
+        close.iloc[-1:], targets.iloc[-1:], size_type="targetamount",
+        price=close.iloc[-1:], init_cash=snapshot.cash,
+        initial_state=snapshot, corporate_actions=actions,
+    )
+    assert snapshot.shares["A"] == 100
+    assert snapshot.receivables.empty
+    assert second.assets().iloc[-1, 0] == 100

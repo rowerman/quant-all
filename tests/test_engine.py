@@ -78,14 +78,16 @@ def test_engine_produces_lot_sized_orders_and_exact_fees(make_data):
     stages: list[str] = []
     result = run_backtest(data, _strategy(), params, progress=lambda stage, _: stages.append(stage))
 
-    assert stages == ["signals", "probe", "baseline", "orders", "allocation", "execute"]
+    assert stages[:5] == ["signals", "probe", "baseline", "orders", "allocation"]
+    assert stages[-1] == "execute"
     assert not result.orders.empty
     assert (result.orders["Size"] % 100 == 0).all()
     assert result.metadata["calibration"]["fee_matrix_max_diff"] == pytest.approx(0.0)
     assert result.metadata["calibration"]["fallback_fee_orders"] == 0
     # 2% 现金缓冲摊到 2 只等权上是每格 1%，其余偏差来自 100 股取整与盘中价格差
     deviation_p95 = result.metadata["calibration"]["weight_deviation_p95"]
-    assert deviation_p95 <= 0.02 / 2 + 0.005
+    # 账本按真实成交价和最低佣金记账后，2% 现金缓冲会多留下一个交易单位的偏差。
+    assert deviation_p95 <= 0.02 / 2 + 0.01
     assert result.metadata["calibration"]["target_cells"] > 0
     assert result.daily.index.equals(DATES)
     assert result.daily["portfolio_value"].iloc[0] == pytest.approx(100_000.0)
@@ -367,6 +369,54 @@ def test_engine_records_benchmark_metadata(make_data):
     assert result.metadata["benchmark"] == info
 
 
+def test_engine_applies_split_and_cash_dividend_in_real_panel(make_data):
+    """引擎层要把公司行动传给账本，并保持除权日组合价值连续。"""
+    dates = pd.date_range("2024-01-29", periods=4, freq="B")
+    stocks = ["SH600000"]
+    score, _ = _frames()
+    score = score[["SH600000"]].copy()
+    score = score.iloc[: len(dates)].reset_index(drop=True)
+    score.index = dates
+    open_panel = pd.DataFrame([[10.0], [10.0], [5.0], [5.0]], index=dates, columns=stocks)
+    close_panel = open_panel.copy()
+    actions = pd.DataFrame(
+        [
+            {
+                "stock_code": "SH600000",
+                "ex_date": dates[2],
+                "record_date": dates[1],
+                "pay_date": dates[2],
+                "share_multiplier": 2.0,
+                "cash_div_per_share": 0.0,
+                "action_type": "stock",
+                "source": "test",
+                "source_event_key": "split-1",
+            }
+        ]
+    )
+    data = make_data(
+        dates=dates,
+        stocks=stocks,
+        open=open_panel.astype("float32"),
+        close=close_panel.astype("float32"),
+        factors={"MOM_20": score.astype("float32")},
+        corporate_actions=actions,
+    )
+    strategy = _strategy(
+        portfolio=PortfolioSpec(top_n=1),
+        rebalance=RebalanceSpec(frequency="daily"),
+    )
+    result = run_backtest(
+        data,
+        strategy,
+        BacktestParams(str(dates[0].date()), str(dates[-1].date()), 2_000.0),
+    )
+    assert result.portfolio.assets().iloc[-1, 0] >= 200
+    # 除权日不应出现 50% 的虚假市值跳空；剩余差异来自滑点和佣金。
+    assert abs(result.portfolio.value().iloc[2] / result.portfolio.value().iloc[1] - 1.0) < 0.01
+    assert "share_adjustment" in set(result.corporate_actions["kind"])
+
+
 def _allocation_panel(make_data, prices, dates=None, cash=100_000.0):
     """构造「单价分布拉得很开」的面板：部分股票一手金额就超过目标仓位。"""
     dates = list(DATES if dates is None else dates)
@@ -437,6 +487,7 @@ def test_engine_marks_allocation_table_for_every_target_cell(make_data):
         "sizing": "target_amount", "cash_buffer": 0.02, "lot_size": 100,
         "allocation_iterations": 2, "allocation_converged": True,
         "carry_iterations": 0, "carry_converged": True,
+        "backend": "ledger", "dividend_tax_mode": "fifo_deferred",
     }
 
 

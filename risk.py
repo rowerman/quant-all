@@ -216,6 +216,7 @@ def constrain_one_way_turnover(
     price: pd.DataFrame,
     baseline_shares: pd.DataFrame,
     max_one_way_turnover: float | None,
+    opening_shares: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     """把超出单边换手上限的目标沿当前组合方向整体缩放。
 
@@ -238,7 +239,11 @@ def constrain_one_way_turnover(
     limit = float(max_one_way_turnover)
     if not budget.index.equals(targets.index) or not cash_open.index.equals(targets.index):
         raise ExecutionError("风险约束的预算、现金与目标日期不一致")
-    previous = baseline_shares.reindex_like(targets).shift(1).fillna(0.0)
+    previous = (
+        baseline_shares.reindex_like(targets).fillna(0.0)
+        if opening_shares
+        else baseline_shares.reindex_like(targets).shift(1).fillna(0.0)
+    )
     values = targets.to_numpy(dtype="float64", copy=True)
     budgets = budget.to_numpy(dtype="float64")
     cash_values = cash_open.to_numpy(dtype="float64")

@@ -124,8 +124,8 @@ def test_benchmark_missing_day_is_an_error(monkeypatch):
         load_benchmark("H00300.CSI", "2024-01-02", "2024-01-03", index, None)
 
 
-def test_price_fields_use_adjusted_prices(monkeypatch):
-    """价格字段走前复权口径，交易标记与市值保持原始口径。"""
+def test_price_fields_use_raw_prices(monkeypatch):
+    """执行账本使用原始成交价，公司行动由独立账本处理。"""
     seen: dict[str, str] = {}
 
     def fake_load_panel(start=None, end=None, fields=None, adjust="raw", **kwargs):
@@ -142,9 +142,9 @@ def test_price_fields_use_adjusted_prices(monkeypatch):
     for field in PANEL_FIELDS:
         _load_field(field, "2024-01-01", "2024-01-31", None, None)
 
-    assert PRICE_ADJUST == "qfq" and STATE_ADJUST == "raw"
-    assert seen["open"] == "qfq"
-    assert seen["close"] == "qfq"
+    assert PRICE_ADJUST == "raw" and STATE_ADJUST == "raw"
+    assert seen["open"] == "raw"
+    assert seen["close"] == "raw"
     assert seen["total_mv"] == "raw"
     assert seen["is_st"] == "raw"
     assert seen["can_buy_open_next"] == "raw"
@@ -205,9 +205,9 @@ def test_load_industry_l1_switches_classification_and_labels_carry_forward(monke
 
 
 def test_close_has_no_fake_gap_on_ex_dividend():
-    """除权日不做假跳空：SZ002594 在 2025-07-29 每 10 股送转 20 股。
+    """原始价在除权日有跳空，公司行动账本负责恢复持股。
 
-    未复权收盘从 337.00 跌到 111.42（-66.9%），后复权口径当日只有 +0.37%。
+    SZ002594 在 2025-07-29 每 10 股送转 20 股，原始收盘从 337.00 跌到 111.42。
     """
     data = load_market_data(
         "2025-07-21", "2025-08-08", ["MOM_20"], universe="index:000300.SH"
@@ -215,17 +215,14 @@ def test_close_has_no_fake_gap_on_ex_dividend():
     assert "SZ002594" in set(data.columns)
     day = pd.Timestamp("2025-07-29")
     close = data.close["SZ002594"].dropna()
-    hfq_return = close.loc[day] / close.loc[:day].iloc[-2] - 1.0
-
-    raw = quant.load_panel(
-        start="2025-07-25", end="2025-07-29", fields=["close"], adjust="raw",
-        stocks=["SZ002594"],
-    ).set_index("trade_date")["close"]
-    raw_return = raw.loc[day] / raw.iloc[-2] - 1.0
-
+    raw_return = close.loc[day] / close.loc[:day].iloc[-2] - 1.0
     assert raw_return < -0.5
-    assert abs(hfq_return) < 0.11
-    assert hfq_return == pytest.approx(0.0037, abs=0.02)
+    actions = quant.load_corporate_actions(
+        start="2025-07-29", end="2025-07-29", stocks=["SZ002594"]
+    )
+    assert len(actions) == 1
+    assert float(actions.iloc[0]["share_multiplier"]) == pytest.approx(3.0)
+    assert float(actions.iloc[0]["cash_div_per_share"]) == pytest.approx(3.974)
 
 
 def test_versions_are_read_from_manifests():

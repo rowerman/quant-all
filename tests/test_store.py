@@ -85,14 +85,14 @@ def test_delete_run_removes_run_and_all_result_rows(store):
     run_id = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-05"))
     store.finish_run(run_id, _result())
     with store._connect() as conn:
-        for table in ("position", "order", "rejection", "target_weight", "holding", "liquidation", "allocation"):
+        for table in ("position", "order", "rejection", "target_weight", "holding", "liquidation", "allocation", "corporate_action"):
             conn.execute(f"INSERT INTO bt.{table} (run_id) VALUES (?)", [run_id])
 
     store.delete_run(run_id)
 
     with store._connect() as conn:
         assert conn.execute("SELECT count(*) FROM bt.run WHERE run_id = ?", [run_id]).fetchone()[0] == 0
-        for table in ("daily", "position", "order", "rejection", "target_weight", "holding", "liquidation", "allocation"):
+        for table in ("daily", "position", "order", "rejection", "target_weight", "holding", "liquidation", "allocation", "corporate_action"):
             assert conn.execute(f"SELECT count(*) FROM bt.{table} WHERE run_id = ?", [run_id]).fetchone()[0] == 0
     with pytest.raises(RunNotFoundError):
         store.get_run(run_id)
