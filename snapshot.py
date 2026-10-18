@@ -31,8 +31,8 @@ from backtest.trading_rules import RULE_VERSION, rule_summary
 from backtest.universe import membership_rows, resolve_universe, universe_stocks
 
 
-SNAPSHOT_SCHEMA_VERSION = "backtest_input_snapshot_v1"
-DATA_SNAPSHOT_SCHEMA_VERSION = "backtest_data_snapshot_v1"
+SNAPSHOT_SCHEMA_VERSION = "backtest_input_snapshot_v2"
+DATA_SNAPSHOT_SCHEMA_VERSION = "backtest_data_snapshot_v2"
 DB_HASH_ALGORITHM = "duckdb_hash_v1"
 PANDAS_HASH_ALGORITHM = "pandas_hash_v1"
 DELISTING_RULE_VERSION = "cn_a_delisting_v1"
@@ -385,6 +385,8 @@ def build_data_snapshot(
     membership_end: str | None = None,
     stock_codes: Sequence[str] | None = None,
     industry_level: str | None = None,
+    industry_report: bool = False,
+    impact_volatility_window: int | None = None,
 ) -> dict[str, Any]:
     """构造一次回测的数据部分快照。
 
@@ -399,6 +401,8 @@ def build_data_snapshot(
         membership_end: 指数成分截止日；None 表示使用 ``end``。
         stock_codes: 固定的股票并集；None 时按股票池解析。
         industry_level: ``L1`` 表示加载行业约束，None 表示不加载。
+        industry_report: True 表示加载行业用于报告；行业缺失时允许降级。
+        impact_volatility_window: None 表示关闭冲击波动率；整数表示窗口长度。
     """
     if industry_level not in (None, "L1"):
         raise DataAlignmentError("行业快照只支持 None/L1")
@@ -490,7 +494,7 @@ def build_data_snapshot(
             )
 
             industry = {"enabled": False}
-            if industry_level == "L1":
+            if industry_level == "L1" or industry_report:
                 industry_conditions = [
                     "(out_date IS NULL OR out_date >= CAST(? AS DATE))",
                     "in_date <= CAST(? AS DATE)",
@@ -499,16 +503,61 @@ def build_data_snapshot(
                 if stock_sql:
                     industry_conditions.append(stock_sql)
                     industry_params.extend(stock_params)
-                industry = {
+                try:
+                    industry = {
+                        "enabled": True,
+                        "manifest_digest": _industry_manifest(conn),
+                        **_sql_component(
+                            conn,
+                            "ref.sw_industry_member",
+                            industry_params,
+                            _industry_columns(),
+                            _where(industry_conditions),
+                            "申万行业",
+                        ),
+                    }
+                except Exception as error:
+                    if industry_level == "L1":
+                        raise
+                    industry = {"enabled": False, "reason": str(error)}
+
+            impact_volatility: dict[str, Any] = {"enabled": False}
+            if impact_volatility_window is not None:
+                lookback_row = conn.execute(
+                    "SELECT min(trade_date) FROM ("
+                    "SELECT trade_date FROM md.calendar WHERE is_open = 1 "
+                    "AND trade_date < CAST(? AS DATE) "
+                    "ORDER BY trade_date DESC LIMIT ?"
+                    ")",
+                    [start, int(impact_volatility_window)],
+                ).fetchone()
+                lookback = (
+                    str(pd.Timestamp(lookback_row[0]).date())
+                    if lookback_row and lookback_row[0] is not None
+                    else start
+                )
+                impact_conditions = [
+                    "trade_date >= CAST(? AS DATE)",
+                    "trade_date <= CAST(? AS DATE)",
+                ]
+                impact_params: list[Any] = [lookback, end]
+                if stock_sql:
+                    impact_conditions.append(stock_sql)
+                    impact_params.extend(stock_params)
+                impact_volatility = {
                     "enabled": True,
-                    "manifest_digest": _industry_manifest(conn),
+                    "window": int(impact_volatility_window),
                     **_sql_component(
                         conn,
-                        "ref.sw_industry_member",
-                        industry_params,
-                        _industry_columns(),
-                        _where(industry_conditions),
-                        "申万行业",
+                        "md.daily_hfq",
+                        impact_params,
+                        (
+                            ("stock_code", '"stock_code"', "VARCHAR"),
+                            ("trade_date", 'CAST("trade_date" AS DATE)', "DATE"),
+                            ("ret", 'CAST("ret" AS DOUBLE)', "DOUBLE"),
+                        ),
+                        _where(impact_conditions),
+                        "冲击波动率",
                     ),
                 }
 
@@ -575,6 +624,8 @@ def build_data_snapshot(
         "factors": list(factor_names),
         "benchmark": None if benchmark_code is None else str(benchmark_code),
         "industry_level": industry_level,
+        "industry_report": bool(industry_report),
+        "impact_volatility_window": impact_volatility_window,
         "price_adjust": PRICE_ADJUST,
         "state_adjust": STATE_ADJUST,
     }
@@ -589,6 +640,7 @@ def build_data_snapshot(
         "corporate_actions": actions,
         "industry": industry,
         "benchmark": benchmark,
+        "impact_volatility": impact_volatility,
     }
     payload = {
         "schema_version": DATA_SNAPSHOT_SCHEMA_VERSION,
@@ -725,6 +777,14 @@ def data_snapshot_from_market_data(data) -> dict[str, Any]:
             **_pandas_component(data.corporate_actions, include_index=False, label="公司行动"),
         }
     )
+    impact_volatility = (
+        {"enabled": False}
+        if data.impact_volatility is None
+        else {
+            "enabled": True,
+            **_pandas_component(data.impact_volatility, label="冲击波动率"),
+        }
+    )
     components = {
         "market": {
             "algorithm": PANDAS_HASH_ALGORITHM,
@@ -743,6 +803,7 @@ def data_snapshot_from_market_data(data) -> dict[str, Any]:
         "corporate_actions": actions,
         "industry": industry,
         "benchmark": benchmark,
+        "impact_volatility": impact_volatility,
     }
     scope = {
         "start": str(index.min().date()) if len(index) else None,
@@ -759,6 +820,12 @@ def data_snapshot_from_market_data(data) -> dict[str, Any]:
             None if data.benchmark_info is None else data.benchmark_info.get("code")
         ),
         "industry_level": None if data.industry_l1 is None else "L1",
+        "industry_report": data.industry_l1 is not None,
+        "impact_volatility_window": (
+            None
+            if data.impact_volatility is None
+            else 20
+        ),
         "price_adjust": PRICE_ADJUST,
         "state_adjust": STATE_ADJUST,
     }

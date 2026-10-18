@@ -64,6 +64,32 @@ class TopTwoProvider:
 register_provider(TopTwoProvider())
 
 
+class CashNanProvider:
+    """覆盖现金、NaN 行和全 0 行的测试提供者。"""
+
+    name = "test_cash_nan"
+    version = "1"
+    description = "测试用现金/NaN/清仓目标"
+    required_factors = ()
+
+    def build(self, data, eligible, params):
+        weights = pd.DataFrame(
+            np.nan, index=data.index, columns=data.columns, dtype="float64"
+        )
+        if len(data.index):
+            weights.iloc[0] = 0.0
+            weights.iloc[0, 0] = 0.5
+        if len(data.index) > 2:
+            weights.iloc[2] = 0.0
+        if len(data.index) > 3:
+            weights.iloc[3] = 0.0
+            weights.iloc[3, 1] = 0.25
+        return weights
+
+
+register_provider(CashNanProvider())
+
+
 def _provider_strategy(**params) -> StrategySpec:
     return StrategySpec(
         name="测试提供者",
@@ -263,3 +289,29 @@ def test_provider_runs_through_engine_and_risk_cap(make_data):
     assert not result.orders.empty
     assert float(np.nanmax(result.target_weights.to_numpy())) <= 0.4 + 1e-9
     assert result.metadata["calibration"]["single_cap_days"] > 0
+
+
+def test_provider_cash_nan_and_flat_rows_feed_report(make_data):
+    data = _frame(make_data)
+    strategy = StrategySpec(
+        name="测试提供者现金与空行",
+        signal=SignalSpec(
+            factors=("MOM_20",),
+            weights=(),
+            standardize=False,
+            provider=ProviderSpec("test_cash_nan"),
+        ),
+        portfolio=PortfolioSpec(selection="provider"),
+        rebalance=RebalanceSpec(frequency="custom"),
+    )
+    params = BacktestParams(
+        str(data.index[0].date()), str(data.index[-1].date()), 1_000_000.0
+    )
+    result = run_backtest(data, strategy, params)
+    assert "turnover_attribution" in result.metrics
+    assert "cost_attribution" in result.metrics
+    assert "industry_exposure" in result.metrics
+    assert result.metrics["industry_exposure"]["available"] is False
+    assert result.metrics["turnover_attribution"]["one_way_annual"] <= (
+        result.metrics["turnover_attribution"]["two_way_annual"] + 1e-9
+    )

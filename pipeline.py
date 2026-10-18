@@ -39,6 +39,7 @@ class RunRequest:
     end: str
     version: int | None = None
     init_cash: float = 1_000_000.0
+    risk_free_rate: float = 0.02
     universe: str | None = None
     benchmark: str | None = None
     clear_benchmark: bool = False
@@ -50,7 +51,7 @@ class RunRequest:
     @property
     def params(self) -> BacktestParams:
         """转换成回测参数。"""
-        return BacktestParams(self.start, self.end, self.init_cash)
+        return BacktestParams(self.start, self.end, self.init_cash, self.risk_free_rate)
 
 
 def effective_spec(spec: StrategySpec, request: RunRequest) -> StrategySpec:
@@ -115,6 +116,12 @@ def iter_run(
         benchmark_code=spec.benchmark.index_code,
         membership_end=params.end,
         industry_level="L1" if spec.risk.max_industry_weight is not None else None,
+        industry_report=True,
+        impact_volatility_window=(
+            spec.costs.impact_volatility_window
+            if spec.costs.impact_model == "sqrt"
+            else None
+        ),
     )
     snapshot = build_input_snapshot(spec, data_snapshot)
     store.record_snapshot(snapshot.to_dict())
@@ -137,7 +144,12 @@ def iter_run(
             "factors": list(spec.signal.factors),
             "signal": signal_metadata(spec.signal),
             "snapshot_id": snapshot.snapshot_id,
-            "params": {"start": params.start, "end": params.end, "init_cash": params.init_cash},
+            "params": {
+                "start": params.start,
+                "end": params.end,
+                "init_cash": params.init_cash,
+                "risk_free_rate": params.risk_free_rate,
+            },
         },
     )
     events: Queue = Queue()
@@ -159,6 +171,12 @@ def iter_run(
                 universe=spec.universe,
                 benchmark_code=spec.benchmark.index_code,
                 industry_level="L1" if spec.risk.max_industry_weight is not None else None,
+                industry_report=True,
+                impact_volatility_window=(
+                    spec.costs.impact_volatility_window
+                    if spec.costs.impact_model == "sqrt"
+                    else None
+                ),
                 data_snapshot=data_snapshot,
             )
             yield (

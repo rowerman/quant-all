@@ -41,7 +41,7 @@ from backtest.engine import (
 import backtest.engine as engine
 from backtest.errors import ResourceLimitError, RunCancelled
 from backtest.logging_conf import get_logger
-from backtest.metrics import summarize
+from backtest.attribution import build_report
 from backtest.orders import (
     execution_targets,
     writeoff_cells,
@@ -547,6 +547,12 @@ def _load_window(
         membership_end=params.end,
         stock_codes=stock_codes,
         industry_level="L1" if strategy.risk.max_industry_weight is not None else None,
+        industry_report=True,
+        impact_volatility_window=(
+            strategy.costs.impact_volatility_window
+            if strategy.costs.impact_model == "sqrt"
+            else None
+        ),
         data_snapshot=data_snapshot,
     )
     if window.warmup is None or state is None:
@@ -658,6 +664,12 @@ def run_chunked(
             membership_end=params.end,
             stock_codes=None if snapshot_spec.key == "all_a" else stock_codes,
             industry_level="L1" if strategy.risk.max_industry_weight is not None else None,
+            industry_report=True,
+            impact_volatility_window=(
+                strategy.costs.impact_volatility_window
+                if strategy.costs.impact_model == "sqrt"
+                else None
+            ),
         )
     liquidations = load_writeoff_candidates(params.start, params.end, db_path=db_path)
     benchmark, benchmark_info = load_benchmark(
@@ -764,6 +776,7 @@ def _stitch(
     """
     orders_parts: list[pd.DataFrame] = []
     holding_parts: list[pd.DataFrame] = []
+    industry_exposure_parts: list[pd.DataFrame] = []
     rejection_parts: list[pd.DataFrame] = []
     liquidation_parts: list[pd.DataFrame] = []
     allocation_parts: list[pd.DataFrame] = []
@@ -791,6 +804,7 @@ def _stitch(
         orders_parts.append(orders.reset_index(drop=True))
         for frame, bucket in (
             (result.holdings, holding_parts),
+            (result.industry_exposure, industry_exposure_parts),
             (result.rejections, rejection_parts),
             (result.liquidations, liquidation_parts),
             (result.allocations, allocation_parts),
@@ -859,6 +873,11 @@ def _stitch(
         if corporate_action_parts
         else pd.DataFrame()
     )
+    industry_exposure = (
+        pd.concat(industry_exposure_parts, ignore_index=True)
+        if industry_exposure_parts
+        else pd.DataFrame()
+    )
     target_weights = pd.concat(target_parts)
     target_weights = target_weights.reindex(index=days).sort_index()
     target_weights = target_weights.reindex(columns=sorted(target_weights.columns))
@@ -896,7 +915,12 @@ def _stitch(
     metadata = {
         "strategy": first.metadata.get("strategy"),
         "strategy_hash": first.metadata.get("strategy_hash"),
-        "params": {"start": params.start, "end": params.end, "init_cash": params.init_cash},
+        "params": {
+            "start": params.start,
+            "end": params.end,
+            "init_cash": params.init_cash,
+            "risk_free_rate": params.risk_free_rate,
+        },
         "universe": strategy.universe,
         "benchmark": benchmark_info,
         "price_adjust": first.metadata.get("price_adjust"),
@@ -967,6 +991,14 @@ def _stitch(
         len(orders),
         metadata["elapsed_seconds"],
     )
+    report = build_report(
+        daily,
+        orders=orders,
+        holdings=holdings,
+        risk_free_rate=params.risk_free_rate,
+        impact_model=strategy.costs.impact_model,
+        industry_exposure_rows=industry_exposure,
+    )
     return BacktestResult(
         portfolio=None,
         daily=daily,
@@ -975,10 +1007,11 @@ def _stitch(
         holdings=holdings,
         target_weights=target_weights,
         rejections=rejections,
-        metrics=summarize(daily),
+        metrics=report.metrics,
         metadata=metadata,
         liquidations=liquidations,
         allocations=allocations,
         corporate_actions=corporate_actions,
+        industry_exposure=report.industry_exposure,
         final_state=results[-1][1].final_state,
     )

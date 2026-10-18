@@ -29,6 +29,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", required=True, help="起始交易日 YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="截止交易日 YYYY-MM-DD")
     parser.add_argument("--init-cash", type=float, default=1_000_000.0, help="初始资金")
+    parser.add_argument(
+        "--risk-free-rate",
+        type=float,
+        default=0.02,
+        help="年化无风险利率，默认 0.02",
+    )
     parser.add_argument("--universe", help="运行级股票池覆盖，如 index:000300.SH")
     benchmark_group = parser.add_mutually_exclusive_group()
     benchmark_group.add_argument(
@@ -55,6 +61,7 @@ def main() -> None:
         end=args.end,
         version=args.version,
         init_cash=args.init_cash,
+        risk_free_rate=args.risk_free_rate,
         universe=args.universe,
         benchmark=args.benchmark,
         clear_benchmark=args.no_benchmark,

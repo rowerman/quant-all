@@ -41,13 +41,13 @@ from backtest.allocation import (
     pending_carry,
     liquidity_retry_filled,
 )
+from backtest.attribution import build_report
 from backtest.config import MAX_ALLOCATION_ITERATIONS
 from backtest.costs import cost_model_summary, order_cost_frame
 from backtest.data import PRICE_ADJUST, MarketData
 from backtest.errors import ExecutionError
 from backtest.logging_conf import get_logger
 from backtest.ledger import LedgerPortfolio, LedgerSnapshot
-from backtest.metrics import summarize
 from backtest.orders import (
     PROBE_COLUMNS,
     OrderPlan,
@@ -118,6 +118,7 @@ class BacktestResult:
     liquidations: pd.DataFrame = field(default_factory=pd.DataFrame)
     allocations: pd.DataFrame = field(default_factory=pd.DataFrame)
     corporate_actions: pd.DataFrame = field(default_factory=pd.DataFrame)
+    industry_exposure: pd.DataFrame = field(default_factory=pd.DataFrame)
     final_state: "ChunkState | None" = None
 
 
@@ -177,6 +178,8 @@ def _run_portfolio(
             dividend_tax_mode=strategy.costs.dividend_tax_mode,
             costs=strategy.costs if charge_costs else None,
             boards=data.board,
+            amount_cny=data.amount_cny,
+            impact_volatility=data.impact_volatility,
             allow_board_adjustment=True,
             initial_state=initial_state,
             warmup_rows=warmup_rows,
@@ -215,8 +218,8 @@ def _order_records(portfolio, label: str) -> pd.DataFrame:
             columns=[
                 "Order Id", "stock_code", "trade_date", "Size", "Price", "Fees", "Side",
                 "Board", "Order Valid", "reference_price", "gross_amount", "commission",
-                "stamp_tax", "transfer_fee", "slippage_rate", "slippage_cost", "total_cost",
-                "forced_exit",
+                "stamp_tax", "transfer_fee", "slippage_rate", "slippage_cost",
+                "impact_rate", "impact_cost", "total_cost", "forced_exit",
             ]
         )
     frame = frame.rename(columns={"Column": "stock_code", "Timestamp": "trade_date"})
@@ -306,22 +309,49 @@ def derive_daily(
     costed = order_cost_frame(orders, daily.index)
     for name in costed.columns:
         daily[name] = costed[name]
+    daily["impact_cost"] = (
+        pd.Series(0.0, index=daily.index)
+        if "impact_cost" not in costed.columns
+        else costed["impact_cost"]
+    )
+    daily["slippage_cost"] = (
+        pd.Series(0.0, index=daily.index)
+        if "slippage_cost" not in costed.columns
+        else costed["slippage_cost"]
+    )
     daily["cost"] = (
         daily["commission"]
         + daily["stamp_tax"]
         + daily["transfer_fee"]
         + daily["dividend_tax"]
     )
-    daily["total_cost"] = daily["cost"] + daily["slippage_cost"]
+    daily["total_cost"] = (
+        daily["cost"] + daily["slippage_cost"] + daily["impact_cost"]
+    )
     if not orders.empty:
         stamp = pd.DatetimeIndex(orders["trade_date"])
-        traded = (orders["Size"].abs() * orders["Price"].astype(float)).groupby(stamp).sum()
+        values = orders["Size"].abs() * orders["Price"].astype(float)
+        side = orders["Side"].astype(str).str.lower()
+        buy = values.loc[side.eq("buy")].groupby(stamp[side.eq("buy")]).sum()
+        sell = values.loc[side.eq("sell")].groupby(stamp[side.eq("sell")]).sum()
+        previous = daily["portfolio_value"].shift(1)
+        if len(previous):
+            previous.iloc[0] = float(daily["portfolio_value"].iloc[0])
+        previous = previous.replace(0, np.nan)
+        daily["buy_value"] = buy.reindex(daily.index).fillna(0.0)
+        daily["sell_value"] = sell.reindex(daily.index).fillna(0.0)
         daily["turnover"] = (
-            traded.reindex(daily.index).fillna(0.0)
-            / daily["portfolio_value"].shift(1).replace(0, np.nan)
+            daily["buy_value"] + daily["sell_value"]
+        ) / previous
+        daily["turnover_one_way"] = (
+            pd.concat([daily["buy_value"], daily["sell_value"]], axis=1).max(axis=1)
+            / previous
         )
     else:
+        daily["buy_value"] = 0.0
+        daily["sell_value"] = 0.0
         daily["turnover"] = 0.0
+        daily["turnover_one_way"] = 0.0
     if benchmark is not None:
         benchmark = benchmark.reindex(daily.index).astype(float)
         daily["benchmark_return"] = benchmark.pct_change().fillna(0.0)
@@ -374,12 +404,14 @@ def _holdings_frame(portfolio) -> pd.DataFrame:
 def _fee_witnesses(
     orders: pd.DataFrame,
     costs,
+    data: MarketData | None = None,
 ) -> dict:
     """核对最终成交的费用是否按统一成本模型收准。
 
     参数:
         orders: 最终一遍的成交明细。
         costs: 交易成本参数。
+        data: 行情面板，用于提供成交额和冲击波动率。
     """
     if orders.empty:
         return {
@@ -392,10 +424,34 @@ def _fee_witnesses(
             "stamp_tax_total": 0.0,
             "transfer_fee_total": 0.0,
             "slippage_cost_total": 0.0,
+            "impact_cost_total": 0.0,
+            "impact_cost_max_diff": 0.0,
             "economic_cost_total": 0.0,
         }
     expected_fees = []
+    expected_impact = []
+    row_positions = (
+        data.index.get_indexer(pd.DatetimeIndex(orders["trade_date"]))
+        if data is not None
+        else np.full(len(orders), -1, dtype="int64")
+    )
+    column_positions = (
+        data.columns.get_indexer(orders["stock_code"].astype(str))
+        if data is not None
+        else np.full(len(orders), -1, dtype="int64")
+    )
     for row in orders.itertuples(index=False):
+        order_position = len(expected_fees)
+        row_position = int(row_positions[order_position])
+        column_position = int(column_positions[order_position])
+        amount = None
+        volatility = None
+        if data is not None and row_position >= 0 and column_position >= 0:
+            amount = float(data.amount_cny.iat[row_position, column_position])
+            if data.impact_volatility is not None:
+                volatility = float(
+                    data.impact_volatility.iat[row_position, column_position]
+                )
         charge = costs.charge(
             pd.Timestamp(row.trade_date),
             str(row.Side),
@@ -403,10 +459,19 @@ def _fee_witnesses(
             float(row.reference_price),
             str(row.stock_code),
             str(row.Board),
+            amount=amount,
+            volatility=volatility,
         )
         expected_fees.append(charge.fees)
+        expected_impact.append(charge.impact_cost)
     expected = np.asarray(expected_fees, dtype="float64")
     actual = orders["Fees"].astype(float).to_numpy()
+    expected_impact_array = np.asarray(expected_impact, dtype="float64")
+    actual_impact = (
+        orders["impact_cost"].astype(float).to_numpy()
+        if "impact_cost" in orders.columns
+        else np.zeros(len(orders), dtype="float64")
+    )
     return {
         "final_orders": int(len(orders)),
         "final_buys": int(orders["Side"].astype(str).str.lower().eq("buy").sum()),
@@ -417,8 +482,22 @@ def _fee_witnesses(
         "stamp_tax_total": float(orders["stamp_tax"].astype(float).sum()),
         "transfer_fee_total": float(orders["transfer_fee"].astype(float).sum()),
         "slippage_cost_total": float(orders["slippage_cost"].astype(float).sum()),
+        "impact_cost_total": float(
+            orders["impact_cost"].astype(float).sum()
+            if "impact_cost" in orders.columns
+            else 0.0
+        ),
+        "impact_cost_max_diff": float(
+            np.max(np.abs(expected_impact_array - actual_impact))
+        ),
         "economic_cost_total": float(
-            orders["Fees"].astype(float).sum() + orders["slippage_cost"].astype(float).sum()
+            orders["Fees"].astype(float).sum()
+            + orders["slippage_cost"].astype(float).sum()
+            + (
+                orders["impact_cost"].astype(float).sum()
+                if "impact_cost" in orders.columns
+                else 0.0
+            )
         ),
     }
 
@@ -983,7 +1062,10 @@ def run_backtest(
 
     orders = _order_records(portfolio, "最终运行")
     orders = _drop_warmup_orders(orders, data.index, warmup_rows)
-    witnesses = {**_fee_witnesses(orders, strategy.costs), **_clipped_cells(plan, portfolio)}
+    witnesses = {
+        **_fee_witnesses(orders, strategy.costs, data),
+        **_clipped_cells(plan, portfolio),
+    }
     _notify(progress, "execute", **witnesses)
 
     daily = _daily_frame(portfolio, orders, data.benchmark)
@@ -1130,7 +1212,12 @@ def run_backtest(
     metadata = {
         "strategy": strategy.to_dict(),
         "strategy_hash": strategy.config_hash,
-        "params": {"start": params.start, "end": params.end, "init_cash": params.init_cash},
+        "params": {
+            "start": params.start,
+            "end": params.end,
+            "init_cash": params.init_cash,
+            "risk_free_rate": params.risk_free_rate,
+        },
         "universe": strategy.universe,
         "benchmark": data.benchmark_info,
         "price_adjust": PRICE_ADJUST,
@@ -1165,6 +1252,15 @@ def run_backtest(
             if code in final_carry.index
         ]
         final_carry[written_columns] = np.nan
+    report = build_report(
+        daily,
+        orders=orders,
+        holdings=holdings,
+        industry_l1=data.industry_l1,
+        industry_labels=data.industry_labels,
+        risk_free_rate=params.risk_free_rate,
+        impact_model=strategy.costs.impact_model,
+    )
     return BacktestResult(
         portfolio=portfolio,
         daily=daily,
@@ -1173,11 +1269,12 @@ def run_backtest(
         holdings=holdings,
         target_weights=plan.target_percent,
         rejections=plan.rejection,
-        metrics=summarize(daily),
+        metrics=report.metrics,
         metadata=metadata,
         liquidations=liquidation_records,
         allocations=plan.allocation,
         corporate_actions=action_records,
+        industry_exposure=report.industry_exposure,
         final_state=ChunkState(
             cash=float(state_cash.iloc[-1]),
             shares=state_shares.iloc[-1].astype("float64"),

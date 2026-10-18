@@ -205,6 +205,8 @@ class FeeCharge:
     fees: float
     slippage_rate: float
     slippage_cost: float
+    impact_rate: float
+    impact_cost: float
     total_cost: float
 
 
@@ -222,6 +224,8 @@ class ChargeArrays:
     fees: np.ndarray
     slippage_rate: float
     slippage_cost: np.ndarray
+    impact_rate: np.ndarray
+    impact_cost: np.ndarray
     total_cost: np.ndarray
 
 
@@ -231,12 +235,20 @@ class CostSpec:
 
     ``stamp_tax_rate`` 为 ``None`` 时按历史分段；旧策略 JSON 里的固定值继续作为
     仅卖出固定税率，保证旧配置可以重放。费率均为小数。
+
+    底层 ``CostSpec`` 默认不启用冲击成本，便于旧口径和低层调用保持原样；
+    新建 ``StrategySpec`` 会显式使用平方根冲击模型。
     """
 
     commission_rate: float = 0.0003
     minimum_commission: float = 5.0
     stamp_tax_rate: float | None = None
     slippage: float = 0.0005
+    impact_model: str = "none"
+    impact_coefficient: float = 0.5
+    impact_volatility_window: int = 20
+    impact_volatility_floor: float = 0.0
+    impact_max_rate: float = 0.05
     dividend_tax_mode: str = "fifo_deferred"
     transfer_fee_enabled: bool = True
     fee_rounding: str = "cent"
@@ -249,6 +261,24 @@ class CostSpec:
             raise SpecError("交易成本不能为负数")
         if self.dividend_tax_mode not in ("fifo_deferred", "disabled"):
             raise SpecError("costs.dividend_tax_mode 只支持 fifo_deferred/disabled")
+        if self.impact_model not in ("none", "sqrt"):
+            raise SpecError("costs.impact_model 只支持 none/sqrt")
+        for name in (
+            "impact_coefficient",
+            "impact_volatility_floor",
+            "impact_max_rate",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise SpecError(f"costs.{name} 必须是数字")
+            if not math.isfinite(float(value)) or float(value) < 0:
+                raise SpecError(f"costs.{name} 必须是非负有限数")
+        if type(self.impact_volatility_window) is not int or self.impact_volatility_window <= 0:
+            raise SpecError("costs.impact_volatility_window 必须是正整数")
+        if float(self.impact_volatility_floor) >= 1.0:
+            raise SpecError("costs.impact_volatility_floor 必须在 [0, 1) 之间")
+        if float(self.impact_max_rate) > 1.0:
+            raise SpecError("costs.impact_max_rate 必须在 [0, 1] 之间")
         if not isinstance(self.transfer_fee_enabled, bool):
             raise SpecError("costs.transfer_fee_enabled 必须是布尔值")
         if self.fee_rounding not in ("cent", "none"):
@@ -262,6 +292,8 @@ class CostSpec:
             minimum_commission=0.0,
             stamp_tax_rate=0.0,
             slippage=0.0,
+            impact_model="none",
+            impact_coefficient=0.0,
             transfer_fee_enabled=False,
             fee_rounding="none",
         )
@@ -306,6 +338,8 @@ class CostSpec:
         stock_codes,
         boards,
         exchanges=None,
+        amount=None,
+        volatility=None,
     ) -> ChargeArrays:
         """向量化计算一组成交的费用。
 
@@ -317,6 +351,8 @@ class CostSpec:
             stock_codes: 与成交数组同形状的股票代码。
             boards: 与成交数组同形状的板块名称。
             exchanges: 可选的预解析交易所矩阵，避免逐次重复解析代码前缀。
+            amount: 可选的当日成交额矩阵，用于平方根冲击模型。
+            volatility: 可选的执行日前 20 日复权收益波动率矩阵。
         """
         directions = np.asarray(side, dtype="int8")
         quantities = np.abs(np.asarray(shares, dtype="float64"))
@@ -327,6 +363,18 @@ class CostSpec:
             directions.shape == quantities.shape == reference.shape == codes.shape == board_values.shape
         ):
             raise ExecutionError("成本计算输入形状不一致")
+        amount_values = (
+            np.full(directions.shape, np.nan, dtype="float64")
+            if amount is None
+            else np.asarray(amount, dtype="float64")
+        )
+        volatility_values = (
+            np.full(directions.shape, np.nan, dtype="float64")
+            if volatility is None
+            else np.asarray(volatility, dtype="float64")
+        )
+        if amount_values.shape != directions.shape or volatility_values.shape != directions.shape:
+            raise ExecutionError("冲击成本输入形状与成交数组不一致")
         active = (
             (directions != 0)
             & (quantities > 0)
@@ -335,12 +383,37 @@ class CostSpec:
         )
         safe_reference = np.where(np.isfinite(reference), reference, 0.0)
         slippage = float(self.slippage)
+        gross_amount = np.where(active, quantities * safe_reference, 0.0)
+        if self.impact_model == "sqrt":
+            valid_impact = (
+                active
+                & np.isfinite(amount_values)
+                & (amount_values > 0)
+                & np.isfinite(volatility_values)
+            )
+            participation = np.divide(
+                gross_amount,
+                amount_values,
+                out=np.zeros_like(gross_amount),
+                where=valid_impact,
+            )
+            sigma = np.maximum(volatility_values, float(self.impact_volatility_floor))
+            impact_rate = np.where(
+                valid_impact,
+                np.minimum(
+                    float(self.impact_coefficient) * sigma * np.sqrt(participation),
+                    float(self.impact_max_rate),
+                ),
+                0.0,
+            )
+        else:
+            impact_rate = np.zeros_like(gross_amount)
         fill_price = np.where(
             active,
-            safe_reference * (1.0 + directions.astype("float64") * slippage),
+            safe_reference
+            * (1.0 + directions.astype("float64") * (slippage + impact_rate)),
             0.0,
         )
-        gross_amount = np.where(active, quantities * safe_reference, 0.0)
         fill_amount = np.where(active, quantities * fill_price, 0.0)
         buy_rate, sell_rate = self.stamp_rates(day)
         commission_raw = np.maximum(
@@ -384,7 +457,8 @@ class CostSpec:
         transfer_fee = self._round(transfer_fee)
         fees = commission + stamp_tax + transfer_fee
         slippage_cost = np.where(active, quantities * safe_reference * slippage, 0.0)
-        total_cost = fees + slippage_cost
+        impact_cost = np.where(active, gross_amount * impact_rate, 0.0)
+        total_cost = fees + slippage_cost + impact_cost
         return ChargeArrays(
             reference_price=safe_reference,
             fill_price=fill_price,
@@ -396,6 +470,8 @@ class CostSpec:
             fees=fees,
             slippage_rate=slippage,
             slippage_cost=slippage_cost,
+            impact_rate=impact_rate,
+            impact_cost=impact_cost,
             total_cost=total_cost,
         )
 
@@ -407,6 +483,8 @@ class CostSpec:
         reference_price: float,
         stock_code: str,
         board: str | None = None,
+        amount: float | None = None,
+        volatility: float | None = None,
     ) -> FeeCharge:
         """计算一笔成交的成本分项。"""
         if isinstance(side, str):
@@ -428,6 +506,12 @@ class CostSpec:
             np.array([float(reference_price)], dtype="float64"),
             np.array([stock_code], dtype=object),
             np.array([board], dtype=object),
+            amount=None if amount is None else np.array([float(amount)], dtype="float64"),
+            volatility=(
+                None
+                if volatility is None
+                else np.array([float(volatility)], dtype="float64")
+            ),
         )
         return FeeCharge(
             reference_price=float(arrays.reference_price[0]),
@@ -440,6 +524,8 @@ class CostSpec:
             fees=float(arrays.fees[0]),
             slippage_rate=float(arrays.slippage_rate),
             slippage_cost=float(arrays.slippage_cost[0]),
+            impact_rate=float(arrays.impact_rate[0]),
+            impact_cost=float(arrays.impact_cost[0]),
             total_cost=float(arrays.total_cost[0]),
         )
 
@@ -449,7 +535,13 @@ def order_cost_frame(orders: pd.DataFrame | None, index: pd.Index) -> pd.DataFra
 
     老订单表没有分项时，把 ``Fees`` 整体记入佣金，保证旧结果仍能派生。
     """
-    columns = ["commission", "stamp_tax", "transfer_fee", "slippage_cost"]
+    columns = [
+        "commission",
+        "stamp_tax",
+        "transfer_fee",
+        "slippage_cost",
+        "impact_cost",
+    ]
     frame = pd.DataFrame(0.0, index=pd.DatetimeIndex(index), columns=columns)
     if orders is None or orders.empty:
         return frame
@@ -480,6 +572,11 @@ def cost_model_summary(spec: CostSpec) -> dict[str, Any]:
         "commission_rate": float(spec.commission_rate),
         "minimum_commission": float(spec.minimum_commission),
         "slippage": float(spec.slippage),
+        "impact_model": spec.impact_model,
+        "impact_coefficient": float(spec.impact_coefficient),
+        "impact_volatility_window": int(spec.impact_volatility_window),
+        "impact_volatility_floor": float(spec.impact_volatility_floor),
+        "impact_max_rate": float(spec.impact_max_rate),
         "stamp_tax_rate_override": spec.stamp_tax_rate,
         "transfer_fee_enabled": bool(spec.transfer_fee_enabled),
         "fee_rounding": spec.fee_rounding,

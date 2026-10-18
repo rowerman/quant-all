@@ -23,7 +23,25 @@ def test_strategy_json_round_trip_is_stable():
 
 
 def test_default_strategy_hash_is_stable():
-    assert StrategySpec().config_hash == "956f4864e107cd68"
+    assert StrategySpec().config_hash == "9d89baecccf205a9"
+
+
+def test_legacy_strategy_without_impact_fields_stays_disabled():
+    spec = StrategySpec.from_dict(
+        {
+            "costs": {
+                "commission_rate": 0.0003,
+                "minimum_commission": 5.0,
+                "slippage": 0.0005,
+                "dividend_tax_mode": "fifo_deferred",
+                "transfer_fee_enabled": True,
+                "fee_rounding": "cent",
+            }
+        }
+    )
+    assert spec.costs.impact_model == "none"
+    assert "impact_model" not in spec.to_dict()["costs"]
+    assert StrategySpec().costs.impact_model == "sqrt"
 
 
 def test_legacy_execution_block_without_participation_rate_stays_disabled():

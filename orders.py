@@ -527,6 +527,7 @@ def build_order_plan(
         carry=carry,
         costs=costs,
         amount_cny=data.amount_cny,
+        impact_volatility=data.impact_volatility,
         max_participation_rate=execution.max_participation_rate,
         opening_shares=opening_shares,
     )

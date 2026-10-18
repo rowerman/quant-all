@@ -34,6 +34,7 @@ RESULT_TABLES = (
     "liquidation",
     "allocation",
     "corporate_action",
+    "industry_exposure",
 )
 
 
@@ -315,7 +316,21 @@ class BacktestStore:
         date_column = "trade_date" if "trade_date" in frame.columns else "index"
         frame = frame.copy()
         frame[date_column] = pd.to_datetime(frame[date_column])
-        return summarize(frame.set_index(date_column).sort_index())
+        metadata = self._metadata(run_id)
+        stored = metadata.get("metrics") or {}
+        params = metadata.get("params") or {}
+        risk_free_rate = stored.get(
+            "risk_free_rate",
+            params.get("risk_free_rate", 0.0),
+        )
+        metrics = summarize(
+            frame.set_index(date_column).sort_index(),
+            risk_free_rate=0.0 if risk_free_rate is None else float(risk_free_rate),
+        )
+        for name in ("cost_attribution", "turnover_attribution", "industry_exposure"):
+            if name in stored:
+                metrics[name] = stored[name]
+        return metrics
 
     def get_result_table(self, run_id: str, table: str) -> list[dict]:
         """读取某次运行的标准化结果表。"""
@@ -532,6 +547,7 @@ class BacktestStore:
         liquidation = result.liquidations.copy()
         allocation = result.allocations.copy()
         corporate_action = result.corporate_actions.copy()
+        industry_exposure = result.industry_exposure.copy()
         target_weight = result.target_weights.stack(future_stack=True).dropna().rename("target_weight").reset_index()
         target_weight.columns = ["trade_date", "stock_code", "target_weight"]
         frames = []
@@ -544,6 +560,7 @@ class BacktestStore:
             ("liquidation", liquidation),
             ("allocation", allocation),
             ("corporate_action", corporate_action),
+            ("industry_exposure", industry_exposure),
             ("target_weight", target_weight),
         ):
             if frame.empty:

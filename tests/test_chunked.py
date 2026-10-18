@@ -16,6 +16,7 @@ from backtest.providers import register_provider
 from backtest.specs import (
     BacktestParams,
     BenchmarkSpec,
+    CostSpec,
     PortfolioSpec,
     ProviderSpec,
     RebalanceSpec,
@@ -212,6 +213,9 @@ def _assert_same(single, chunked) -> None:
     pd.testing.assert_frame_equal(single.allocations, chunked.allocations, check_exact=True)
     pd.testing.assert_frame_equal(single.positions, chunked.positions, check_exact=True)
     pd.testing.assert_frame_equal(
+        single.industry_exposure, chunked.industry_exposure, check_exact=True
+    )
+    pd.testing.assert_frame_equal(
         single.target_weights, chunked.target_weights, check_exact=True, check_like=True
     )
     assert single.metrics == chunked.metrics
@@ -398,11 +402,12 @@ def test_chunked_matches_single_block_on_real_data():
         portfolio=PortfolioSpec(top_n=20),
         rebalance=RebalanceSpec(frequency="weekly"),
         benchmark=BenchmarkSpec(index_code="H00300.CSI"),
+        costs=CostSpec(impact_model="none"),
     )
     params = BacktestParams("2025-01-01", "2026-10-14", 1_000_000.0)
     data = load_market_data(
         params.start, params.end, ["MOM_20"], universe=strategy.universe,
-        benchmark_code="H00300.CSI",
+        benchmark_code="H00300.CSI", industry_report=True,
     )
     single = run_loaded(data, strategy, params)
     chunked = run_chunked(
@@ -417,3 +422,39 @@ def test_chunked_matches_single_block_on_real_data():
 
     assert chunked.metadata["execution"]["chunk_count"] == 3
     _assert_same(single, chunked)
+
+
+def test_chunked_matches_single_block_with_impact_and_industry_report():
+    """冲击波动率和行业报告进入单块/分块后，日结果与归因仍逐位一致。"""
+    from backtest.chunked import run_chunked
+
+    strategy = StrategySpec(
+        name="真实数据冲击与行业报告",
+        universe="index:000300.SH",
+        signal=SignalSpec(factors=("MOM_20",), weights=(1.0,)),
+        portfolio=PortfolioSpec(top_n=5),
+        rebalance=RebalanceSpec(frequency="daily"),
+        benchmark=BenchmarkSpec(index_code="H00300.CSI"),
+    )
+    params = BacktestParams("2026-09-01", "2026-10-15", 1_000_000.0)
+    data = load_market_data(
+        params.start,
+        params.end,
+        ["MOM_20"],
+        universe=strategy.universe,
+        benchmark_code="H00300.CSI",
+        industry_report=True,
+        impact_volatility_window=20,
+    )
+    single = run_loaded(data, strategy, params)
+    chunked = run_chunked(
+        strategy,
+        params,
+        windows=[
+            ChunkWindow("2026-09-01", "2026-09-30"),
+            ChunkWindow("2026-10-01", "2026-10-15", warmup="2026-09-30"),
+        ],
+    )
+    _assert_same(single, chunked)
+    assert single.metrics["total_impact_cost"] > 0
+    assert single.metrics["industry_exposure"]["available"] is True

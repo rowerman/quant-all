@@ -175,6 +175,7 @@ def allocate_shares(
     carry: pd.DataFrame | None = None,
     costs: CostSpec | None = None,
     amount_cny: pd.DataFrame | None = None,
+    impact_volatility: pd.DataFrame | None = None,
     max_participation_rate: float | None = None,
     opening_shares: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, dict]:
@@ -191,6 +192,7 @@ def allocate_shares(
         carry: 本轮已有现金补回目标；重试再次缺现金时继续传播，不新建补回事件。
         costs: 最终成交使用的佣金、印花税和滑点口径；None 表示零成本。
         amount_cny: 执行日未复权成交额；None 表示不启用成交额参与率。
+        impact_volatility: 执行日前 20 日复权收益波动率；None 表示冲击为 0。
         max_participation_rate: 单票成交额参与率；None 表示关闭。
     """
     if not 0.0 <= float(cash_buffer) < 1.0:
@@ -210,6 +212,11 @@ def allocate_shares(
         None
         if amount_cny is None
         else amount_cny.reindex(index=index, columns=columns).to_numpy(dtype="float64")
+    )
+    volatilities = (
+        None
+        if impact_volatility is None
+        else impact_volatility.reindex(index=index, columns=columns).to_numpy(dtype="float64")
     )
     # 执行日开盘前持股已经包含当日公司行动；没有显式传入时退回旧的平移口径。
     if opening_shares is None:
@@ -304,6 +311,16 @@ def allocate_shares(
                 cell_codes,
                 cell_boards,
                 cell_exchanges,
+                amount=(
+                    None
+                    if amounts is None
+                    else amounts[row, cells]
+                ),
+                volatility=(
+                    None
+                    if volatilities is None
+                    else volatilities[row, cells]
+                ),
             )
 
         def buy_cost(delta: np.ndarray) -> np.ndarray:

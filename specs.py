@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Any
@@ -263,7 +264,9 @@ class StrategySpec:
     portfolio: PortfolioSpec = field(default_factory=PortfolioSpec)
     rebalance: RebalanceSpec = field(default_factory=RebalanceSpec)
     execution: ExecutionSpec = field(default_factory=ExecutionSpec)
-    costs: CostSpec = field(default_factory=CostSpec)
+    costs: CostSpec = field(
+        default_factory=lambda: CostSpec(impact_model="sqrt")
+    )
     benchmark: BenchmarkSpec = field(default_factory=BenchmarkSpec)
     risk: RiskSpec = field(default_factory=RiskSpec)
 
@@ -296,6 +299,15 @@ class StrategySpec:
             payload.pop("risk", None)
         if self.execution.max_participation_rate is None:
             payload["execution"].pop("max_participation_rate", None)
+        if self.costs.impact_model == "none":
+            for name in (
+                "impact_model",
+                "impact_coefficient",
+                "impact_volatility_window",
+                "impact_volatility_floor",
+                "impact_max_rate",
+            ):
+                payload["costs"].pop(name, None)
         return payload
 
     def to_json(self) -> str:
@@ -327,6 +339,12 @@ class StrategySpec:
         payload = {**payload}
         if execution_payload is not None:
             payload["execution"] = execution_payload
+        costs_payload = payload.get("costs")
+        if isinstance(costs_payload, dict) and "impact_model" not in costs_payload:
+            # 旧策略 JSON 没有冲击字段时按关闭解释，序列化时也会省略这些字段，
+            # 从而保持历史配置哈希不变。
+            payload["costs"] = {**costs_payload, "impact_model": "none"}
+
         def section(name: str, kind):
             value = payload.get(name, {})
             if not isinstance(value, dict):
@@ -363,6 +381,7 @@ class BacktestParams:
     start: str
     end: str
     init_cash: float = 1_000_000.0
+    risk_free_rate: float = 0.02
 
     def __post_init__(self) -> None:
         start = _date(self.start, "start")
@@ -371,3 +390,11 @@ class BacktestParams:
             raise SpecError("start 不能晚于 end")
         if not isinstance(self.init_cash, (int, float)) or self.init_cash <= 0:
             raise SpecError("init_cash 必须是正数")
+        if isinstance(self.risk_free_rate, bool) or not isinstance(
+            self.risk_free_rate, (int, float)
+        ):
+            raise SpecError("risk_free_rate 必须是数字")
+        if not math.isfinite(float(self.risk_free_rate)):
+            raise SpecError("risk_free_rate 必须是有限数")
+        if not -0.99 <= float(self.risk_free_rate) <= 1.0:
+            raise SpecError("risk_free_rate 必须在 [-0.99, 1.0] 之间")

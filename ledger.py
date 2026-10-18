@@ -23,8 +23,8 @@ logger = get_logger("backtest.ledger")
 ORDER_COLUMNS = [
     "Order Id", "Column", "Timestamp", "Size", "Price", "Fees", "Side",
     "Board", "Order Valid", "reference_price", "gross_amount", "commission",
-    "stamp_tax", "transfer_fee", "slippage_rate", "slippage_cost", "total_cost",
-    "forced_exit",
+    "stamp_tax", "transfer_fee", "slippage_rate", "slippage_cost",
+    "impact_rate", "impact_cost", "total_cost", "forced_exit",
 ]
 POSITION_COLUMNS = [
     "Position Id",
@@ -246,6 +246,8 @@ class LedgerPortfolio:
         dividend_tax_mode: str = "fifo_deferred",
         costs: CostSpec | None = None,
         boards: pd.Series | None = None,
+        amount_cny: pd.DataFrame | None = None,
+        impact_volatility: pd.DataFrame | None = None,
         allow_board_adjustment: bool = False,
         initial_state: LedgerSnapshot | None = None,
         warmup_rows: int = 0,
@@ -258,6 +260,7 @@ class LedgerPortfolio:
         ``size_type`` 支持 ``targetpercent``、``targetamount`` 和 ``amount``。
         ``targetamount`` 表示目标持股数，``amount`` 表示有符号订单股数。
         ``boards`` 是按股票代码索引的板块序列；默认严格拒绝非法申报。
+        ``amount_cny`` 与 ``impact_volatility`` 用于平方根冲击成本；缺失时冲击为 0。
         ``allow_board_adjustment`` 仅供引擎固定点迭代使用，目标与真实开盘持股不一致时
         先按板块归一化，差异会由引擎的现金裁剪校验发现并触发下一轮。
         ``writeoffs`` 是退市零价值核销候选；``forced_exit`` 标记整理期内应审计为
@@ -300,6 +303,16 @@ class LedgerPortfolio:
         )
         targets = _matrix(size, index, columns, np.nan)
         cost_model = costs or CostSpec.zero()
+        amount_values = (
+            pd.DataFrame(np.nan, index=index, columns=columns)
+            if amount_cny is None
+            else amount_cny.reindex(index=index, columns=columns).astype("float64")
+        )
+        volatility_values = (
+            pd.DataFrame(np.nan, index=index, columns=columns)
+            if impact_volatility is None
+            else impact_volatility.reindex(index=index, columns=columns).astype("float64")
+        )
         effective_slippage = (
             float(cost_model.slippage) if costs is not None else float(slippage)
         )
@@ -610,9 +623,19 @@ class LedgerPortfolio:
             side: str,
             quantity: float,
             base_price: float,
+            position: int,
         ) -> FeeCharge:
             """按账本成交口径计算一笔订单的成本。"""
-            return cost_model.charge(day, side, quantity, base_price, key, board)
+            return cost_model.charge(
+                day,
+                side,
+                quantity,
+                base_price,
+                key,
+                board,
+                amount=float(amount_values.iat[row, position]),
+                volatility=float(volatility_values.iat[row, position]),
+            )
 
         def buy_total_cost(quantity: float, charge: FeeCharge) -> float:
             """买入占用的现金，包含成交额和现金费用。"""
@@ -728,7 +751,7 @@ class LedgerPortfolio:
                     if not np.isfinite(sell_quantity) or sell_quantity <= 0.0:
                         continue
                     charge = order_charge(
-                        day, key, rule.board, "Sell", sell_quantity, base_price
+                        day, key, rule.board, "Sell", sell_quantity, base_price, position
                     )
                     fill_price = charge.fill_price
                     cash += charge.fill_amount - charge.fees
@@ -764,6 +787,8 @@ class LedgerPortfolio:
                             "transfer_fee": charge.transfer_fee,
                             "slippage_rate": charge.slippage_rate,
                             "slippage_cost": charge.slippage_cost,
+                            "impact_rate": charge.impact_rate,
+                            "impact_cost": charge.impact_cost,
                             "total_cost": charge.total_cost,
                             "forced_exit": bool(forced_exit_panel.iat[row, position]),
                         }
@@ -773,7 +798,7 @@ class LedgerPortfolio:
                     # 目标分配通常已经留好现金；这里仍按现金约束截断，防止坏配置穿透账本。
                     affordable = quantity
                     charge = order_charge(
-                        day, key, rule.board, "Buy", affordable, base_price
+                        day, key, rule.board, "Buy", affordable, base_price, position
                     )
                     if quantity > 0 and buy_total_cost(affordable, charge) > cash + 1e-9:
                         max_order = rule.floor_buy_quantity(
@@ -787,7 +812,7 @@ class LedgerPortfolio:
                         affordable = float(min(quantity, max_order))
                         while affordable > 0:
                             charge = order_charge(
-                                day, key, rule.board, "Buy", affordable, base_price
+                                day, key, rule.board, "Buy", affordable, base_price, position
                             )
                             if buy_total_cost(affordable, charge) <= cash + 1e-9:
                                 break
@@ -797,7 +822,7 @@ class LedgerPortfolio:
                             step = affordable - next_order
                             candidate = affordable + step
                             candidate_charge = order_charge(
-                                day, key, rule.board, "Buy", candidate, base_price
+                                day, key, rule.board, "Buy", candidate, base_price, position
                             )
                             if candidate > quantity or buy_total_cost(
                                 candidate, candidate_charge
@@ -813,7 +838,7 @@ class LedgerPortfolio:
                             f"{rule.board} {affordable:.0f} 股"
                         )
                     charge = order_charge(
-                        day, key, rule.board, "Buy", affordable, base_price
+                        day, key, rule.board, "Buy", affordable, base_price, position
                     )
                     fill_price = charge.fill_price
                     cash -= charge.fill_amount + charge.fees
@@ -845,6 +870,8 @@ class LedgerPortfolio:
                             "transfer_fee": charge.transfer_fee,
                             "slippage_rate": charge.slippage_rate,
                             "slippage_cost": charge.slippage_cost,
+                            "impact_rate": charge.impact_rate,
+                            "impact_cost": charge.impact_cost,
                             "total_cost": charge.total_cost,
                             "forced_exit": False,
                         }
@@ -1029,16 +1056,36 @@ class LedgerPortfolio:
             + frame["transfer_fee"]
             + self._dividend_tax
         )
-        frame["total_cost"] = frame["cost"] + frame["slippage_cost"]
+        frame["impact_cost"] = (
+            costed["impact_cost"]
+            if "impact_cost" in costed.columns
+            else pd.Series(0.0, index=frame.index)
+        )
+        frame["total_cost"] = (
+            frame["cost"] + frame["slippage_cost"] + frame["impact_cost"]
+        )
         if not self._orders.empty:
             stamps = pd.DatetimeIndex(self._orders["Timestamp"])
-            traded = (
-                self._orders["Size"].abs() * self._orders["Price"].astype(float)
-            ).groupby(stamps).sum()
+            values = self._orders["Size"].abs() * self._orders["Price"].astype(float)
+            side = self._orders["Side"].astype(str).str.lower()
+            buy = values.loc[side.eq("buy")].groupby(stamps[side.eq("buy")]).sum()
+            sell = values.loc[side.eq("sell")].groupby(stamps[side.eq("sell")]).sum()
+            previous = frame["portfolio_value"].shift(1)
+            if len(previous):
+                previous.iloc[0] = float(frame["portfolio_value"].iloc[0])
+            previous = previous.replace(0, np.nan)
+            frame["buy_value"] = buy.reindex(frame.index).fillna(0.0)
+            frame["sell_value"] = sell.reindex(frame.index).fillna(0.0)
             frame["turnover"] = (
-                traded.reindex(frame.index).fillna(0.0)
-                / frame["portfolio_value"].shift(1).replace(0, np.nan)
+                frame["buy_value"] + frame["sell_value"]
+            ) / previous
+            frame["turnover_one_way"] = (
+                pd.concat([frame["buy_value"], frame["sell_value"]], axis=1).max(axis=1)
+                / previous
             )
         else:
+            frame["buy_value"] = 0.0
+            frame["sell_value"] = 0.0
             frame["turnover"] = 0.0
+            frame["turnover_one_way"] = 0.0
         return frame

@@ -383,6 +383,49 @@ def test_get_metrics_without_daily_raises(store):
         store.get_metrics(run_id)
 
 
+def test_industry_exposure_is_persisted_and_metrics_use_run_risk_free_rate(store):
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-02"))
+    daily = pd.DataFrame(
+        {
+            "portfolio_value": [1_000_000.0, 1_010_000.0],
+            "cash": [0.0, 0.0],
+            "nav": [1.0, 1.01],
+            "return": [0.0, 0.01],
+            "drawdown": [0.0, 0.0],
+            "cost": [0.0, 0.0],
+            "turnover": [0.0, 0.01],
+            "turnover_one_way": [0.0, 0.01],
+        },
+        index=pd.date_range("2024-01-01", periods=2),
+    )
+    industry = pd.DataFrame(
+        {
+            "trade_date": [pd.Timestamp("2024-01-02")],
+            "industry": ["SW2014 801010 农林牧渔"],
+            "market_value": [500_000.0],
+            "weight": [0.5],
+            "is_cash": [False],
+        }
+    )
+    store.finish_run(
+        run_id,
+        _result(
+            daily=daily,
+            industry_exposure=industry,
+            metadata={
+                "strategy_hash": "abc",
+                "universe": "all_a",
+                "params": {"risk_free_rate": 0.03},
+            },
+        ),
+    )
+    rows = store.get_result_table(run_id, "industry_exposure")
+    assert rows[0]["industry"] == "SW2014 801010 农林牧渔"
+    metrics = store.get_metrics(run_id)
+    assert metrics["risk_free_rate"] == pytest.approx(0.03)
+
+
 def test_unknown_result_table_lists_options(store):
     strategy_id, version = store.create_strategy(StrategySpec())
     run_id = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-02"))

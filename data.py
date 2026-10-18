@@ -88,6 +88,7 @@ class MarketData:
     membership: pd.DataFrame | None = None
     industry_l1: pd.DataFrame | None = None
     industry_labels: dict[int, str] | None = None
+    impact_volatility: pd.DataFrame | None = None
     benchmark: pd.Series | None = None
     benchmark_info: dict | None = None
     versions: dict | None = None
@@ -126,6 +127,11 @@ class MarketData:
             not self.industry_l1.index.equals(index) or not self.industry_l1.columns.equals(columns)
         ):
             raise DataAlignmentError("行业矩阵与行情面板的日期或股票列不一致")
+        if self.impact_volatility is not None and (
+            not self.impact_volatility.index.equals(index)
+            or not self.impact_volatility.columns.equals(columns)
+        ):
+            raise DataAlignmentError("冲击波动率矩阵与行情面板的日期或股票列不一致")
         for name, frame in self.factors.items():
             if not frame.index.equals(index) or not frame.columns.equals(columns):
                 raise DataAlignmentError(f"因子 {name} 与行情面板的日期或股票列不一致")
@@ -195,6 +201,11 @@ class MarketData:
             membership=self.membership.loc[mask] if self.membership is not None else None,
             industry_l1=self.industry_l1.loc[mask] if self.industry_l1 is not None else None,
             industry_labels=self.industry_labels,
+            impact_volatility=(
+                None
+                if self.impact_volatility is None
+                else self.impact_volatility.loc[mask]
+            ),
             benchmark=benchmark,
             benchmark_info=benchmark_info,
             versions=self.versions,
@@ -419,6 +430,62 @@ def _load_industry_l1(
     return pd.DataFrame(values, index=index, columns=columns), labels
 
 
+def _lookback_start(start: str, trading_days: int, db_path: Path | str | None) -> str:
+    """返回 ``start`` 之前第 ``trading_days`` 个交易日。"""
+    frame = db_query(
+        "SELECT trade_date FROM md.calendar WHERE is_open = 1 "
+        "AND trade_date < CAST(? AS DATE) ORDER BY trade_date DESC LIMIT ?",
+        [start, int(trading_days)],
+        path=db_path,
+    )
+    if frame.empty:
+        return start
+    return str(pd.Timestamp(frame["trade_date"].min()).date())
+
+
+def _load_impact_volatility(
+    start: str,
+    end: str,
+    index: pd.DatetimeIndex,
+    columns: pd.Index,
+    window: int,
+    stocks: tuple[str, ...] | None,
+    db_path: Path | str | None,
+) -> pd.DataFrame:
+    """读取执行日前 ``window`` 日复权收益波动率，返回日期 × 股票宽表。"""
+    lookback = _lookback_start(start, window, db_path)
+    stock_filter = ""
+    if stocks:
+        quoted = ", ".join(
+            "'" + str(code).replace("'", "''") + "'" for code in stocks
+        )
+        stock_filter = f" AND stock_code IN ({quoted})"
+    query = f"""
+        WITH base AS (
+            SELECT stock_code, trade_date, ret
+            FROM md.daily_hfq
+            WHERE trade_date >= DATE '{lookback}'
+              AND trade_date <= DATE '{end}'{stock_filter}
+        ),
+        vol AS (
+            SELECT stock_code, trade_date,
+                   stddev_samp(ret) OVER (
+                       PARTITION BY stock_code ORDER BY trade_date
+                       ROWS BETWEEN {int(window)} PRECEDING AND 1 PRECEDING
+                   ) AS impact_volatility
+            FROM base
+        )
+        PIVOT (SELECT * FROM vol) ON stock_code
+        USING first(impact_volatility) GROUP BY trade_date ORDER BY trade_date
+    """
+    frame = db_query(query, path=db_path)
+    if frame.empty:
+        return pd.DataFrame(np.nan, index=index, columns=columns, dtype="float32")
+    frame["trade_date"] = pd.to_datetime(frame["trade_date"])
+    wide = frame.set_index("trade_date")
+    return wide.reindex(index=index, columns=columns).astype("float32")
+
+
 def _industry_label(row) -> str:
     """生成行业组标签；旧库没有分类和 carry_forward 时保持旧格式。"""
     code = str(row["l1_code"])
@@ -625,6 +692,8 @@ def load_market_data(
     membership_end: str | None = None,
     stock_codes: tuple[str, ...] | None = None,
     industry_level: str | None = None,
+    industry_report: bool = False,
+    impact_volatility_window: int | None = None,
     data_snapshot: dict | None = None,
 ) -> MarketData:
     """从主库和因子目录读取回测输入。
@@ -642,6 +711,8 @@ def load_market_data(
         stock_codes: 外部固定的股票列；None 表示按本区间解析股票池。分块回测传整段
             区间的股票并集，保证每块列集合一致，持仓不会因股票暂时不在本块池内而丢失。
         industry_level: None 表示不加载行业；第一版只支持 ``L1``。
+        industry_report: True 表示即使不启用行业上限也加载行业用于报告；行业缺失时降级。
+        impact_volatility_window: None 表示不计算冲击波动率；整数表示窗口长度。
         data_snapshot: 整段回测的数据快照；None 表示按本次读取范围现算。
     """
     if industry_level not in (None, "L1"):
@@ -729,9 +800,23 @@ def load_market_data(
         corporate_actions["pay_date"] = pd.to_datetime(
             corporate_actions["pay_date"], errors="coerce"
         )
-    industry_l1, industry_labels = (
-        _load_industry_l1(start, end, index, columns, db_path)
-        if industry_level == "L1" else (None, None)
+    industry_l1 = None
+    industry_labels = None
+    if industry_level == "L1" or industry_report:
+        try:
+            industry_l1, industry_labels = _load_industry_l1(
+                start, end, index, columns, db_path
+            )
+        except Exception as error:
+            if industry_level == "L1":
+                raise
+            logger.warning("行业报告数据不可用，行业暴露留空：%s", error)
+    impact_volatility = (
+        None
+        if impact_volatility_window is None
+        else _load_impact_volatility(
+            start, end, index, columns, impact_volatility_window, stocks, db_path
+        )
     )
     if data_snapshot is None:
         data_snapshot = build_data_snapshot(
@@ -745,6 +830,8 @@ def load_market_data(
             membership_end=membership_end,
             stock_codes=stocks,
             industry_level=industry_level,
+            industry_report=industry_report,
+            impact_volatility_window=impact_volatility_window,
         )
     return MarketData(
         factors=factors,
@@ -754,6 +841,7 @@ def load_market_data(
         membership=membership,
         industry_l1=industry_l1,
         industry_labels=industry_labels,
+        impact_volatility=impact_volatility,
         benchmark=benchmark,
         benchmark_info=benchmark_info,
         versions=_load_versions(db_path),

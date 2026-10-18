@@ -110,6 +110,56 @@ def test_cost_can_be_fully_disabled():
     assert charge.total_cost == 0.0
 
 
+def test_square_root_impact_worsens_fill_price_and_is_capped():
+    costs = CostSpec(
+        commission_rate=0.0,
+        minimum_commission=0.0,
+        slippage=0.0,
+        transfer_fee_enabled=False,
+        fee_rounding="none",
+        impact_model="sqrt",
+        impact_coefficient=0.5,
+        impact_max_rate=0.05,
+    )
+    buy = costs.charge(
+        "2024-01-02",
+        "Buy",
+        1000,
+        10.0,
+        "SH600000",
+        "主板",
+        amount=100_000.0,
+        volatility=0.02,
+    )
+    expected_rate = 0.5 * 0.02 * (10_000.0 / 100_000.0) ** 0.5
+    assert buy.impact_rate == pytest.approx(expected_rate)
+    assert buy.fill_price == pytest.approx(10.0 * (1.0 + expected_rate))
+    assert buy.impact_cost == pytest.approx(10_000.0 * expected_rate)
+    capped = costs.charge(
+        "2024-01-02",
+        "Buy",
+        100_000,
+        10.0,
+        "SH600000",
+        "主板",
+        amount=100_000.0,
+        volatility=1.0,
+    )
+    assert capped.impact_rate == pytest.approx(0.05)
+
+
+def test_impact_is_zero_when_model_disabled_or_inputs_missing():
+    disabled = CostSpec().charge(
+        "2024-01-02", "Buy", 1000, 10.0, "SH600000", "主板",
+        amount=100_000.0, volatility=0.02,
+    )
+    assert disabled.impact_cost == 0.0
+    enabled = CostSpec(impact_model="sqrt").charge(
+        "2024-01-02", "Buy", 1000, 10.0, "SH600000", "主板",
+    )
+    assert enabled.impact_cost == 0.0
+
+
 def test_fee_rounding_is_half_up():
     assert round_cent(1.005) == pytest.approx(1.01)
     assert round_cent(2.675) == pytest.approx(2.68)

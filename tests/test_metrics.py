@@ -32,7 +32,7 @@ def _daily(values, benchmark=None):
 
 def test_summary_matches_manual_calculation():
     daily = _daily([1.0, 1.02, 1.01, 1.03])
-    result = summarize(daily)
+    result = summarize(daily, risk_free_rate=0.0)
     assert result["trading_days"] == 4
     assert result["total_return"] == pytest.approx(0.03)
     assert result["max_drawdown"] == pytest.approx(1.01 / 1.02 - 1.0)
@@ -44,14 +44,34 @@ def test_summary_matches_manual_calculation():
     assert result["months"] >= 1
 
 
+def test_summary_uses_configured_risk_free_rate_and_sortino():
+    daily = _daily([1.0, 1.02, 0.99, 1.03])
+    result = summarize(daily, risk_free_rate=0.02)
+    rf_daily = (1.02) ** (1 / 252) - 1
+    excess = daily["return"] - rf_daily
+    downside = np.minimum(excess.to_numpy(), 0.0)
+    downside_deviation = np.sqrt(np.mean(downside**2)) * np.sqrt(252)
+    assert result["risk_free_rate"] == pytest.approx(0.02)
+    assert result["sharpe"] == pytest.approx(
+        excess.mean() / excess.std(ddof=1) * np.sqrt(252)
+    )
+    assert result["sortino"] == pytest.approx(
+        excess.mean() * np.sqrt(252) / downside_deviation
+    )
+
+
 def test_summary_reports_benchmark_excess():
     daily = _daily([1.0, 1.02, 1.01, 1.03], benchmark=[1.0, 1.01, 1.005, 1.01])
-    result = summarize(daily)
+    result = summarize(daily, risk_free_rate=0.0)
     assert result["benchmark_total_return"] == pytest.approx(0.01)
     assert result["excess_annual_return"] == pytest.approx(
         result["annual_return"] - result["benchmark_annual_return"]
     )
     assert result["information_ratio"] is not None
+    assert result["beta"] == pytest.approx(
+        np.cov(daily["return"], daily["benchmark_return"], ddof=1)[0, 1]
+        / np.var(daily["benchmark_return"], ddof=1)
+    )
 
 
 def test_summary_without_benchmark_has_no_excess_keys():
