@@ -14,6 +14,7 @@ from backtest.allocation import (
     extend_carry,
 )
 from backtest.errors import ExecutionError
+from backtest.trading_rules import BOARD_MAIN, BOARD_STAR, BOARD_BSE
 
 DATES = pd.date_range("2024-01-29", periods=3, freq="B")
 
@@ -23,7 +24,17 @@ def _frame(values, columns, index=DATES):
     return pd.DataFrame(np.asarray(values, dtype="float64"), index=index, columns=columns)
 
 
-def _allocate(targets, budgets, prices, columns, baseline=None, buffer=0.0, cash=None):
+def _boards(columns, boards=None):
+    """按股票列构造板块序列，默认主板。"""
+    if boards is not None:
+        return pd.Series(boards, index=columns)
+    return pd.Series(BOARD_MAIN, index=columns)
+
+
+def _allocate(
+    targets, budgets, prices, columns, baseline=None, buffer=0.0, cash=None,
+    boards=None,
+):
     """跑一次分配，返回 ``(股数, 明细, 统计)``；开盘现金默认与预算同值。"""
     shares, records, _, stats = allocate_shares(
         _frame(targets, columns),
@@ -31,7 +42,7 @@ def _allocate(targets, budgets, prices, columns, baseline=None, buffer=0.0, cash
         pd.Series(budgets if cash is None else cash, index=DATES),
         _frame(prices, columns),
         _frame(baseline, columns) if baseline is not None else _frame([[0.0] * len(columns)] * 3, columns),
-        100,
+        _boards(columns, boards),
         buffer,
     )
     return shares, records, stats
@@ -84,8 +95,8 @@ def test_allocate_shares_bumps_one_lot_from_rounding_residue():
     weights = [[np.nan] * 5, [0.2] * 5, [np.nan] * 5]
     shares, records, stats = _allocate(weights, [100_000.0] * 3, prices, columns)
     assert shares.loc[DATES[1], "S4"] == 100.0
-    assert stats["bumped_one_lot_cells"] == 1
-    assert stats["unaffordable_lot_cells"] == 0
+    assert stats["bumped_min_order_cells"] == 1
+    assert stats["unaffordable_min_order_cells"] == 0
     bumped = records.loc[records["status"] == "bumped"].iloc[0]
     assert bumped["stock_code"] == "S4"
 
@@ -96,8 +107,8 @@ def test_allocate_shares_reports_unaffordable_when_residue_is_not_enough():
     weights = [[np.nan] * 5, [0.2] * 5, [np.nan] * 5]
     shares, records, stats = _allocate(weights, [100_000.0] * 3, prices, columns)
     assert shares.loc[DATES[1], "S4"] == 0.0
-    assert stats["bumped_one_lot_cells"] == 0
-    assert stats["unaffordable_lot_cells"] == 1
+    assert stats["bumped_min_order_cells"] == 0
+    assert stats["unaffordable_min_order_cells"] == 1
     assert records.loc[records["status"] == "unaffordable"].iloc[0]["stock_code"] == "S4"
 
 
@@ -138,7 +149,7 @@ def test_allocate_shares_excludes_blocked_holdings_from_budget():
         cash=[0.0, 0.0, 0.0],
     )
     assert shares.loc[DATES[1], "B"] == 0.0
-    assert stats["unaffordable_lot_cells"] == 1
+    assert stats["unaffordable_min_order_cells"] == 1
     assert records.loc[records["status"] == "unaffordable"].iloc[0]["stock_code"] == "B"
 
 
@@ -207,7 +218,7 @@ def test_allocate_shares_handles_empty_budget_and_missing_price():
     assert np.isnan(shares.loc[DATES[1], "B"])  # 缺价格子不下单
     assert shares.loc[DATES[1], "A"] == 0.0
     assert stats["no_price_cells"] == 1
-    assert stats["unaffordable_lot_cells"] == 1
+    assert stats["unaffordable_min_order_cells"] == 1
     assert set(records["status"]) == {"no_price", "unaffordable"}
 
 
@@ -220,7 +231,7 @@ def test_allocate_shares_limits_buy_by_daily_amount_participation():
         pd.Series([100_000.0] * 3, index=DATES),
         _frame([[10.0], [10.0], [10.0]], ["A"]),
         _frame([[0.0], [0.0], [0.0]], ["A"]),
-        100,
+        _boards(["A"]),
         0.0,
         amount_cny=amount,
         max_participation_rate=0.1,
@@ -241,7 +252,7 @@ def test_allocate_shares_retries_when_amount_is_unavailable():
         pd.Series([100_000.0] * 3, index=DATES),
         _frame([[10.0], [10.0], [10.0]], ["A"]),
         _frame([[0.0], [0.0], [0.0]], ["A"]),
-        100,
+        _boards(["A"]),
         0.0,
         amount_cny=amount,
         max_participation_rate=0.1,
@@ -400,6 +411,62 @@ def test_allocate_shares_rejects_impossible_buffer():
             pd.Series(10_000.0, index=DATES),
             _frame([[10.0]] * 3, columns),
             _frame([[0.0]] * 3, columns),
-            100,
+            _boards(columns),
             1.0,
         )
+
+
+def test_allocate_shares_uses_star_minimum_order():
+    columns = ["SH688001"]
+    weights = [[np.nan], [0.1], [np.nan]]
+    shares, records, stats = _allocate(
+        weights,
+        [2_000.0] * 3,
+        [[10.0]] * 3,
+        columns,
+        boards=[BOARD_STAR],
+    )
+
+    assert shares.loc[DATES[1], "SH688001"] == 200
+    assert records.iloc[0]["board"] == BOARD_STAR
+    assert records.iloc[0]["min_buy_shares"] == 200
+    assert stats["bumped_min_order_cells"] == 1
+
+
+def test_allocate_shares_keeps_bse_single_share_increment():
+    columns = ["BJ920000"]
+    weights = [[np.nan], [0.0785], [np.nan]]
+    shares, records, stats = _allocate(
+        weights,
+        [20_000.0] * 3,
+        [[10.0]] * 3,
+        columns,
+        boards=[BOARD_BSE],
+    )
+
+    assert shares.loc[DATES[1], "BJ920000"] == 157
+    assert records.iloc[0]["board"] == BOARD_BSE
+    assert records.iloc[0]["order_shares"] == 157
+    assert bool(records.iloc[0]["order_valid"])
+    assert stats["bumped_min_order_cells"] == 0
+
+
+def test_allocate_shares_does_not_shrink_star_buy_below_200():
+    columns = ["SH688001"]
+    targets = _frame([[np.nan], [1.0], [np.nan]], columns)
+    amount = _frame([[1_000.0]] * 3, columns)
+    shares, records, _, stats = allocate_shares(
+        targets,
+        pd.Series([10_000.0] * 3, index=DATES),
+        pd.Series([10_000.0] * 3, index=DATES),
+        _frame([[10.0]] * 3, columns),
+        _frame([[0.0]] * 3, columns),
+        pd.Series([BOARD_STAR], index=columns),
+        0.0,
+        amount_cny=amount,
+        max_participation_rate=0.1,
+    )
+
+    assert shares.loc[DATES[1], "SH688001"] == 0
+    assert stats["liquidity_limited_cells"] == 1
+    assert bool(records.iloc[0]["order_valid"])

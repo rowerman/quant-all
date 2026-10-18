@@ -58,6 +58,7 @@ from backtest.orders import (
 from backtest.risk import cap_target_weights, constrain_one_way_turnover, industry_weight_witnesses
 from backtest.signals import build_target_weights
 from backtest.specs import BacktestParams, StrategySpec
+from backtest.trading_rules import RULE_VERSION, rule_summary
 
 logger = get_logger("backtest.engine")
 
@@ -171,6 +172,8 @@ def _run_portfolio(
             corporate_actions=data.corporate_actions,
             dividend_tax_mode=strategy.costs.dividend_tax_mode,
             costs=None if fees is None else strategy.costs,
+            boards=data.board,
+            allow_board_adjustment=True,
             initial_state=initial_state,
             warmup_rows=warmup_rows,
         )
@@ -982,6 +985,8 @@ def run_backtest(
         "carry_converged": bool(carry_converged),
         "backend": "ledger",
         "dividend_tax_mode": strategy.costs.dividend_tax_mode,
+        "lot_rule_version": RULE_VERSION,
+        "lot_rules": rule_summary(),
     }
     if strategy.execution.max_participation_rate is not None:
         execution_metadata["max_participation_rate"] = strategy.execution.max_participation_rate

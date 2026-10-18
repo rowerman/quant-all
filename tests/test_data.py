@@ -40,6 +40,7 @@ def test_market_data_crop_keeps_interval(make_data):
     cropped = data.crop(str(index[1].date()), str(index[3].date()))
     assert list(cropped.index) == [index[1], index[2], index[3]]
     assert cropped.list_date.equals(data.list_date)
+    assert cropped.board.equals(data.board)
     with pytest.raises(DataAlignmentError):
         data.crop("2024-06-01", "2024-06-30")
 
@@ -80,8 +81,18 @@ def test_load_market_data_reads_real_panel():
     assert data.benchmark_info["return_type"] == "total_return"
     assert data.versions["dataset"]["data_version"].startswith("tushare_fullA_")
     assert data.delist_date is not None
+    assert set(data.board.unique()) <= {"主板", "创业板", "科创板", "北交所"}
     for name in PANEL_FIELDS:
         assert getattr(data, name).shape == data.open.shape
+
+
+def test_market_data_rejects_unknown_board(make_data):
+    board = pd.Series(
+        ["主板", "未知板块", "主板"],
+        index=["SH600000", "SZ000001", "SZ000002"],
+    )
+    with pytest.raises(DataAlignmentError, match="不在支持范围"):
+        make_data(board=board)
 
 
 def test_benchmark_metadata_and_alignment(monkeypatch):

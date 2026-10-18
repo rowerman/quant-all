@@ -6,8 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.ledger import LedgerPortfolio, _tax_rate
+from backtest.ledger import LedgerPortfolio, LedgerSnapshot, _tax_rate
 from backtest.specs import CostSpec
+from backtest.trading_rules import BOARD_BSE, BOARD_MAIN, BOARD_STAR
+
+BOARDS = pd.Series({"A": BOARD_MAIN})
 
 
 def _prices(values, dates, columns=("A",)):
@@ -41,7 +44,7 @@ def test_split_keeps_value_and_moves_to_true_share_count():
 
     portfolio = LedgerPortfolio.from_orders(
         close, targets, size_type="targetamount", price=open_price,
-        init_cash=1_000.0, corporate_actions=actions,
+        init_cash=1_000.0, corporate_actions=actions, boards=BOARDS,
     )
 
     assert portfolio.assets().iloc[-1, 0] == 200
@@ -58,7 +61,7 @@ def test_cash_dividend_is_receivable_until_pay_date():
 
     portfolio = LedgerPortfolio.from_orders(
         close, targets, size_type="targetamount", price=open_price,
-        init_cash=1_000.0, corporate_actions=actions,
+        init_cash=1_000.0, corporate_actions=actions, boards=BOARDS,
     )
 
     assert portfolio.receivables().tolist() == pytest.approx([0.0, 50.0, 0.0, 0.0])
@@ -76,7 +79,7 @@ def test_fractional_share_is_cashed_out():
 
     portfolio = LedgerPortfolio.from_orders(
         close, targets, size_type="targetamount", price=close,
-        init_cash=1_000.0, corporate_actions=actions,
+        init_cash=1_000.0, corporate_actions=actions, boards=BOARDS,
     )
 
     assert portfolio.assets().iloc[-1, 0] == 100
@@ -106,7 +109,7 @@ def test_fifo_dividend_tax_is_deducted_when_lots_are_sold():
 
     portfolio = LedgerPortfolio.from_orders(
         close, targets, size_type="targetamount", price=close,
-        init_cash=1_000.0, corporate_actions=actions, costs=costs,
+        init_cash=1_000.0, corporate_actions=actions, costs=costs, boards=BOARDS,
     )
 
     assert portfolio.dividend_tax().sum() == pytest.approx(10.0)
@@ -124,7 +127,7 @@ def test_disabled_dividend_tax_keeps_gross_cash():
     portfolio = LedgerPortfolio.from_orders(
         close, targets, size_type="targetamount", price=close,
         init_cash=1_000.0, corporate_actions=actions, costs=costs,
-        dividend_tax_mode="disabled",
+        dividend_tax_mode="disabled", boards=BOARDS,
     )
 
     assert portfolio.dividend_tax().sum() == 0.0
@@ -138,14 +141,66 @@ def test_snapshot_carries_lots_and_receivables_across_chunks():
     actions = _action(dates, cash_div_per_share=0.5, pay_date=dates[1])
     first = LedgerPortfolio.from_orders(
         close, targets, size_type="targetamount", price=close,
-        init_cash=1_000.0, corporate_actions=actions,
+        init_cash=1_000.0, corporate_actions=actions, boards=BOARDS,
     )
     snapshot = first.snapshot()
     second = LedgerPortfolio.from_orders(
         close.iloc[-1:], targets.iloc[-1:], size_type="targetamount",
         price=close.iloc[-1:], init_cash=snapshot.cash,
-        initial_state=snapshot, corporate_actions=actions,
+        initial_state=snapshot, corporate_actions=actions, boards=BOARDS,
     )
     assert snapshot.shares["A"] == 100
     assert snapshot.receivables.empty
     assert second.assets().iloc[-1, 0] == 100
+
+
+def test_bse_buy_can_use_single_share_increment():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    close = _prices([10.0, 10.0], dates)
+    targets = _prices([157.0, 157.0], dates)
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=close,
+        init_cash=2_000.0, boards=pd.Series({"A": BOARD_BSE}),
+    )
+
+    assert portfolio.orders.records_readable["Size"].tolist() == [157.0]
+    assert portfolio.orders.records_readable["Board"].tolist() == [BOARD_BSE]
+    assert portfolio.orders.records_readable["Order Valid"].tolist() == [True]
+
+
+def test_star_rejects_invalid_small_buy():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    close = _prices([10.0, 10.0], dates)
+    targets = _prices([100.0, 100.0], dates)
+
+    with pytest.raises(Exception, match="非法板块订单"):
+        LedgerPortfolio.from_orders(
+            close, targets, size_type="targetamount", price=close,
+            init_cash=2_000.0, boards=pd.Series({"A": BOARD_STAR}),
+        )
+
+
+def test_star_can_sell_odd_lot_only_when_clearing_position():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    close = _prices([10.0, 10.0], dates)
+    targets = _prices([201.0, 0.0], dates)
+    state = LedgerSnapshot(
+        cash=1_000.0,
+        shares=pd.Series({"A": 201.0}),
+        lots=pd.DataFrame(),
+        receivables=pd.DataFrame(),
+        last_prices=pd.Series({"A": 10.0}),
+    )
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=close,
+        init_cash=1_000.0, initial_state=state,
+        boards=pd.Series({"A": BOARD_STAR}), costs=CostSpec(
+            commission_rate=0.0, minimum_commission=0.0,
+            stamp_tax_rate=0.0, slippage=0.0,
+        ),
+    )
+
+    assert portfolio.orders.records_readable["Size"].tolist() == [-201.0]
+    assert portfolio.assets().iloc[-1, 0] == 0

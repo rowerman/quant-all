@@ -101,6 +101,9 @@ class ExecutionSpec:
     ``cash_buffer`` 是执行层预留的现金比例：分配目标股数时按 ``1 - cash_buffer``
     计算可用预算，用来覆盖费用、滑点与取整余量，避免 VectorBT 按顺序成交时
     最后处理的格子被整笔裁掉。
+
+    ``lot_size`` 只保留为旧策略 JSON 的兼容字段；实际申报单位由
+    :mod:`backtest.trading_rules` 按股票所属板块解析。
     """
 
     lot_size: int = 100

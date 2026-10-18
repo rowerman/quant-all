@@ -437,15 +437,15 @@ def _allocation_panel(make_data, prices, dates=None, cash=100_000.0):
     return data, strategy, params
 
 
-def test_engine_bumps_one_lot_when_target_is_below_a_single_lot(make_data):
-    """目标金额小于一手时用取整余量补到一手，不再整只缺席。"""
+def test_engine_bumps_min_order_when_target_is_below_a_single_lot(make_data):
+    """目标金额小于最小申报量时用取整余量补上，不再整只缺席。"""
     prices = [130.0, 130.0, 130.0, 130.0, 250.0]
     data, strategy, params = _allocation_panel(make_data, prices)
     result = run_backtest(data, strategy, params)
     calibration = result.metadata["calibration"]
 
-    assert calibration["bumped_one_lot_cells"] >= 1
-    assert calibration["unaffordable_lot_cells"] == 0
+    assert calibration["bumped_min_order_cells"] >= 1
+    assert calibration["unaffordable_min_order_cells"] == 0
     assert calibration["cash_clipped_cells"] == 0
     # 250 元那只一手 25000 元，超过 0.2 × 98000 = 19600 元的理想仓位，靠余量补上
     last_day = result.holdings.loc[result.holdings["trade_date"] == DATES[-1]]
@@ -464,12 +464,88 @@ def test_engine_keeps_lot_boundary_cells_instead_of_dropping_them(make_data):
     # 理想仓位 32667 元、一手 33333 元：29 只用取整余量补到一手，最后 1 只放不下；
     # 日频调仓下每个执行日都重复这个结论
     execution_days = len(DATES) - 1
-    assert calibration["bumped_one_lot_cells"] == 29 * execution_days
-    assert calibration["unaffordable_lot_cells"] == execution_days
+    assert calibration["bumped_min_order_cells"] == 29 * execution_days
+    assert calibration["unaffordable_min_order_cells"] == execution_days
     assert calibration["cash_clipped_cells"] == 0
     assert calibration["allocation_gap_max_shares"] == 0.0
     held = result.holdings.loc[result.holdings["trade_date"] == DATES[-1], "weight"].sum()
     assert 0.95 < held <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("stock", "price", "expected_first_order"),
+    [
+        ("SH688001", 400.0, 250.0),
+        ("BJ920000", 600.0, 166.0),
+        ("SH600000", 400.0, 200.0),
+        ("SZ300001", 400.0, 200.0),
+    ],
+)
+def test_engine_applies_board_trading_units(
+    make_data, stock, price, expected_first_order
+):
+    """同一目标金额在四个板块产生各自的合法首笔买入。"""
+    dates = DATES[:2]
+    columns = [stock]
+    prices = pd.DataFrame(price, index=dates, columns=columns)
+    score = pd.DataFrame(1.0, index=dates, columns=columns)
+    data = make_data(
+        dates=dates,
+        stocks=columns,
+        open=prices.astype("float32"),
+        close=prices.astype("float32"),
+        factors={"MOM_20": score.astype("float32")},
+    )
+    strategy = _strategy(
+        portfolio=PortfolioSpec(top_n=1),
+        execution=ExecutionSpec(cash_buffer=0.0),
+        costs=CostSpec(
+            commission_rate=0.0,
+            minimum_commission=0.0,
+            stamp_tax_rate=0.0,
+            slippage=0.0,
+        ),
+    )
+    result = run_backtest(
+        data, strategy, BacktestParams(str(dates[0].date()), str(dates[-1].date()), 100_000.0)
+    )
+
+    buys = result.orders.loc[result.orders["Side"].astype(str).str.lower() == "buy"]
+    assert buys.iloc[0]["Size"] == pytest.approx(expected_first_order)
+    assert buys.iloc[0]["Board"] == data.board.loc[stock]
+    assert bool(buys.iloc[0]["Order Valid"])
+
+
+def test_star_buy_below_minimum_does_not_fall_back_to_100_shares(make_data):
+    """10 万元买 600 元科创板股时，旧实现会买 100 股，新规则应保持空仓。"""
+    dates = DATES[:2]
+    columns = ["SH688001"]
+    prices = pd.DataFrame(600.0, index=dates, columns=columns)
+    score = pd.DataFrame(1.0, index=dates, columns=columns)
+    data = make_data(
+        dates=dates,
+        stocks=columns,
+        open=prices.astype("float32"),
+        close=prices.astype("float32"),
+        factors={"MOM_20": score.astype("float32")},
+    )
+    strategy = _strategy(
+        portfolio=PortfolioSpec(top_n=1),
+        execution=ExecutionSpec(cash_buffer=0.0),
+        costs=CostSpec(
+            commission_rate=0.0,
+            minimum_commission=0.0,
+            stamp_tax_rate=0.0,
+            slippage=0.0,
+        ),
+    )
+
+    result = run_backtest(
+        data, strategy, BacktestParams(str(dates[0].date()), str(dates[-1].date()), 100_000.0)
+    )
+
+    assert result.orders.empty
+    assert result.allocations.iloc[0]["status"] == "unaffordable"
 
 
 def test_engine_marks_allocation_table_for_every_target_cell(make_data):
@@ -482,12 +558,33 @@ def test_engine_marks_allocation_table_for_every_target_cell(make_data):
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
     result = run_backtest(data, _strategy(), params)
     assert len(result.allocations) == result.metadata["calibration"]["planned_orders"]
-    assert set(result.allocations["status"]) <= {"allocated", "bumped", "unaffordable", "no_price", "flat"}
+    assert set(result.allocations["status"]) <= {
+        "allocated", "bumped", "unaffordable", "below_min_order", "no_price", "flat",
+    }
     assert result.metadata["execution"] == {
         "sizing": "target_amount", "cash_buffer": 0.02, "lot_size": 100,
         "allocation_iterations": 2, "allocation_converged": True,
         "carry_iterations": 0, "carry_converged": True,
         "backend": "ledger", "dividend_tax_mode": "fifo_deferred",
+        "lot_rule_version": "cn_a_board_v1",
+        "lot_rules": {
+            "主板": {
+                "min_buy_shares": 100, "buy_increment": 100,
+                "min_sell_shares": 100, "sell_increment": 100,
+            },
+            "创业板": {
+                "min_buy_shares": 100, "buy_increment": 100,
+                "min_sell_shares": 100, "sell_increment": 100,
+            },
+            "科创板": {
+                "min_buy_shares": 200, "buy_increment": 1,
+                "min_sell_shares": 200, "sell_increment": 1,
+            },
+            "北交所": {
+                "min_buy_shares": 100, "buy_increment": 1,
+                "min_sell_shares": 100, "sell_increment": 1,
+            },
+        },
     }
 
 

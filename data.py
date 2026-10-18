@@ -24,6 +24,7 @@ from backtest.config import FACTOR_DB, MAX_PANEL_CELLS, MAX_TRADE_DAYS
 from backtest.errors import DataAlignmentError, ResourceLimitError
 from backtest.logging_conf import get_logger
 from backtest.specs import TOTAL_RETURN_BENCHMARKS
+from backtest.trading_rules import VALID_BOARDS
 from backtest.universe import (
     check_limits,
     membership_frame,
@@ -61,6 +62,7 @@ class MarketData:
 
     所有价格与标记面板共用同一个交易日索引和同一套股票列；
     ``factors`` 是「因子名 → 宽表」，``list_date`` 是每股上市日；
+    ``board`` 是每股所属板块，交易单位按它解析；
     ``membership`` 只在指数成分池下存在，为 True 表示当日属于成分。
     ``delist_date`` 为 None 时不做退市强制清算；``versions`` 是数据与因子版本。
     """
@@ -77,6 +79,7 @@ class MarketData:
     total_mv: pd.DataFrame
     factors: dict[str, pd.DataFrame]
     list_date: pd.Series
+    board: pd.Series
     delist_date: pd.Series | None = None
     membership: pd.DataFrame | None = None
     industry_l1: pd.DataFrame | None = None
@@ -116,6 +119,19 @@ class MarketData:
                 raise DataAlignmentError(f"因子 {name} 与行情面板的日期或股票列不一致")
         if not self.list_date.index.equals(columns):
             raise DataAlignmentError("上市日序列与行情面板的股票列不一致")
+        if not self.board.index.equals(columns):
+            raise DataAlignmentError("板块序列与行情面板的股票列不一致")
+        missing_board = self.board.isna() | (self.board.astype(str).str.strip() == "")
+        if missing_board.any():
+            sample = [str(item) for item in self.board.index[missing_board][:5]]
+            raise DataAlignmentError(f"股票缺少板块信息：{sample}")
+        unknown_board = ~self.board.astype(str).isin(VALID_BOARDS)
+        if unknown_board.any():
+            pairs = [
+                f"{code}:{self.board.loc[code]}"
+                for code in self.board.index[unknown_board][:5]
+            ]
+            raise DataAlignmentError(f"股票板块不在支持范围内：{pairs}")
         if self.delist_date is not None and not self.delist_date.index.equals(columns):
             raise DataAlignmentError("退市日序列与行情面板的股票列不一致")
 
@@ -162,6 +178,7 @@ class MarketData:
         return MarketData(
             factors={name: frame.loc[mask] for name, frame in self.factors.items()},
             list_date=self.list_date,
+            board=self.board,
             delist_date=self.delist_date,
             membership=self.membership.loc[mask] if self.membership is not None else None,
             industry_l1=self.industry_l1.loc[mask] if self.industry_l1 is not None else None,
@@ -629,6 +646,18 @@ def load_market_data(
     )
     basic = quant.load_stock_basic(db_path=db_path)
     indexed = basic.set_index("stock_code")
+    if "market" not in indexed.columns:
+        raise DataAlignmentError("股票基础表缺少 market 列，无法解析板块交易单位")
+    board = indexed["market"].reindex(columns).astype("string")
+    missing_board = board.isna() | (board.str.strip() == "")
+    if missing_board.any():
+        sample = [str(item) for item in columns[missing_board.to_numpy()][:5]]
+        raise DataAlignmentError(f"股票基础表缺少股票板块：{sample}")
+    board = board.astype(str).rename("board")
+    unknown_board = ~board.isin(VALID_BOARDS)
+    if unknown_board.any():
+        pairs = [f"{code}:{board.loc[code]}" for code in board.index[unknown_board][:5]]
+        raise DataAlignmentError(f"股票基础表包含不支持的板块：{pairs}")
     list_date = pd.to_datetime(indexed["list_date"]).reindex(columns)
     delist_date = (
         pd.to_datetime(indexed["delist_date"]).reindex(columns)
@@ -666,6 +695,7 @@ def load_market_data(
     return MarketData(
         factors=factors,
         list_date=list_date,
+        board=board,
         delist_date=delist_date,
         membership=membership,
         industry_l1=industry_l1,

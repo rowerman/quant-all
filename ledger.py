@@ -16,10 +16,14 @@ import pandas as pd
 
 from backtest.logging_conf import get_logger
 from backtest.specs import CostSpec
+from backtest.trading_rules import rule_for
 
 logger = get_logger("backtest.ledger")
 
-ORDER_COLUMNS = ["Order Id", "Column", "Timestamp", "Size", "Price", "Fees", "Side"]
+ORDER_COLUMNS = [
+    "Order Id", "Column", "Timestamp", "Size", "Price", "Fees", "Side",
+    "Board", "Order Valid",
+]
 POSITION_COLUMNS = [
     "Position Id",
     "Column",
@@ -230,6 +234,8 @@ class LedgerPortfolio:
         corporate_actions: pd.DataFrame | None = None,
         dividend_tax_mode: str = "fifo_deferred",
         costs: CostSpec | None = None,
+        boards: pd.Series | None = None,
+        allow_board_adjustment: bool = False,
         initial_state: LedgerSnapshot | None = None,
         warmup_rows: int = 0,
         **_: Any,
@@ -238,11 +244,24 @@ class LedgerPortfolio:
 
         ``size_type`` 支持 ``targetpercent``、``targetamount`` 和 ``amount``。
         ``targetamount`` 表示目标持股数，``amount`` 表示有符号订单股数。
+        ``boards`` 是按股票代码索引的板块序列；默认严格拒绝非法申报。
+        ``allow_board_adjustment`` 仅供引擎固定点迭代使用，目标与真实开盘持股不一致时
+        先按板块归一化，差异会由引擎的现金裁剪校验发现并触发下一轮。
         """
         if not isinstance(close, pd.DataFrame):
             raise TypeError("账本需要日期 × 股票宽表 close")
         index = pd.DatetimeIndex(close.index)
         columns = pd.Index(close.columns)
+        if boards is None:
+            raise ValueError("账本需要以股票代码为索引的板块序列")
+        aligned_boards = boards.reindex(columns)
+        missing_boards = aligned_boards.isna() | (
+            aligned_boards.astype(str).str.strip() == ""
+        )
+        if missing_boards.any():
+            sample = [str(item) for item in columns[missing_boards.to_numpy()][:5]]
+            raise ValueError(f"账本缺少股票板块：{sample}")
+        rules = [rule_for(str(item)) for item in aligned_boards]
         valuation = close.astype("float64").ffill()
         order_price = (
             valuation.copy()
@@ -559,9 +578,8 @@ class LedgerPortfolio:
                     if not np.isfinite(open_row[position]) or open_row[position] <= 0:
                         continue
                     value = max(total_value, 0.0) * float(weights[position])
-                    desired[position] = (
-                        np.floor(value / open_row[position] / size_granularity)
-                        * size_granularity
+                    desired[position] = rules[position].normalize_target(
+                        shares[position], value / open_row[position]
                     )
             else:
                 desired[active] = shares[active] + np.nan_to_num(weights[active], nan=0.0)
@@ -578,8 +596,25 @@ class LedgerPortfolio:
                 key = str(columns[position])
                 quantity = delta[position]
                 base_price = open_row[position]
+                rule = rules[position]
+                if (
+                    allow_board_adjustment
+                    and size_type == "targetamount"
+                    and not rule.is_valid_order(shares[position], quantity)
+                ):
+                    # 固定点第一轮可能用上一轮开盘状态算出目标；按真实开盘持股归一化后，
+                    # 目标股数与计划不一致会由 _clipped_cells 记下，下一轮重新分配。
+                    desired[position] = rule.normalize_target(shares[position], desired[position])
+                    quantity = desired[position] - shares[position]
+                    if abs(quantity) < 0.5:
+                        continue
+                if not rule.is_valid_order(shares[position], quantity):
+                    raise ValueError(
+                        f"非法板块订单：{day.date()} {key} {rule.board} "
+                        f"持仓 {shares[position]:.0f} 股，申报 {quantity:.0f} 股"
+                    )
                 if quantity < 0:
-                    sell_quantity = min(abs(float(quantity)), float(shares[position]))
+                    sell_quantity = abs(float(quantity))
                     if not np.isfinite(sell_quantity) or sell_quantity <= 0.0:
                         continue
                     fill_price = base_price * (1.0 - float(slippage))
@@ -609,6 +644,8 @@ class LedgerPortfolio:
                             "Price": fill_price,
                             "Fees": fee,
                             "Side": "Sell",
+                            "Board": rule.board,
+                            "Order Valid": True,
                         }
                     )
                     order_id += 1
@@ -619,13 +656,31 @@ class LedgerPortfolio:
                     # 目标分配通常已经留好现金；这里仍按现金约束截断，防止坏配置穿透账本。
                     affordable = quantity
                     if quantity > 0 and buy_cost(affordable, fill_price, fee_rate, fixed) > cash + 1e-9:
-                        unit = max(float(size_granularity), 1.0)
-                        affordable = np.floor(
-                            max(cash - fixed, 0.0) / (fill_price * (1.0 + fee_rate) * unit)
-                        ) * unit
+                        max_order = rule.floor_buy_quantity(
+                            max(cash - fixed, 0.0) / (fill_price * (1.0 + fee_rate))
+                        )
+                        affordable = float(min(quantity, max_order))
+                        while affordable > 0 and buy_cost(
+                            affordable, fill_price, fee_rate, fixed
+                        ) > cash + 1e-9:
+                            affordable = float(rule.previous_buy_target(0.0, affordable))
+                        while affordable > 0:
+                            next_order = float(rule.previous_buy_target(0.0, affordable))
+                            step = affordable - next_order
+                            candidate = affordable + step
+                            if candidate > quantity or buy_cost(
+                                candidate, fill_price, fee_rate, fixed
+                            ) > cash + 1e-9:
+                                break
+                            affordable = candidate
                         affordable = min(affordable, quantity)
                     if affordable <= 0:
                         continue
+                    if not rule.is_valid_buy(affordable):
+                        raise ValueError(
+                            f"现金裁剪生成了非法板块订单：{day.date()} {key} "
+                            f"{rule.board} {affordable:.0f} 股"
+                        )
                     gross = affordable * fill_price
                     fee = trade_fee(gross, "Buy") if costs is not None else gross * fee_rate + fixed
                     cash -= gross + fee
@@ -648,6 +703,8 @@ class LedgerPortfolio:
                             "Price": fill_price,
                             "Fees": fee,
                             "Side": "Buy",
+                            "Board": rule.board,
+                            "Order Valid": True,
                         }
                     )
                     order_id += 1

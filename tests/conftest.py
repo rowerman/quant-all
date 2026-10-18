@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from backtest.data import MarketData
+from backtest.trading_rules import board_from_stock_code
 
 DEFAULT_DATES = pd.date_range("2024-01-29", periods=4, freq="B")
 DEFAULT_STOCKS = ["SH600000", "SZ000001", "SZ000002"]
@@ -34,6 +35,11 @@ def make_data():
             "is_limit_down": panel(False, bool),
             "total_mv": panel(1000.0, "float32"),
             "list_date": pd.Series(pd.Timestamp("2023-01-01"), index=columns),
+            "board": pd.Series(
+                [board_from_stock_code(code) for code in columns],
+                index=columns,
+                name="board",
+            ),
             "factors": factors if factors is not None else {"MOM_20": panel(1.0, "float32")},
         }
         fields.update(overrides)

@@ -30,7 +30,7 @@ T+1 在本执行口径下结构性满足：订单最早在信号日次一交易�
 ``liquidation_cells``），不受停牌与涨跌停规则约束。
 
 最终一遍的下单量不是目标百分比，而是由 :mod:`backtest.allocation` 按执行日开盘时刻的
-真实组合价值算出的**目标股数**：这样下单量天生是交易单位整数倍，也不会因为现金不足
+真实组合价值算出的**目标股数**：这样下单量天生符合所属板块的申报单位，也不会因为现金不足
 把排在后面的格子整笔裁掉。基准遍的费率矩阵由 :func:`baseline_inputs` 提供，它不依赖
 分配结果，因此基准遍可以先于分配运行。
 """
@@ -535,7 +535,7 @@ def build_order_plan(
     )
     price = execution_price(data.open, data.close.ffill(axis=0))
     shares, allocation, allocated_direction, allocation_stats = allocate_shares(
-        filtered, budget, cash_open, price, baseline_shares, execution.lot_size,
+        filtered, budget, cash_open, price, baseline_shares, data.board,
         execution.cash_buffer,
         carry=carry,
         costs=costs,
