@@ -60,6 +60,23 @@ def test_summary_without_benchmark_has_no_excess_keys():
     assert result["annual_return"] < 0
 
 
+def test_summary_separates_cash_and_economic_cost():
+    daily = _daily([1.0, 1.01])
+    daily["total_cost"] = daily["cost"] + 25.0
+    result = summarize(daily)
+    assert result["cash_cost"] == pytest.approx(200.0)
+    assert result["total_cost"] == pytest.approx(250.0)
+
+
+def test_summary_falls_back_when_cost_components_are_null():
+    daily = _daily([1.0, 1.01])
+    daily["total_cost"] = np.nan
+    daily["commission"] = np.nan
+    result = summarize(daily)
+    assert result["total_cost"] == pytest.approx(200.0)
+    assert "total_commission" not in result
+
+
 def test_summary_of_empty_frame_is_empty():
     assert summarize(pd.DataFrame()) == {}
 

@@ -1,4 +1,4 @@
-"""订单平移、规则过滤与费用矩阵。"""
+"""订单平移、规则过滤与订单计划。"""
 
 import numpy as np
 import pandas as pd
@@ -9,11 +9,10 @@ from backtest.orders import (
     apply_rules,
     build_order_plan,
     execution_targets,
-    fee_matrices,
     liquidation_cells,
     probe_matrices,
 )
-from backtest.specs import CostSpec, ExecutionSpec
+from backtest.specs import ExecutionSpec
 
 INDEX = pd.date_range("2024-01-29", periods=4, freq="B")
 COLUMNS = pd.Index(["SH600000", "SZ000001"], name="stock_code")
@@ -252,48 +251,6 @@ def test_real_target_wins_over_cash_carry(panel):
     assert filtered.loc[INDEX[2], "SH600000"] == 0.25
     assert rejection.empty
     assert stats["cash_retry_attempts"] == 0
-
-
-def test_fee_matrix_charges_stamp_tax_on_sell_only(panel):
-    costs = CostSpec(commission_rate=0.0003, minimum_commission=5.0, stamp_tax_rate=0.0005)
-    side = np.zeros((len(INDEX), len(COLUMNS)), dtype="int8")
-    value = np.zeros((len(INDEX), len(COLUMNS)), dtype="float32")
-    side[1, 0], value[1, 0] = 1, 100000.0   # 大额买入：只收佣金
-    side[2, 1], value[2, 1] = -1, 100000.0  # 大额卖出：佣金 + 印花税
-    keep = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
-    keep.iloc[1, 0] = keep.iloc[2, 1] = True
-    direction = np.zeros((len(INDEX), len(COLUMNS)), dtype="int8")
-    fees, fixed = fee_matrices(INDEX, COLUMNS, keep, side, value, direction, costs)
-    assert fees.iloc[1, 0] == pytest.approx(0.0003)
-    assert fees.iloc[2, 1] == pytest.approx(0.0008)
-    assert fixed.iloc[1, 0] == pytest.approx(0.0)
-    assert fees.iloc[3, 0] == pytest.approx(0.0)
-
-
-def test_minimum_commission_becomes_fixed_fee(panel):
-    costs = CostSpec(commission_rate=0.0003, minimum_commission=5.0)
-    side = np.zeros((len(INDEX), len(COLUMNS)), dtype="int8")
-    value = np.zeros((len(INDEX), len(COLUMNS)), dtype="float32")
-    side[1, 0], value[1, 0] = 1, 5000.0  # 佣金 1.5 元，不足 5 元下限
-    keep = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
-    keep.iloc[1, 0] = True
-    direction = np.zeros((len(INDEX), len(COLUMNS)), dtype="int8")
-    fees, fixed = fee_matrices(INDEX, COLUMNS, keep, side, value, direction, costs)
-    assert fixed.iloc[1, 0] == pytest.approx(3.5)
-    assert fees.iloc[1, 0] * 5000.0 + fixed.iloc[1, 0] == pytest.approx(5.0)
-
-
-def test_fee_matrix_uses_intent_direction_without_probe_record(panel):
-    costs = CostSpec(commission_rate=0.0003, stamp_tax_rate=0.0005)
-    side = np.zeros((len(INDEX), len(COLUMNS)), dtype="int8")
-    value = np.zeros((len(INDEX), len(COLUMNS)), dtype="float32")
-    direction = np.zeros((len(INDEX), len(COLUMNS)), dtype="int8")
-    direction[1, 0] = -1  # 探针没记录，但意图是卖出
-    keep = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
-    keep.iloc[1, 0] = True
-    fees, fixed = fee_matrices(INDEX, COLUMNS, keep, side, value, direction, costs)
-    assert fees.iloc[1, 0] == pytest.approx(0.0008)
-    assert fixed.iloc[1, 0] == pytest.approx(0.0)
 
 
 def test_build_order_plan_collects_stats(panel):

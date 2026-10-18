@@ -268,11 +268,17 @@ def test_minimum_commission_is_charged_per_order(make_data):
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 1_000_000.0)
     result = run_backtest(data, strategy, params)
     fees = result.orders["Fees"].astype(float)
-    value = result.orders["Size"].abs() * result.orders["Price"].astype(float)
-    sells = result.orders["Side"].astype(str).str.lower().eq("sell")
-    expected = np.maximum(value * costs.commission_rate, costs.minimum_commission) + np.where(
-        sells, value * costs.stamp_tax_rate, 0.0
-    )
+    expected = [
+        costs.charge(
+            row.trade_date,
+            row.Side,
+            abs(row.Size),
+            row.reference_price,
+            row.stock_code,
+            row.Board,
+        ).fees
+        for row in result.orders.itertuples(index=False)
+    ]
     assert np.allclose(fees.to_numpy(), expected, atol=1e-6)
 
 
@@ -499,12 +505,7 @@ def test_engine_applies_board_trading_units(
     strategy = _strategy(
         portfolio=PortfolioSpec(top_n=1),
         execution=ExecutionSpec(cash_buffer=0.0),
-        costs=CostSpec(
-            commission_rate=0.0,
-            minimum_commission=0.0,
-            stamp_tax_rate=0.0,
-            slippage=0.0,
-        ),
+        costs=CostSpec.zero(),
     )
     result = run_backtest(
         data, strategy, BacktestParams(str(dates[0].date()), str(dates[-1].date()), 100_000.0)
@@ -532,12 +533,7 @@ def test_star_buy_below_minimum_does_not_fall_back_to_100_shares(make_data):
     strategy = _strategy(
         portfolio=PortfolioSpec(top_n=1),
         execution=ExecutionSpec(cash_buffer=0.0),
-        costs=CostSpec(
-            commission_rate=0.0,
-            minimum_commission=0.0,
-            stamp_tax_rate=0.0,
-            slippage=0.0,
-        ),
+        costs=CostSpec.zero(),
     )
 
     result = run_backtest(
@@ -558,6 +554,61 @@ def test_engine_marks_allocation_table_for_every_target_cell(make_data):
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
     result = run_backtest(data, _strategy(), params)
     assert len(result.allocations) == result.metadata["calibration"]["planned_orders"]
+
+
+def test_engine_cost_components_are_additive_and_persisted(make_data):
+    """订单分项、日结果分项和经济成本必须能逐笔、逐日对上。"""
+    score, price = _frames()
+    data = make_data(
+        dates=DATES,
+        stocks=STOCKS,
+        open=price.astype("float32"),
+        close=(price + 0.5).astype("float32"),
+        factors={"MOM_20": score.astype("float32")},
+    )
+    result = run_backtest(
+        data,
+        _strategy(),
+        BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 1_000_000.0),
+    )
+    orders = result.orders
+    daily = result.daily
+    assert {
+        "reference_price", "gross_amount", "commission", "stamp_tax",
+        "transfer_fee", "slippage_cost", "total_cost",
+    } <= set(orders.columns)
+    assert {
+        "commission", "stamp_tax", "transfer_fee", "dividend_tax",
+        "slippage_cost", "cost", "total_cost",
+    } <= set(daily.columns)
+    assert np.allclose(
+        orders["Fees"].to_numpy(),
+        orders["commission"] + orders["stamp_tax"] + orders["transfer_fee"],
+    )
+    assert np.allclose(
+        orders["total_cost"].to_numpy(),
+        orders["Fees"] + orders["slippage_cost"],
+    )
+    assert np.allclose(
+        daily["cost"].to_numpy(),
+        daily["commission"] + daily["stamp_tax"] + daily["transfer_fee"] + daily["dividend_tax"],
+    )
+    assert np.allclose(
+        daily["total_cost"].to_numpy(),
+        daily["cost"] + daily["slippage_cost"],
+    )
+    for name in ("commission", "stamp_tax", "transfer_fee", "slippage_cost"):
+        by_day = (
+            orders[name]
+            .groupby(pd.DatetimeIndex(orders["trade_date"]))
+            .sum()
+            .reindex(daily.index)
+            .fillna(0.0)
+        )
+        assert np.allclose(by_day.to_numpy(), daily[name].to_numpy())
+    assert result.metrics["total_cost"] == pytest.approx(daily["total_cost"].sum())
+    assert result.metrics["cash_cost"] == pytest.approx(daily["cost"].sum())
+    assert result.metadata["cost_model"]["version"] == "cn_a_share_v1"
     assert set(result.allocations["status"]) <= {
         "allocated", "bumped", "unaffordable", "below_min_order", "no_price", "flat",
     }

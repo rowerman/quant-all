@@ -14,15 +14,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from backtest.costs import CostSpec, FeeCharge, order_cost_frame, round_cent
 from backtest.logging_conf import get_logger
-from backtest.specs import CostSpec
 from backtest.trading_rules import rule_for
 
 logger = get_logger("backtest.ledger")
 
 ORDER_COLUMNS = [
     "Order Id", "Column", "Timestamp", "Size", "Price", "Fees", "Side",
-    "Board", "Order Valid",
+    "Board", "Order Valid", "reference_price", "gross_amount", "commission",
+    "stamp_tax", "transfer_fee", "slippage_rate", "slippage_cost", "total_cost",
 ]
 POSITION_COLUMNS = [
     "Position Id",
@@ -47,6 +48,7 @@ ACTION_COLUMNS = [
     "cash_delta",
     "gross_dividend",
     "dividend_tax",
+    "tax_rate",
     "fractional_cash",
     "source",
     "source_event_key",
@@ -100,14 +102,8 @@ def _matrix(
 
 
 def _tax_rate(entry: pd.Timestamp, sell: pd.Timestamp) -> float:
-    """按持有期给出红利税税率。"""
-    entry = pd.Timestamp(entry).normalize()
-    sell = pd.Timestamp(sell).normalize()
-    if sell <= entry + pd.DateOffset(months=1):
-        return 0.20
-    if sell <= entry + pd.DateOffset(years=1):
-        return 0.10
-    return 0.0
+    """按历史政策和持有期给出红利税税率。"""
+    return CostSpec().dividend_tax_rate(entry, sell)
 
 
 def _lot_frame(lots: dict[str, list[TaxLot]]) -> pd.DataFrame:
@@ -224,8 +220,6 @@ class LedgerPortfolio:
         *,
         size_type: str = "amount",
         price: pd.DataFrame | None = None,
-        fees: pd.DataFrame | float = 0.0,
-        fixed_fees: pd.DataFrame | float = 0.0,
         slippage: float = 0.0,
         size_granularity: int = 100,
         init_cash: float = 1_000_000.0,
@@ -269,8 +263,10 @@ class LedgerPortfolio:
             else price.reindex(index=index, columns=columns).astype("float64")
         )
         targets = _matrix(size, index, columns, np.nan)
-        fee_matrix = _matrix(fees, index, columns, 0.0)
-        fixed_matrix = _matrix(fixed_fees, index, columns, 0.0)
+        cost_model = costs or CostSpec.zero()
+        effective_slippage = (
+            float(cost_model.slippage) if costs is not None else float(slippage)
+        )
         actions = (
             pd.DataFrame(columns=ACTION_COLUMNS)
             if corporate_actions is None
@@ -324,6 +320,7 @@ class LedgerPortfolio:
             cash_delta: float = 0.0,
             gross_dividend: float = 0.0,
             tax: float = 0.0,
+            tax_rate: float = 0.0,
             fractional: float = 0.0,
             source: str = "",
             event_key: str = "",
@@ -337,6 +334,7 @@ class LedgerPortfolio:
                     "cash_delta": float(cash_delta),
                     "gross_dividend": float(gross_dividend),
                     "dividend_tax": float(tax),
+                    "tax_rate": float(tax_rate),
                     "fractional_cash": float(fractional),
                     "source": source,
                     "source_event_key": event_key,
@@ -453,17 +451,20 @@ class LedgerPortfolio:
             quantity: float,
             exit_price: float,
             exit_fees: float,
-        ) -> float:
-            """按 FIFO 消耗批次，返回本笔卖出应结算的红利税。"""
+        ) -> tuple[float, float]:
+            """按 FIFO 消耗批次，返回本笔卖出的红利税和对应税前分红。"""
             items = lots.get(key, [])
             remaining = quantity
             tax = 0.0
+            gross = 0.0
             while remaining > 1e-9 and items:
                 item = items[0]
                 take = min(item.shares, remaining)
                 ratio = take / item.shares if item.shares else 0.0
                 if dividend_tax_mode == "fifo_deferred":
-                    tax += item.dividend_gross * ratio * _tax_rate(item.entry_date, day)
+                    dividend = item.dividend_gross * ratio
+                    gross += dividend
+                    tax += dividend * cost_model.dividend_tax_rate(item.entry_date, day)
                 entry_fees = item.entry_fees * ratio
                 entry_price = item.entry_price
                 pnl = take * (exit_price - entry_price) - entry_fees - exit_fees * take / quantity
@@ -490,26 +491,22 @@ class LedgerPortfolio:
                 remaining -= take
                 if item.shares <= 1e-9:
                     items.pop(0)
-            return tax
+            return tax, gross
 
-        def buy_cost(quantity: float, fill_price: float, fee_rate: float, fixed: float) -> float:
-            gross = quantity * fill_price
-            return gross + (
-                trade_fee(gross, "Buy")
-                if costs is not None
-                else gross * fee_rate + fixed
-            )
+        def order_charge(
+            day: pd.Timestamp,
+            key: str,
+            board: str,
+            side: str,
+            quantity: float,
+            base_price: float,
+        ) -> FeeCharge:
+            """按账本成交口径计算一笔订单的成本。"""
+            return cost_model.charge(day, side, quantity, base_price, key, board)
 
-        def trade_fee(gross: float, side: str) -> float:
-            """按实际成交方向计算一笔交易费用。"""
-            if costs is not None:
-                commission = max(
-                    float(costs.minimum_commission),
-                    gross * float(costs.commission_rate),
-                )
-                stamp = gross * float(costs.stamp_tax_rate) if side == "Sell" else 0.0
-                return commission + stamp
-            return 0.0
+        def buy_total_cost(quantity: float, charge: FeeCharge) -> float:
+            """买入占用的现金，包含成交额和现金费用。"""
+            return charge.fill_amount + charge.fees
 
         start_row = min(max(int(warmup_rows), 0), len(index))
         for row, day in enumerate(index):
@@ -588,7 +585,9 @@ class LedgerPortfolio:
             order_cells = [
                 position
                 for position in active
-                if abs(delta[position]) >= 0.5 and np.isfinite(open_row[position])
+                if abs(delta[position]) >= 0.5
+                and np.isfinite(open_row[position])
+                and open_row[position] > 0
             ]
             # 卖出先于买入，保证卖出所得可用于同一天的买入。
             order_cells.sort(key=lambda position: (delta[position] > 0, delta[position]))
@@ -617,22 +616,23 @@ class LedgerPortfolio:
                     sell_quantity = abs(float(quantity))
                     if not np.isfinite(sell_quantity) or sell_quantity <= 0.0:
                         continue
-                    fill_price = base_price * (1.0 - float(slippage))
-                    gross = sell_quantity * fill_price
-                    fee = (
-                        trade_fee(gross, "Sell")
-                        if costs is not None
-                        else gross * float(fee_matrix.iloc[row, position])
-                        + float(fixed_matrix.iloc[row, position])
+                    charge = order_charge(
+                        day, key, rule.board, "Sell", sell_quantity, base_price
                     )
-                    cash += gross - fee
+                    fill_price = charge.fill_price
+                    cash += charge.fill_amount - charge.fees
                     shares[position] -= sell_quantity
-                    tax = consume_lots(day, key, sell_quantity, fill_price, fee)
+                    raw_tax, gross_dividend = consume_lots(
+                        day, key, sell_quantity, fill_price, charge.fees
+                    )
+                    tax = round_cent(raw_tax) if dividend_tax_mode == "fifo_deferred" else 0.0
                     if tax > 1e-12:
                         cash -= tax
                         dividend_tax[row] += tax
                         add_action(
                             day, key, "dividend_tax", cash_delta=-tax, tax=tax,
+                            gross_dividend=gross_dividend,
+                            tax_rate=tax / gross_dividend if gross_dividend > 1e-12 else 0.0,
                             source="fifo", event_key="",
                         )
                     order_rows.append(
@@ -642,34 +642,53 @@ class LedgerPortfolio:
                             "Timestamp": day,
                             "Size": -sell_quantity,
                             "Price": fill_price,
-                            "Fees": fee,
+                            "Fees": charge.fees,
                             "Side": "Sell",
                             "Board": rule.board,
                             "Order Valid": True,
+                            "reference_price": charge.reference_price,
+                            "gross_amount": charge.gross_amount,
+                            "commission": charge.commission,
+                            "stamp_tax": charge.stamp_tax,
+                            "transfer_fee": charge.transfer_fee,
+                            "slippage_rate": charge.slippage_rate,
+                            "slippage_cost": charge.slippage_cost,
+                            "total_cost": charge.total_cost,
                         }
                     )
                     order_id += 1
                 else:
-                    fill_price = base_price * (1.0 + float(slippage))
-                    fee_rate = float(fee_matrix.iloc[row, position])
-                    fixed = float(fixed_matrix.iloc[row, position])
                     # 目标分配通常已经留好现金；这里仍按现金约束截断，防止坏配置穿透账本。
                     affordable = quantity
-                    if quantity > 0 and buy_cost(affordable, fill_price, fee_rate, fixed) > cash + 1e-9:
+                    charge = order_charge(
+                        day, key, rule.board, "Buy", affordable, base_price
+                    )
+                    if quantity > 0 and buy_total_cost(affordable, charge) > cash + 1e-9:
                         max_order = rule.floor_buy_quantity(
-                            max(cash - fixed, 0.0) / (fill_price * (1.0 + fee_rate))
+                            max(cash, 0.0)
+                            / (
+                                base_price
+                                * (1.0 + effective_slippage)
+                                * (1.0 + float(cost_model.commission_rate))
+                            )
                         )
                         affordable = float(min(quantity, max_order))
-                        while affordable > 0 and buy_cost(
-                            affordable, fill_price, fee_rate, fixed
-                        ) > cash + 1e-9:
+                        while affordable > 0:
+                            charge = order_charge(
+                                day, key, rule.board, "Buy", affordable, base_price
+                            )
+                            if buy_total_cost(affordable, charge) <= cash + 1e-9:
+                                break
                             affordable = float(rule.previous_buy_target(0.0, affordable))
                         while affordable > 0:
                             next_order = float(rule.previous_buy_target(0.0, affordable))
                             step = affordable - next_order
                             candidate = affordable + step
-                            if candidate > quantity or buy_cost(
-                                candidate, fill_price, fee_rate, fixed
+                            candidate_charge = order_charge(
+                                day, key, rule.board, "Buy", candidate, base_price
+                            )
+                            if candidate > quantity or buy_total_cost(
+                                candidate, candidate_charge
                             ) > cash + 1e-9:
                                 break
                             affordable = candidate
@@ -681,9 +700,11 @@ class LedgerPortfolio:
                             f"现金裁剪生成了非法板块订单：{day.date()} {key} "
                             f"{rule.board} {affordable:.0f} 股"
                         )
-                    gross = affordable * fill_price
-                    fee = trade_fee(gross, "Buy") if costs is not None else gross * fee_rate + fixed
-                    cash -= gross + fee
+                    charge = order_charge(
+                        day, key, rule.board, "Buy", affordable, base_price
+                    )
+                    fill_price = charge.fill_price
+                    cash -= charge.fill_amount + charge.fees
                     shares[position] += affordable
                     lots.setdefault(key, []).append(
                         TaxLot(
@@ -691,7 +712,7 @@ class LedgerPortfolio:
                             shares=affordable,
                             entry_date=day,
                             entry_price=fill_price,
-                            entry_fees=fee,
+                            entry_fees=charge.fees,
                         )
                     )
                     order_rows.append(
@@ -701,10 +722,18 @@ class LedgerPortfolio:
                             "Timestamp": day,
                             "Size": affordable,
                             "Price": fill_price,
-                            "Fees": fee,
+                            "Fees": charge.fees,
                             "Side": "Buy",
                             "Board": rule.board,
                             "Order Valid": True,
+                            "reference_price": charge.reference_price,
+                            "gross_amount": charge.gross_amount,
+                            "commission": charge.commission,
+                            "stamp_tax": charge.stamp_tax,
+                            "transfer_fee": charge.transfer_fee,
+                            "slippage_rate": charge.slippage_rate,
+                            "slippage_cost": charge.slippage_cost,
+                            "total_cost": charge.total_cost,
                         }
                     )
                     order_id += 1
@@ -745,9 +774,11 @@ class LedgerPortfolio:
                     }
                 )
                 if dividend_tax_mode == "fifo_deferred":
-                    dividend_pending[-1] += item.dividend_gross * _tax_rate(
+                    dividend_pending[-1] += item.dividend_gross * cost_model.dividend_tax_rate(
                         item.entry_date, index[-1]
                     )
+            if dividend_tax_mode == "fifo_deferred":
+                dividend_pending[-1] = round_cent(dividend_pending[-1])
 
         orders = pd.DataFrame(order_rows, columns=ORDER_COLUMNS)
         positions = pd.DataFrame(position_rows, columns=POSITION_COLUMNS)
@@ -864,13 +895,18 @@ class LedgerPortfolio:
         frame["return"] = frame["portfolio_value"].pct_change().fillna(0.0)
         frame["nav"] = frame["portfolio_value"] / float(frame["portfolio_value"].iloc[0])
         frame["drawdown"] = frame["nav"] / frame["nav"].cummax() - 1.0
+        costed = order_cost_frame(self._orders, frame.index)
+        for name in costed.columns:
+            frame[name] = costed[name]
+        frame["cost"] = (
+            frame["commission"]
+            + frame["stamp_tax"]
+            + frame["transfer_fee"]
+            + self._dividend_tax
+        )
+        frame["total_cost"] = frame["cost"] + frame["slippage_cost"]
         if not self._orders.empty:
             stamps = pd.DatetimeIndex(self._orders["Timestamp"])
-            frame["cost"] = (
-                self._orders["Fees"].astype(float).groupby(stamps).sum()
-                .reindex(frame.index).fillna(0.0)
-                + self._dividend_tax
-            )
             traded = (
                 self._orders["Size"].abs() * self._orders["Price"].astype(float)
             ).groupby(stamps).sum()
@@ -879,6 +915,5 @@ class LedgerPortfolio:
                 / frame["portfolio_value"].shift(1).replace(0, np.nan)
             )
         else:
-            frame["cost"] = self._dividend_tax
             frame["turnover"] = 0.0
         return frame

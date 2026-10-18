@@ -112,6 +112,12 @@ SUM_KEYS = (
     "dividend_income",
     "dividend_tax",
     "fractional_cash",
+    "commission_total",
+    "stamp_tax_total",
+    "transfer_fee_total",
+    "slippage_cost_total",
+    "economic_cost_total",
+    "total_cost_total",
 )
 MAX_KEYS = (
     "fee_matrix_max_diff",
@@ -797,6 +803,7 @@ def _stitch(
         "benchmark": benchmark_info,
         "price_adjust": first.metadata.get("price_adjust"),
         "execution_backend": first.metadata.get("execution_backend"),
+        "cost_model": first.metadata.get("cost_model"),
         "cash_retry_policy": first.metadata.get("cash_retry_policy"),
         "risk": first.metadata.get("risk"),
         "execution": {

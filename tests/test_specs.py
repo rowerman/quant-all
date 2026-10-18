@@ -22,8 +22,8 @@ def test_strategy_json_round_trip_is_stable():
     assert restored.config_hash == spec.config_hash
 
 
-def test_default_risk_does_not_change_legacy_strategy_hash():
-    assert StrategySpec().config_hash == "3d4c1c6c21fcb104"
+def test_default_strategy_hash_is_stable():
+    assert StrategySpec().config_hash == "03d03da50fc105e5"
 
 
 def test_dividend_tax_mode_is_validated_and_serialized():

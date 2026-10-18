@@ -18,9 +18,8 @@
 被现金缩小的买单（见 :mod:`backtest.allocation`）走同一套重试口径：补回目标由
 ``carry`` 传进来，之后每个交易日尝试一次，直到补齐或被下一次调仓目标覆盖。
 
-佣金、卖出印花税和最低佣金按**成交估计**校准：目标股数减去上一交易日收盘的目标持股
-就是这一笔的方向与金额（最终一遍每笔成交都恰好补齐到目标）。估计缺失时依次退回
-探针成交与意图方向，这类笔数计入 ``fallback_fee_orders``。
+成交费用由账本按统一成本模型逐笔计算；本模块只给出目标股数和预期成交方向，
+不再维护费率矩阵。``estimate_side`` 保留为成交方向审计字段。
 
 T+1 在本执行口径下结构性满足：订单最早在信号日次一交易日开盘执行，
 同一天不会对同一只股票既买又卖，因此不单独产生 T+1 拒单。
@@ -31,8 +30,7 @@ T+1 在本执行口径下结构性满足：订单最早在信号日次一交易�
 
 最终一遍的下单量不是目标百分比，而是由 :mod:`backtest.allocation` 按执行日开盘时刻的
 真实组合价值算出的**目标股数**：这样下单量天生符合所属板块的申报单位，也不会因为现金不足
-把排在后面的格子整笔裁掉。基准遍的费率矩阵由 :func:`baseline_inputs` 提供，它不依赖
-分配结果，因此基准遍可以先于分配运行。
+把排在后面的格子整笔裁掉。基准遍只负责提供规则状态和真实现金/持股，不依赖分配结果。
 """
 
 from __future__ import annotations
@@ -79,8 +77,6 @@ class OrderPlan:
     target_percent: pd.DataFrame
     shares: pd.DataFrame
     estimate_side: np.ndarray
-    fees: pd.DataFrame
-    fixed_fees: pd.DataFrame
     rejection: pd.DataFrame
     direction: np.ndarray
     liquidations: pd.DataFrame
@@ -380,80 +376,39 @@ def apply_rules(
     )
     return filtered, rejection, direction, executed, stats, state
 
-
-def fee_matrices(
-    index: pd.Index,
-    columns: pd.Index,
-    keep: pd.DataFrame,
-    side: np.ndarray,
-    value: np.ndarray,
-    direction: np.ndarray,
-    costs: CostSpec,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """按成交估计生成逐格费率与最低佣金差额。
-
-    VectorBT 的费率是「日期 × 股票」单元格口径，不区分买卖；这里用成交估计的
-    方向把卖出印花税只加在卖出格子上，最低佣金用 ``fixed_fees`` 补差额。
-
-    参数:
-        index: 面板日期索引。
-        columns: 面板股票列。
-        keep: 最终会下单的布尔矩阵。
-        side: 成交估计方向矩阵，1 买 / -1 卖 / 0 没有估计。
-        value: 成交估计金额矩阵。
-        direction: 意图方向矩阵，没有成交估计时用它判断买卖方向。
-        costs: 交易成本参数。
-    """
-    # 没有成交估计的格子用意图方向判断印花税；成交额未知时只收佣金、不加最低佣金差额
-    known = side != 0
-    sell = np.where(known, side < 0, direction < 0)
-    rate = np.where(sell, costs.commission_rate + costs.stamp_tax_rate, costs.commission_rate)
-    kept = keep.to_numpy()
-    fees = np.where(kept, rate, 0.0).astype("float32")
-    deficiency = np.maximum(0.0, costs.minimum_commission - costs.commission_rate * value)
-    fixed = np.where(known & kept, deficiency, 0.0).astype("float32")
-    return (
-        pd.DataFrame(fees, index=index, columns=columns),
-        pd.DataFrame(fixed, index=index, columns=columns),
-    )
-
-
 def baseline_inputs(
     data: MarketData,
     targets: pd.DataFrame,
     execution: ExecutionSpec,
     probe: pd.DataFrame,
-    costs: CostSpec | None = None,
     liquidations: pd.DataFrame | None = None,
     initial_state: RuleState | None = None,
     warmup_rows: int = 0,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """给出基准遍需要的输入：规则过滤后的目标权重与逐格费用矩阵。
+) -> tuple[pd.DataFrame, RuleState]:
+    """给出基准遍需要的输入：规则过滤后的目标权重与规则状态。
 
-    基准遍只负责提供执行日的真实现金与持股数（分配预算的来源），费用按状态机
-    意图方向估计即可，因此这一步不依赖分配结果，可以排在分配之前。
+    基准遍只负责提供执行日的真实现金与持股数（分配预算的来源），费用由账本
+    按成交逐笔计算，因此这一步不依赖分配结果，可以排在分配之前。
 
     参数:
         data: 回测输入面板。
         targets: 已平移到执行日的目标权重。
         execution: 交易限制。
         probe: 探针成交明细。
-        costs: 交易成本参数。
         liquidations: 外部给定的退市强制清算格（分块回测按整段区间算好）；None 表示按面板现算。
         initial_state: 分块回测从上一块继承的规则状态。
         warmup_rows: 预热行数，见 :func:`apply_rules`。
     """
-    filtered, fees, fixed_fees, _ = baseline_inputs_with_state(
+    filtered, state = baseline_inputs_with_state(
         data,
         targets,
         execution,
         probe,
-        costs,
         liquidations,
         initial_state,
         warmup_rows,
     )
-    return filtered, fees, fixed_fees
+    return filtered, state
 
 
 def baseline_inputs_with_state(
@@ -461,18 +416,15 @@ def baseline_inputs_with_state(
     targets: pd.DataFrame,
     execution: ExecutionSpec,
     probe: pd.DataFrame,
-    costs: CostSpec | None = None,
     liquidations: pd.DataFrame | None = None,
     initial_state: RuleState | None = None,
     warmup_rows: int = 0,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, RuleState]:
+) -> tuple[pd.DataFrame, RuleState]:
     """给出基准遍输入及规则状态，供整段流式执行跨块交接。
 
     参数与 :func:`baseline_inputs` 一致；额外返回本块结束时的规则状态。
     """
-    costs = costs or CostSpec()
-    side, value = probe_matrices(probe, targets.index, targets.columns)
-    filtered, _, intent, _, _, state = apply_rules(
+    filtered, _, _, _, _, state = apply_rules(
         data,
         targets,
         execution,
@@ -481,10 +433,7 @@ def baseline_inputs_with_state(
         initial_state,
         warmup_rows,
     )
-    fees, fixed_fees = fee_matrices(
-        targets.index, targets.columns, filtered.notna(), side, value, intent, costs
-    )
-    return filtered, fees, fixed_fees, state
+    return filtered, state
 
 
 def build_order_plan(
@@ -501,7 +450,6 @@ def build_order_plan(
     warmup_rows: int = 0,
     liquidations: pd.DataFrame | None = None,
     seed_shares: pd.Series | None = None,
-    seed_fixed_fees: pd.Series | None = None,
     capacity_exempt: pd.DataFrame | None = None,
     opening_shares: pd.DataFrame | None = None,
 ) -> OrderPlan:
@@ -522,19 +470,17 @@ def build_order_plan(
         warmup_rows: 预热行数，见 :func:`apply_rules`。
         liquidations: 外部给定的退市强制清算格；None 表示按面板现算。
         seed_shares: 分块回测的播种持股，写在预热行上；None 表示不需要播种。
-        seed_fixed_fees: 分块回测预热行的固定费用（等于播种成交金额的相反数），
-            使播种那笔的现金变化精确为 0。
         capacity_exempt: 不受成交额参与率限制的格子，当前用于退市强制清算。
         opening_shares: 执行日开盘前持股，已经包含当日公司行动；None 时退回旧平移口径。
     """
     costs = costs or CostSpec()
-    side, value = probe_matrices(probe, targets.index, targets.columns)
+    side, _ = probe_matrices(probe, targets.index, targets.columns)
     cells = liquidation_cells(data) if liquidations is None else liquidations
     filtered, rejection, direction, executed, rule_stats, rule_state = apply_rules(
         data, targets, execution, cells, carry, initial_state, warmup_rows
     )
     price = execution_price(data.open, data.close.ffill(axis=0))
-    shares, allocation, allocated_direction, allocation_stats = allocate_shares(
+    shares, allocation, _, allocation_stats = allocate_shares(
         filtered, budget, cash_open, price, baseline_shares, data.board,
         execution.cash_buffer,
         carry=carry,
@@ -570,26 +516,16 @@ def build_order_plan(
         seed_row = seed_shares.reindex(shares.columns).fillna(0.0)
         shares.iloc[0] = seed_row.where(seed_row > 0, np.nan).to_numpy(dtype="float64")
     # 成交估计：最终一遍每笔成交都恰好把持仓补齐到目标股数，因此「目标股数 -
-    # 上一交易日收盘的目标持股」就是这一笔的真实方向与金额；用基准遍的当日收盘
-    # 持股会错位一天（那边已经是执行后的持仓），股数差会系统性变成 0。
-    # 没有估计的格子退回探针成交额，两者都没有就按意图方向计费。
+    # 上一交易日收盘的目标持股」就是这一笔的预期方向；探针方向只作为审计兜底。
     previous_shares = (
         opening_shares.reindex(index=targets.index, columns=targets.columns).fillna(0.0)
         if opening_shares is not None
         else shares.ffill(axis=0).shift(1).fillna(0.0)
     )
-    prices = price.reindex(index=targets.index, columns=targets.columns).to_numpy(dtype="float64")
     delta = shares.to_numpy(dtype="float64") - previous_shares.to_numpy(dtype="float64")
     estimated_side = np.where(np.isfinite(delta), np.sign(delta), 0.0).astype("int8")
-    # 估算成交额时按买卖方向带上滑点，和 VectorBT 的实际成交价一致，最低佣金差额才算得准
-    slippage = float(costs.slippage)
-    traded_price = np.where(estimated_side > 0, prices * (1.0 + slippage), prices * (1.0 - slippage))
-    estimated_value = np.where(np.isfinite(delta), np.abs(delta) * traded_price, np.nan)
-    estimated_value = np.nan_to_num(estimated_value, nan=0.0)
     unknown = estimated_side == 0
     side_source = np.where(unknown, side, estimated_side).astype("int8")
-    value_source = np.where(unknown, value, estimated_value).astype("float64")
-    mixed = np.where(allocated_direction != 0, allocated_direction, direction).astype("int8")
     unavailable = allocation.loc[
         allocation["capacity_unavailable"].astype(bool), ["trade_date", "stock_code"]
     ].copy()
@@ -597,15 +533,6 @@ def build_order_plan(
         unavailable["reason"] = "liquidity_unavailable"
         rejection = pd.concat([rejection, unavailable[REJECTION_COLUMNS]], ignore_index=True)
         rejection = rejection.sort_values(["trade_date", "stock_code", "reason"]).reset_index(drop=True)
-    fees, fixed_fees = fee_matrices(
-        targets.index, targets.columns, filtered.notna(), side_source, value_source, mixed, costs
-    )
-    if seed_fixed_fees is not None and len(fixed_fees.index):
-        # 升成 float64 让预热行的「成交金额 + 固定费用」正好相加为 0；其它格子的数值不变
-        fixed_fees = fixed_fees.astype("float64")
-        fixed_fees.iloc[0] = (
-            seed_fixed_fees.reindex(fixed_fees.columns).fillna(0.0).to_numpy(dtype="float64")
-        )
     plan_stats = {
         "probe_orders": int((side != 0).sum()),
         "probe_buys": int((side > 0).sum()),
@@ -622,8 +549,6 @@ def build_order_plan(
         target_percent=filtered,
         shares=shares,
         estimate_side=side_source,
-        fees=fees,
-        fixed_fees=fixed_fees,
         rejection=rejection,
         direction=direction,
         liquidations=executed,

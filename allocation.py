@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.errors import ExecutionError
-from backtest.specs import CostSpec
+from backtest.costs import CostSpec, exchange_for
 from backtest.trading_rules import BoardRule, rule_for
 
 # 逐格分配状态：正常分配 / 余量补到最小申报量 / 最小申报量装不下 / 缺执行价不下单 / 目标 0
@@ -199,12 +199,7 @@ def allocate_shares(
         raise ExecutionError(f"现金缓冲必须在 [0, 1) 之间：{cash_buffer}")
     if max_participation_rate is not None and amount_cny is None:
         raise ExecutionError("启用成交额参与率时缺少未复权成交额面板")
-    costs = costs or CostSpec(
-        commission_rate=0.0,
-        minimum_commission=0.0,
-        stamp_tax_rate=0.0,
-        slippage=0.0,
-    )
+    costs = costs or CostSpec.zero()
     index = pd.DatetimeIndex(targets.index)
     columns = targets.columns
     rules = _rules_for(columns, boards)
@@ -294,30 +289,41 @@ def allocate_shares(
         # 口径用执行日开盘时刻的真实持股（上一交易日收盘），被规则拦下的持仓卖不掉，
         # 它的市值换不到现金，只能少买。
         tradable_price = np.where(tradable, cell_price, 0.0)
+        cell_codes = np.array(columns[cells], dtype=object)
+        cell_boards = np.array([rules[cell].board for cell in cells], dtype=object)
+        cell_exchanges = np.array(
+            [
+                exchange_for(code, board)
+                for code, board in zip(cell_codes, cell_boards)
+            ],
+            dtype=object,
+        )
         previous_held = previous[row, cells]
         previous_value = previous_held * tradable_price
         target_value = cell_shares * tradable_price
         buy_delta = np.maximum(cell_shares - previous_held, 0.0)
         sell_delta = np.maximum(previous_held - cell_shares, 0.0)
 
-        def buy_cost(delta: np.ndarray) -> np.ndarray:
-            traded = delta * tradable_price * (1.0 + float(costs.slippage))
-            commission = np.where(
-                delta > 0,
-                np.maximum(float(costs.minimum_commission), traded * float(costs.commission_rate)),
-                0.0,
+        def charges_for(delta: np.ndarray, sell: bool = False):
+            active = delta > 0.0
+            directions = np.where(active, -1 if sell else 1, 0).astype("int8")
+            return costs.charge_arrays(
+                index[row],
+                directions,
+                np.abs(delta),
+                tradable_price,
+                cell_codes,
+                cell_boards,
+                cell_exchanges,
             )
-            return traded + commission
+
+        def buy_cost(delta: np.ndarray) -> np.ndarray:
+            charge = charges_for(delta)
+            return np.where(delta > 0.0, charge.fill_amount + charge.fees, 0.0)
 
         def sell_proceeds(delta: np.ndarray) -> np.ndarray:
-            traded = delta * tradable_price * (1.0 - float(costs.slippage))
-            commission = np.where(
-                delta > 0,
-                np.maximum(float(costs.minimum_commission), traded * float(costs.commission_rate)),
-                0.0,
-            )
-            tax = traded * float(costs.stamp_tax_rate)
-            return traded - commission - tax
+            charge = charges_for(delta, sell=True)
+            return np.where(delta > 0.0, charge.fill_amount - charge.fees, 0.0)
 
         buy_need = float(buy_cost(buy_delta).sum())
         sell_funds = float(sell_proceeds(sell_delta).sum())
@@ -347,11 +353,9 @@ def allocate_shares(
                     ],
                     dtype="float64",
                 )
-                marginal = (
-                    (cell_shares[candidates] - previous_targets)
-                    * tradable_price[candidates]
-                    * (1.0 + float(costs.slippage))
-                )
+                marginal_delta = np.zeros(len(cells), dtype="float64")
+                marginal_delta[candidates] = cell_shares[candidates] - previous_targets
+                marginal = buy_cost(marginal_delta)
                 selected = candidates[int(np.argmax(marginal))]
                 cell_shares[selected] = rules[cells[selected]].previous_buy_target(
                     previous_held[selected], cell_shares[selected]

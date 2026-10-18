@@ -114,7 +114,9 @@ run_backtest
 
 `liquidation_cells(data) -> DataFrame`（`orders.py:111-144`）只处理区间内退市且最后有效行情日不是窗口末日的股票，返回强卖日期、参考价格和退市日期。
 
-`fee_matrices(...) -> tuple[DataFrame, DataFrame]`（`orders.py:266-300`）用探针方向决定卖出印花税，用探针成交额计算最低佣金差额。探针未知时可按意图方向判断税率，但不补最低佣金差额。
+成本不再由 `orders.py` 生成费率矩阵。`costs.py` 的 `CostSpec.charge()` 与
+`charge_arrays()` 统一处理佣金、最低佣金、历史印花税、历史过户费和历史红利税，
+账本成交与资金分配共用同一套规则。
 
 ### 关键分支
 

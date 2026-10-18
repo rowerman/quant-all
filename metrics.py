@@ -64,8 +64,16 @@ def summarize(daily: pd.DataFrame) -> dict:
         "calmar": _ratio(annual_return, abs(max_drawdown)) if max_drawdown else None,
         "daily_win_rate": _number((returns > 0).mean()),
         "turnover_annual": _number(daily["turnover"].astype(float).sum() * TRADING_DAYS / days),
-        "total_cost": _number(daily["cost"].astype(float).sum()),
+        "cash_cost": _number(daily["cost"].astype(float).sum()),
+        "total_cost": _number(
+            daily["total_cost"].fillna(daily["cost"]).astype(float).sum()
+            if "total_cost" in daily.columns and daily["total_cost"].notna().any()
+            else daily["cost"].astype(float).sum()
+        ),
     }
+    for name in ("commission", "stamp_tax", "transfer_fee", "dividend_tax", "slippage_cost"):
+        if name in daily.columns and daily[name].notna().any():
+            result[f"total_{name}"] = _number(daily[name].astype(float).sum())
     monthly = (1.0 + returns).groupby(daily.index.to_period("M")).prod() - 1.0
     result["monthly_win_rate"] = _number((monthly > 0).mean()) if len(monthly) else None
     result["months"] = int(len(monthly))

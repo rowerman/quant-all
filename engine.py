@@ -42,6 +42,7 @@ from backtest.allocation import (
     liquidity_retry_filled,
 )
 from backtest.config import MAX_ALLOCATION_ITERATIONS
+from backtest.costs import cost_model_summary, order_cost_frame
 from backtest.data import PRICE_ADJUST, MarketData
 from backtest.errors import ExecutionError
 from backtest.logging_conf import get_logger
@@ -87,15 +88,12 @@ class ChunkState:
 class SeedPlan:
     """跨块播种的执行口径。
 
-    ``shares`` 是上一块收盘持股，``percent`` 是预热行的目标百分比（基准遍与探针遍用），
-    ``fixed_fees`` 是预热行的固定费用：数值等于播种成交金额的相反数，使播种那笔交易的
-    现金变化精确为 0（成交金额与固定费用在浮点里正好相加为 0），组合因此从上一块收盘
-    的现金与持股起步，结果与不分块逐位一致。
+    ``shares`` 是上一块收盘持股，``percent`` 是预热行的目标百分比（基准遍与探针遍用）。
+    预热行只提供价格口径，账本从 ``initial_state`` 恢复现金与持股，不执行订单。
     """
 
     shares: pd.Series
     percent: pd.Series
-    fixed_fees: pd.Series
 
 
 @dataclass(frozen=True)
@@ -132,12 +130,11 @@ def _run_portfolio(
     targets: pd.DataFrame,
     params: BacktestParams,
     strategy: StrategySpec,
-    fees: pd.DataFrame | None,
-    fixed_fees: pd.DataFrame | None,
     size_type: str = "targetpercent",
     init_cash: float | None = None,
     initial_state: LedgerSnapshot | None = None,
     warmup_rows: int = 0,
+    charge_costs: bool = True,
 ):
     """调用原始价执行账本。
 
@@ -148,13 +145,12 @@ def _run_portfolio(
             ``targetpercent`` 时是目标权重，为 ``targetamount`` 时是目标股数。
         params: 区间与初始资金。
         strategy: 策略配置。
-        fees: 逐格费率；None 表示免费。
-        fixed_fees: 逐格固定费用；None 表示没有。
         size_type: 目标权重 / 目标股数 / 有符号订单股数。
         init_cash: 初始资金；None 表示用回测参数里的初始资金。分块回测从第二块起
             用「交接现金 + 交接持仓按播种价估值」当初始资金。
         initial_state: 上一块交接的账本状态。
         warmup_rows: 预热行数；这些行只保留价格，不执行订单。
+        charge_costs: 是否按策略成本计费；探针遍传 False。
     """
     try:
         return LedgerPortfolio.from_orders(
@@ -162,16 +158,13 @@ def _run_portfolio(
             size=targets,
             size_type=size_type,
             price=data.open,
-            fees=0.0 if fees is None else fees,
-            fixed_fees=0.0 if fixed_fees is None else fixed_fees,
-            slippage=strategy.costs.slippage,
             size_granularity=strategy.execution.lot_size,
             init_cash=float(params.init_cash if init_cash is None else init_cash),
             cash_sharing=True,
             call_seq="auto",
             corporate_actions=data.corporate_actions,
             dividend_tax_mode=strategy.costs.dividend_tax_mode,
-            costs=None if fees is None else strategy.costs,
+            costs=strategy.costs if charge_costs else None,
             boards=data.board,
             allow_board_adjustment=True,
             initial_state=initial_state,
@@ -205,7 +198,13 @@ def _order_records(portfolio, label: str) -> pd.DataFrame:
     except Exception as error:
         raise ExecutionError(f"无法提取 VectorBT 订单记录：{error}") from error
     if frame.empty:
-        return pd.DataFrame(columns=["Order Id", "stock_code", "trade_date", "Size", "Price", "Fees", "Side"])
+        return pd.DataFrame(
+            columns=[
+                "Order Id", "stock_code", "trade_date", "Size", "Price", "Fees", "Side",
+                "Board", "Order Valid", "reference_price", "gross_amount", "commission",
+                "stamp_tax", "transfer_fee", "slippage_rate", "slippage_cost", "total_cost",
+            ]
+        )
     frame = frame.rename(columns={"Column": "stock_code", "Timestamp": "trade_date"})
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
     logger.info("%s：订单 %d 笔", label, len(frame))
@@ -278,17 +277,24 @@ def derive_daily(
     daily["return"] = daily["portfolio_value"].pct_change().fillna(0.0)
     daily["nav"] = daily["portfolio_value"] / float(daily["portfolio_value"].iloc[0])
     daily["drawdown"] = daily["nav"] / daily["nav"].cummax() - 1.0
+    costed = order_cost_frame(orders, daily.index)
+    for name in costed.columns:
+        daily[name] = costed[name]
+    daily["cost"] = (
+        daily["commission"]
+        + daily["stamp_tax"]
+        + daily["transfer_fee"]
+        + daily["dividend_tax"]
+    )
+    daily["total_cost"] = daily["cost"] + daily["slippage_cost"]
     if not orders.empty:
         stamp = pd.DatetimeIndex(orders["trade_date"])
-        trading_cost = orders["Fees"].astype(float).groupby(stamp).sum().reindex(daily.index).fillna(0.0)
-        daily["cost"] = trading_cost + daily["dividend_tax"]
         traded = (orders["Size"].abs() * orders["Price"].astype(float)).groupby(stamp).sum()
         daily["turnover"] = (
             traded.reindex(daily.index).fillna(0.0)
             / daily["portfolio_value"].shift(1).replace(0, np.nan)
         )
     else:
-        daily["cost"] = daily["dividend_tax"]
         daily["turnover"] = 0.0
     if benchmark is not None:
         benchmark = benchmark.reindex(daily.index).astype(float)
@@ -341,34 +347,53 @@ def _holdings_frame(portfolio) -> pd.DataFrame:
 
 def _fee_witnesses(
     orders: pd.DataFrame,
-    plan: OrderPlan,
     costs,
 ) -> dict:
-    """核对最终成交的费用是否按逐格费率矩阵收准。
+    """核对最终成交的费用是否按统一成本模型收准。
 
     参数:
         orders: 最终一遍的成交明细。
-        plan: 订单计划，含费率矩阵与成交估计方向。
+        costs: 交易成本参数。
     """
     if orders.empty:
-        return {"final_orders": 0, "fallback_fee_orders": 0, "fee_matrix_max_diff": 0.0}
-    rows = plan.fees.index.get_indexer(pd.DatetimeIndex(orders["trade_date"]))
-    cols = plan.fees.columns.get_indexer(orders["stock_code"])
-    if (rows < 0).any() or (cols < 0).any():
-        raise ExecutionError("成交明细落在目标面板之外，无法核对费用")
-    value = orders["Size"].abs().to_numpy() * orders["Price"].astype(float).to_numpy()
-    sells = orders["Side"].astype(str).str.lower().eq("sell").to_numpy()
-    expected = np.maximum(
-        float(costs.minimum_commission),
-        value * float(costs.commission_rate),
-    ) + np.where(sells, value * float(costs.stamp_tax_rate), 0.0)
+        return {
+            "final_orders": 0,
+            "final_buys": 0,
+            "final_sells": 0,
+            "fallback_fee_orders": 0,
+            "fee_matrix_max_diff": 0.0,
+            "commission_total": 0.0,
+            "stamp_tax_total": 0.0,
+            "transfer_fee_total": 0.0,
+            "slippage_cost_total": 0.0,
+            "economic_cost_total": 0.0,
+        }
+    expected_fees = []
+    for row in orders.itertuples(index=False):
+        charge = costs.charge(
+            pd.Timestamp(row.trade_date),
+            str(row.Side),
+            abs(float(row.Size)),
+            float(row.reference_price),
+            str(row.stock_code),
+            str(row.Board),
+        )
+        expected_fees.append(charge.fees)
+    expected = np.asarray(expected_fees, dtype="float64")
     actual = orders["Fees"].astype(float).to_numpy()
     return {
         "final_orders": int(len(orders)),
         "final_buys": int(orders["Side"].astype(str).str.lower().eq("buy").sum()),
         "final_sells": int(orders["Side"].astype(str).str.lower().eq("sell").sum()),
         "fallback_fee_orders": 0,
-        "fee_matrix_max_diff": float(np.max(np.abs(expected - actual))) if len(actual) else 0.0,
+        "fee_matrix_max_diff": float(np.max(np.abs(expected - actual))),
+        "commission_total": float(orders["commission"].astype(float).sum()),
+        "stamp_tax_total": float(orders["stamp_tax"].astype(float).sum()),
+        "transfer_fee_total": float(orders["transfer_fee"].astype(float).sum()),
+        "slippage_cost_total": float(orders["slippage_cost"].astype(float).sum()),
+        "economic_cost_total": float(
+            orders["Fees"].astype(float).sum() + orders["slippage_cost"].astype(float).sum()
+        ),
     }
 
 
@@ -545,11 +570,9 @@ def seed_inputs(
     # 百分比略微放大一点，保证 VectorBT 再把百分比换算成股数并向下取整到 100 股时
     # 正好落在交接持股上（浮点误差可能让结果差一个最小变动单位）
     percent = (shares * price_row / float(initial_state.cash) * (1.0 + 1e-12)).astype("float64")
-    cost = shares * (price_row * (1.0 + float(slippage)))
     return SeedPlan(
         shares=shares,
         percent=percent,
-        fixed_fees=(-cost).where(held, 0.0).astype("float64"),
     )
 
 
@@ -576,27 +599,6 @@ def _drop_warmup_orders(orders: pd.DataFrame, index: pd.Index, warmup_rows: int)
     kept = orders.loc[pd.DatetimeIndex(orders["trade_date"]) >= index[warmup_rows]].copy()
     kept["Order Id"] = np.arange(len(kept), dtype="int64")
     return kept.reset_index(drop=True)
-
-
-def _with_seed_fixed_fees(
-    fixed_fees: pd.DataFrame | None,
-    index: pd.Index,
-    columns: pd.Index,
-    plan: SeedPlan,
-) -> pd.DataFrame:
-    """把预热行的固定费用写进费用矩阵；没有矩阵时按面板形状新建一个。
-
-    写进去之前统一按 ``float64`` 存放：费率矩阵原本是 ``float32``，升成 ``float64`` 只是
-    精确提升，不会改变其它格子的数值，但能让「成交金额 + 固定费用」正好相加为 0。
-    """
-    frame = (
-        pd.DataFrame(0.0, index=index, columns=columns)
-        if fixed_fees is None
-        else fixed_fees
-    ).astype("float64")
-    values = plan.fixed_fees.reindex(columns).fillna(0.0).to_numpy(dtype="float64")
-    frame.iloc[0] = values
-    return frame
 
 
 def _check_seed_cash(state_cash: pd.Series, initial_state: "ChunkState", label: str) -> None:
@@ -707,11 +709,10 @@ def run_backtest(
         targets,
         params,
         strategy,
-        None,
-        None,
         init_cash=init_cash,
         initial_state=initial_ledger,
         warmup_rows=warmup_rows,
+        charge_costs=False,
     )
     probe_orders = _probe_frame(_order_records(probe, "探针运行"))
     if warmup_rows:
@@ -722,12 +723,11 @@ def run_backtest(
 
     # 基准遍：规则照过滤、费用照收，只是按留了缓冲的目标百分比下单，用来提供分配预算
     budget_scale = 1.0 - float(strategy.execution.cash_buffer)
-    baseline_targets, baseline_fees, baseline_fixed = baseline_inputs(
+    baseline_targets, _ = baseline_inputs(
         data,
         targets,
         strategy.execution,
         probe_orders,
-        strategy.costs,
         liquidations,
         None if initial_state is None else initial_state.rule_state,
         warmup_rows,
@@ -735,7 +735,7 @@ def run_backtest(
     baseline_size = baseline_targets * budget_scale
     baseline = _run_portfolio(
         data, valuation, baseline_size, params, strategy,
-        baseline_fees, baseline_fixed, init_cash=init_cash,
+        init_cash=init_cash,
         initial_state=initial_ledger,
         warmup_rows=warmup_rows,
     )
@@ -752,7 +752,7 @@ def run_backtest(
 
     # 分配要迭代到自洽：目标股数依赖「执行日开盘时刻的真实持仓与现金」，
     # 而这份状态只有跑完一遍才拿得到。目标股数与补回目标都不再变化时，
-    # 上一遍的成交与净值就是最终结果（同样的目标股数与费率矩阵必然跑出同样的组合）。
+    # 上一遍的成交与净值就是最终结果（同样的目标股数与成本模型必然跑出同样的组合）。
     #
     # 被现金缩小的买单是下一交易日的补回目标，而补回目标又依赖分配结果，
     # 因此两层一起迭代：首轮用「一直补到下次调仓」当种子把整条链铺开，
@@ -836,8 +836,8 @@ def run_backtest(
                    if key not in ALLOCATION_STAT_KEYS},
             )
         portfolio = _run_portfolio(
-            data, valuation, candidate.shares, params, strategy, candidate.fees,
-            candidate.fixed_fees, size_type="targetamount", init_cash=init_cash,
+            data, valuation, candidate.shares, params, strategy,
+            size_type="targetamount", init_cash=init_cash,
             initial_state=initial_ledger,
             warmup_rows=warmup_rows,
         )
@@ -915,7 +915,7 @@ def run_backtest(
 
     orders = _order_records(portfolio, "最终运行")
     orders = _drop_warmup_orders(orders, data.index, warmup_rows)
-    witnesses = {**_fee_witnesses(orders, plan, strategy.costs), **_clipped_cells(plan, portfolio)}
+    witnesses = {**_fee_witnesses(orders, strategy.costs), **_clipped_cells(plan, portfolio)}
     _notify(progress, "execute", **witnesses)
 
     daily = _daily_frame(portfolio, orders, data.benchmark)
@@ -970,6 +970,7 @@ def run_backtest(
             portfolio.dividend_tax_pending().iloc[-1]
         ) if hasattr(portfolio, "dividend_tax_pending") and len(daily) else 0.0,
         "fractional_cash": float(daily.get("fractional_cash", pd.Series(dtype=float)).sum()),
+        "total_cost_total": float(daily.get("total_cost", pd.Series(dtype=float)).sum()),
         **risk_stats,
         **plan.plan_stats,
         **witnesses,
@@ -1002,6 +1003,7 @@ def run_backtest(
         "execution": execution_metadata,
         "versions": data.versions,
         "execution_backend": "ledger",
+        "cost_model": cost_model_summary(strategy.costs),
         "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),
         "panel": {"trading_days": int(len(data.index)), "stocks": int(len(data.columns))},
         "rank_rows": int(ranks.notna().sum().sum()),

@@ -245,6 +245,59 @@ def test_get_metrics_recomputes_from_daily(store):
     assert metrics["trading_days"] == 2
 
 
+def test_cost_components_are_persisted_and_old_daily_still_summarizes(store):
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-02"))
+    daily = pd.DataFrame(
+        {
+            "portfolio_value": [1_000_000.0, 999_000.0],
+            "cash": [0.0, 0.0],
+            "nav": [1.0, 0.999],
+            "return": [0.0, -0.001],
+            "drawdown": [0.0, -0.001],
+            "cost": [20.0, 10.0],
+            "commission": [15.0, 5.0],
+            "stamp_tax": [4.0, 4.0],
+            "transfer_fee": [1.0, 1.0],
+            "dividend_tax": [0.0, 0.0],
+            "slippage_cost": [2.0, 1.0],
+            "total_cost": [22.0, 11.0],
+            "turnover": [0.0, 0.01],
+        },
+        index=pd.date_range("2024-01-01", periods=2),
+    )
+    orders = pd.DataFrame(
+        {
+            "stock_code": ["SH600000"],
+            "trade_date": [pd.Timestamp("2024-01-02")],
+            "Size": [100.0],
+            "Price": [10.0],
+            "Fees": [10.0],
+            "Side": ["Sell"],
+            "Board": ["主板"],
+            "Order Valid": [True],
+            "reference_price": [10.0],
+            "gross_amount": [1000.0],
+            "commission": [5.0],
+            "stamp_tax": [4.0],
+            "transfer_fee": [1.0],
+            "slippage_rate": [0.0005],
+            "slippage_cost": [0.5],
+            "total_cost": [10.5],
+        }
+    )
+    store.finish_run(run_id, _result(daily=daily, orders=orders))
+    daily_rows = store.get_result_table(run_id, "daily")
+    assert {"commission", "stamp_tax", "transfer_fee", "slippage_cost", "total_cost"} <= set(
+        daily_rows[0]
+    )
+    order_rows = store.get_result_table(run_id, "order")
+    assert {"stamp_tax", "transfer_fee", "slippage_cost", "total_cost"} <= set(order_rows[0])
+    metrics = store.get_metrics(run_id)
+    assert metrics["total_cost"] == pytest.approx(33.0)
+    assert metrics["cash_cost"] == pytest.approx(30.0)
+
+
 def test_get_metrics_without_daily_raises(store):
     strategy_id, version = store.create_strategy(StrategySpec())
     run_id = store.start_run(strategy_id, version, BacktestParams("2024-01-01", "2024-01-02"))

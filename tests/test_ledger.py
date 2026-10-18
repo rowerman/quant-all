@@ -105,7 +105,7 @@ def test_fifo_dividend_tax_is_deducted_when_lots_are_sold():
     # 第一天买 100，第二天登记分红 50，第三天卖出；持有不足一个月，税率 20%。
     targets = _prices([100.0, 100.0, 0.0, 0.0], dates)
     actions = _action(dates, cash_div_per_share=0.5, pay_date=dates[2])
-    costs = CostSpec(commission_rate=0.0, minimum_commission=0.0, stamp_tax_rate=0.0, slippage=0.0)
+    costs = CostSpec.zero()
 
     portfolio = LedgerPortfolio.from_orders(
         close, targets, size_type="targetamount", price=close,
@@ -122,7 +122,7 @@ def test_disabled_dividend_tax_keeps_gross_cash():
     close = _prices([10.0, 10.0, 9.5, 9.5], dates)
     targets = _prices([100.0, 100.0, 0.0, 0.0], dates)
     actions = _action(dates, cash_div_per_share=0.5, pay_date=dates[2])
-    costs = CostSpec(commission_rate=0.0, minimum_commission=0.0, stamp_tax_rate=0.0, slippage=0.0)
+    costs = CostSpec.zero()
 
     portfolio = LedgerPortfolio.from_orders(
         close, targets, size_type="targetamount", price=close,
@@ -132,6 +132,40 @@ def test_disabled_dividend_tax_keeps_gross_cash():
 
     assert portfolio.dividend_tax().sum() == 0.0
     assert portfolio.cash().iloc[-1] == pytest.approx(1_000.0)
+
+
+@pytest.mark.parametrize(
+    ("dates", "stamp"),
+    [
+        (("2016-01-04", "2016-01-05"), 10.00),
+        (("2023-08-24", "2023-08-25"), 10.00),
+        (("2023-08-28", "2023-08-29"), 5.00),
+        (("2026-01-05", "2026-01-06"), 5.00),
+    ],
+)
+def test_ledger_charges_historical_stamp_tax(dates, stamp):
+    index = pd.DatetimeIndex(dates)
+    close = _prices([10.0, 10.0], index, columns=("SH600000",))
+    targets = _prices([1000.0, 0.0], index, columns=("SH600000",))
+    portfolio = LedgerPortfolio.from_orders(
+        close,
+        targets,
+        size_type="targetamount",
+        price=close,
+        init_cash=20_000.0,
+        boards=pd.Series({"SH600000": BOARD_MAIN}),
+        costs=CostSpec(),
+    )
+    orders = portfolio.orders.records_readable
+    sell = orders.loc[orders["Side"] == "Sell"].iloc[0]
+    assert sell["stamp_tax"] == pytest.approx(stamp)
+    assert sell["transfer_fee"] > 0
+    assert sell["Fees"] == pytest.approx(
+        sell["commission"] + sell["stamp_tax"] + sell["transfer_fee"]
+    )
+    assert sell["total_cost"] == pytest.approx(
+        sell["Fees"] + sell["slippage_cost"]
+    )
 
 
 def test_snapshot_carries_lots_and_receivables_across_chunks():
@@ -196,10 +230,7 @@ def test_star_can_sell_odd_lot_only_when_clearing_position():
     portfolio = LedgerPortfolio.from_orders(
         close, targets, size_type="targetamount", price=close,
         init_cash=1_000.0, initial_state=state,
-        boards=pd.Series({"A": BOARD_STAR}), costs=CostSpec(
-            commission_rate=0.0, minimum_commission=0.0,
-            stamp_tax_rate=0.0, slippage=0.0,
-        ),
+        boards=pd.Series({"A": BOARD_STAR}), costs=CostSpec.zero(),
     )
 
     assert portfolio.orders.records_readable["Size"].tolist() == [-201.0]
