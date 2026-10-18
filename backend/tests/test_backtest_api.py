@@ -136,6 +136,59 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
     assert "stamp_tax_rate" not in payload["costs"]
 
 
+def test_backtest_detail_exposes_input_snapshot(client, store):
+    strategy_id, version = store.create_strategy(StrategySpec())
+    snapshot = {
+        "snapshot_id": "c" * 64,
+        "schema_version": "backtest_input_snapshot_v1",
+        "created_at": "2026-10-18T00:00:00+00:00",
+        "scope": {"start": "2024-01-01", "end": "2024-01-02", "universe": "all_a"},
+        "components": {"market": {"digest": "m"}},
+    }
+    store.record_snapshot(snapshot)
+    run_id = store.start_run(
+        strategy_id,
+        version,
+        BacktestParams("2024-01-01", "2024-01-02"),
+        snapshot_id=snapshot["snapshot_id"],
+    )
+    daily = pd.DataFrame(
+        {
+            "portfolio_value": [1_000_000.0, 1_010_000.0],
+            "cash": [0.0, 0.0],
+            "nav": [1.0, 1.01],
+            "return": [0.0, 0.01],
+            "drawdown": [0.0, 0.0],
+            "cost": [0.0, 0.0],
+            "turnover": [0.0, 0.0],
+            "benchmark_return": [0.0, 0.0],
+            "benchmark_nav": [1.0, 1.0],
+            "excess_return": [0.0, 0.0],
+        },
+        index=pd.to_datetime(["2024-01-01", "2024-01-02"]),
+    )
+    result = BacktestResult(
+        portfolio=object(),
+        daily=daily,
+        orders=pd.DataFrame(),
+        positions=pd.DataFrame(),
+        holdings=pd.DataFrame(),
+        target_weights=pd.DataFrame(),
+        rejections=pd.DataFrame(),
+        metrics={"total_return": 0.01},
+        metadata={
+            "strategy_hash": "hash",
+            "snapshot_id": snapshot["snapshot_id"],
+            "snapshot": snapshot,
+        },
+    )
+    store.finish_run(run_id, result)
+
+    assert client.get(f"/api/backtests/{run_id}").json()["snapshot_id"] == snapshot["snapshot_id"]
+    listed = client.get("/api/backtests").json()
+    assert listed[0]["snapshot_id"] == snapshot["snapshot_id"]
+
+
 def test_strategy_api_creates_provider_strategy(client):
     payload = {
         "description": "提供者策略接口测试",

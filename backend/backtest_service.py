@@ -184,6 +184,7 @@ def compare_runs(run_ids: list[str], store_path: str | None = None) -> dict:
                 "end_date": record["end_date"],
                 "universe": record.get("universe") or metadata.get("universe"),
                 "benchmark": record.get("benchmark") or benchmark.get("code"),
+                "snapshot_id": record.get("snapshot_id") or metadata.get("snapshot_id"),
                 "metrics": metadata.get("metrics") or {},
                 "nav": relative_nav.tolist(),
                 "cumulative_excess": cumulative_excess.tolist(),
