@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from dataclasses import replace
 import json
@@ -137,6 +138,19 @@ class BacktestStore:
         return datetime.now(timezone.utc).replace(tzinfo=None)
 
     @staticmethod
+    @contextmanager
+    def _transaction(conn):
+        """把一组 DuckDB 写操作包成显式事务。"""
+        conn.begin()
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+
+    @staticmethod
     def _insert_version(conn, strategy_id: str, spec: StrategySpec, description: str, now: datetime) -> int:
         """写入策略第一版，返回版本号。"""
         conn.execute(
@@ -262,15 +276,10 @@ class BacktestStore:
                 raise RunNotFoundError(f"回测运行不存在：{run_id}")
             if row[0] == "running":
                 raise RunConflictError(f"回测运行仍在执行，不能删除：{run_id}")
-            conn.begin()
-            try:
+            with self._transaction(conn):
                 for table in RESULT_TABLES:
                     conn.execute(f"DELETE FROM bt.{table} WHERE run_id = ?", [run_id])
                 conn.execute("DELETE FROM bt.run WHERE run_id = ?", [run_id])
-                conn.commit()
-            except BaseException:
-                conn.rollback()
-                raise
 
     def list_runs(self, limit: int = 50) -> list[dict]:
         """按开始时间倒序列出回测运行。
@@ -576,32 +585,38 @@ class BacktestStore:
             snapshot_id = self.record_snapshot(snapshot)
             metadata["snapshot_id"] = snapshot_id
         with self._connect() as conn:
-            current_snapshot = conn.execute(
-                "SELECT snapshot_id FROM bt.run WHERE run_id = ?", [run_id]
+            current = conn.execute(
+                "SELECT status, snapshot_id FROM bt.run WHERE run_id = ?", [run_id]
             ).fetchone()
+            if current is None:
+                raise RunNotFoundError(f"回测运行不存在：{run_id}")
+            if str(current[0]) != "running":
+                raise RunConflictError(
+                    f"回测运行 {run_id} 当前状态为 {current[0]}，不能重复写入结果"
+                )
             if (
-                current_snapshot is not None
-                and current_snapshot[0]
+                current[1]
                 and snapshot_id
-                and str(current_snapshot[0]) != str(snapshot_id)
+                and str(current[1]) != str(snapshot_id)
             ):
                 raise SnapshotConflictError(
                     f"运行 {run_id} 起始快照与结果快照不一致"
                 )
-            for table, payload in frames:
-                self._write_frame(conn, table, payload)
-            conn.execute(
-                "UPDATE bt.run SET status = ?, metadata_json = ?, "
-                "snapshot_id = coalesce(?, snapshot_id), "
-                "finished_at = ? WHERE run_id = ?",
-                [
-                    "success",
-                    json.dumps(metadata, ensure_ascii=False, default=str),
-                    snapshot_id,
-                    self._now(),
-                    run_id,
-                ],
-            )
+            with self._transaction(conn):
+                for table, payload in frames:
+                    self._write_frame(conn, table, payload)
+                conn.execute(
+                    "UPDATE bt.run SET status = ?, metadata_json = ?, "
+                    "snapshot_id = coalesce(?, snapshot_id), "
+                    "finished_at = ? WHERE run_id = ? AND status = 'running'",
+                    [
+                        "success",
+                        json.dumps(metadata, ensure_ascii=False, default=str),
+                        snapshot_id,
+                        self._now(),
+                        run_id,
+                    ],
+                )
 
     def fail_run(self, run_id: str, error: Exception) -> None:
         """保存失败状态和错误摘要。"""

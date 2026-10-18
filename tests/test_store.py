@@ -15,7 +15,7 @@ from backtest.errors import (
     SnapshotConflictError,
 )
 from backtest.specs import PortfolioSpec
-from backtest.store import BacktestStore
+from backtest.store import RESULT_TABLES, BacktestStore
 
 
 def _result(daily=None, **overrides):
@@ -82,6 +82,56 @@ def test_run_lifecycle_reports_status_and_list(store):
     assert runs[0]["run_id"] == run_id
     assert runs[0]["strategy_hash"] == "abc"
     assert runs[0]["metrics"] == {"total_return": 0.01}
+
+
+def test_finish_run_rejects_missing_and_finished_runs(store):
+    """完成写入只能发生一次，缺失或已结束的运行不能被追加结果。"""
+    with pytest.raises(RunNotFoundError, match="不存在"):
+        store.finish_run("missing", _result())
+
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(
+        strategy_id, version, BacktestParams("2024-01-01", "2024-01-05")
+    )
+    store.finish_run(run_id, _result())
+    with pytest.raises(RunConflictError, match="不能重复写入"):
+        store.finish_run(run_id, _result())
+    assert len(store.get_result_table(run_id, "daily")) == 2
+
+
+def test_finish_run_rolls_back_every_result_table(store, monkeypatch):
+    """任一张结果表写入失败时，本次运行的其余结果与成功状态都要回滚。"""
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(
+        strategy_id, version, BacktestParams("2024-01-01", "2024-01-05")
+    )
+    orders = pd.DataFrame(
+        {
+            "stock_code": ["SH600000"],
+            "trade_date": [pd.Timestamp("2024-01-02")],
+            "Size": [100.0],
+        }
+    )
+    original = BacktestStore._write_frame
+
+    def fail_on_order(conn, table, frame):
+        if table == "order":
+            raise RuntimeError("注入的落库失败")
+        return original(conn, table, frame)
+
+    monkeypatch.setattr(BacktestStore, "_write_frame", staticmethod(fail_on_order))
+    with pytest.raises(RuntimeError, match="注入的落库失败"):
+        store.finish_run(run_id, _result(orders=orders))
+
+    with store._connect() as conn:
+        for table in RESULT_TABLES:
+            count = conn.execute(
+                f"SELECT count(*) FROM bt.{table} WHERE run_id = ?", [run_id]
+            ).fetchone()[0]
+            assert count == 0
+    assert store.get_run(run_id)["status"] == "running"
+    store.fail_run(run_id, BacktestError("落库失败"))
+    assert store.get_run(run_id)["status"] == "failed"
 
 
 def test_run_lifecycle_persists_snapshot_id(store):

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import pandas as pd
 
 from backtest.errors import SpecError
+from backtest.logging_conf import get_logger
 from backtest.specs import ProviderSpec, SignalSpec, StrategySpec
 
 if TYPE_CHECKING:
@@ -45,7 +46,9 @@ class TargetWeightProvider(Protocol):
 
 
 _REGISTRY: dict[str, TargetWeightProvider] = {}
+_ORIGINS: dict[str, str] = {}
 _DISCOVERED = False
+logger = get_logger("backtest.providers")
 
 
 def _validate_provider(provider: TargetWeightProvider) -> None:
@@ -69,12 +72,19 @@ def register_provider(provider: TargetWeightProvider | type[TargetWeightProvider
         provider = provider()
     _validate_provider(provider)
     name = str(provider.name).strip()
+    origin = type(provider).__module__
     existing = _REGISTRY.get(name)
     if existing is not None:
         if existing is provider:
             return existing
-        raise SpecError(f"目标权重提供者名称重复：{name}")
+        existing_origin = _ORIGINS.get(name, type(existing).__module__)
+        raise SpecError(
+            f"目标权重提供者名称重复：{name}；已由 {existing_origin} 注册，"
+            f"当前来自 {origin}"
+        )
     _REGISTRY[name] = provider
+    _ORIGINS[name] = origin
+    logger.info("注册提供者 %s v%s（%s）", name, provider.version, origin)
     return provider
 
 
@@ -88,8 +98,19 @@ def discover_providers() -> None:
     for item in sorted(pkgutil.iter_modules(package.__path__), key=lambda row: row.name):
         if item.name.startswith("_"):
             continue
-        importlib.import_module(f"{package.__name__}.{item.name}")
+        module_name = f"{package.__name__}.{item.name}"
+        try:
+            importlib.import_module(module_name)
+        except SpecError as error:
+            logger.error("提供者模块 %s 注册失败：%s", module_name, error)
+            raise SpecError(f"提供者模块 {module_name} 注册失败：{error}") from error
+        except Exception as error:
+            logger.exception("提供者模块 %s 导入失败", module_name)
+            raise SpecError(
+                f"提供者模块 {module_name} 导入失败：{type(error).__name__}: {error}"
+            ) from error
     _DISCOVERED = True
+    logger.info("发现 %d 个目标权重提供者：%s", len(_REGISTRY), sorted(_REGISTRY))
 
 
 def get_provider(spec: ProviderSpec | str) -> TargetWeightProvider:
@@ -102,11 +123,17 @@ def get_provider(spec: ProviderSpec | str) -> TargetWeightProvider:
     provider = _REGISTRY.get(name)
     if provider is None:
         available = ", ".join(sorted(_REGISTRY)) or "无"
+        logger.warning("未注册的目标权重提供者：%s；可选：%s", name, available)
         raise SpecError(f"未注册的目标权重提供者：{name}；可选：{available}")
     if version is not None and str(provider.version) != version:
+        origin = _ORIGINS.get(name, type(provider).__module__)
+        logger.warning(
+            "提供者 %s 版本不匹配：配置=%s 当前=%s 模块=%s",
+            name, version, provider.version, origin,
+        )
         raise SpecError(
             f"目标权重提供者 {name} 的版本不匹配：配置为 {version}，"
-            f"当前注册为 {provider.version}；请升级策略版本"
+            f"当前注册为 {provider.version}（模块 {origin}）；请升级策略版本"
         )
     return provider
 

@@ -280,10 +280,12 @@ def apply_rules(
     buy_ok = _shifted_flags(data.can_buy_open_next)
     sell_ok = _shifted_flags(data.can_sell_open_next)
     suspended = data.is_suspended.to_numpy()
+    open_price = data.open.to_numpy(dtype="float64")
     submitted = np.full(planned.shape, np.nan, dtype="float64")
     direction = np.zeros(planned.shape, dtype="int8")
     blocked = {reason: np.zeros(planned.shape, dtype=bool) for reason in
-               ("suspended", "limit_up_or_not_buyable", "limit_down_or_not_sellable")}
+               ("suspended", "no_price", "limit_up_or_not_buyable",
+                "limit_down_or_not_sellable")}
     has_target_row = ~np.isnan(planned).all(axis=1)
     if initial_state is None:
         held = np.zeros(planned.shape[1], dtype=bool)
@@ -342,12 +344,17 @@ def apply_rules(
         buy_intent = positive & (~held | (desired > shadow + WEIGHT_EPS) | carried)
         rebalance = positive & held & (np.abs(desired - shadow) <= WEIGHT_EPS) & ~carried
         suspended_row = suspended[row]
+        no_price_row = ~np.isfinite(open_price[row]) | (open_price[row] <= 0)
+        unfillable = suspended_row | no_price_row
+        intent = sell_intent | buy_intent | rebalance
         # 退市强制退出始终遵守停牌和跌停，不受普通规则的 reject 开关放宽。
         stopped = (
-            (sell_intent | buy_intent | rebalance)
+            intent
             & suspended_row
             & (execution.reject_suspended | forced_exit)
         )
+        # 缺少执行日开盘价时无论开关如何都不能成交；与停牌分开归因，避免掩盖数据问题。
+        stopped_no_price = intent & no_price_row & ~suspended_row
         stopped_buy = buy_intent & ~suspended_row & ~buy_ok[row] & execution.reject_limit_up_buy
         stopped_sell = (
             sell_intent
@@ -357,14 +364,15 @@ def apply_rules(
         )
         # 方向未知的再平衡：买卖两侧任一被封就不下单，避免误触涨停买入/跌停卖出
         stopped_rebalance = rebalance & ~suspended_row & (~buy_ok[row] | ~sell_ok[row])
-        keep_sell = sell_intent & ~stopped_sell & ~stopped
-        keep_buy = buy_intent & ~stopped_buy & ~stopped
-        keep_rebalance = rebalance & ~stopped & ~stopped_rebalance
+        keep_sell = sell_intent & ~stopped_sell & ~stopped & ~unfillable
+        keep_buy = buy_intent & ~stopped_buy & ~stopped & ~unfillable
+        keep_rebalance = rebalance & ~stopped & ~stopped_rebalance & ~unfillable
         keep = keep_sell | keep_buy | keep_rebalance
         direction[row] = np.where(keep_buy, 1, np.where(keep_sell, -1, 0))
         # 一事一条：只有本行自己的目标被拦下才算新事件，重试期间的失败不再重复记录
         fresh = ~(retried | carried)
         blocked["suspended"][row] = stopped & fresh
+        blocked["no_price"][row] = stopped_no_price & fresh
         blocked["limit_up_or_not_buyable"][row] = stopped_buy & fresh
         blocked["limit_down_or_not_sellable"][row] = stopped_sell & fresh
         # 被拦下的格子状态不变，下一个交易日继续尝试
@@ -374,7 +382,6 @@ def apply_rules(
         shadow[keep_buy | keep_rebalance] = desired[keep_buy | keep_rebalance]
         submitted[row] = np.where(keep, desired, np.nan)
         # 成交的格子清空待重试；仍被拦下的格子把目标权重留给下一个交易日
-        intent = sell_intent | buy_intent | rebalance
         still_blocked = has & ~keep & intent
         pending[still_blocked] = desired[still_blocked]
         pending[keep | (has & ~intent)] = np.nan
@@ -395,7 +402,8 @@ def apply_rules(
     )
     frames = [
         _rejection_rows(blocked[reason], targets.index, targets.columns, reason)
-        for reason in ("suspended", "limit_up_or_not_buyable", "limit_down_or_not_sellable")
+        for reason in ("suspended", "no_price", "limit_up_or_not_buyable",
+                       "limit_down_or_not_sellable")
     ]
     frames = [frame for frame in frames if len(frame)]
     rejection = (

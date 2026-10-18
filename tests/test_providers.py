@@ -1,11 +1,14 @@
 """目标权重提供者的注册、配置和权重校验。"""
 
 import json
+import logging
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import backtest.providers as providers
 from backtest.errors import DataAlignmentError, SpecError
 from backtest.engine import run_backtest
 from backtest.providers import (
@@ -90,6 +93,28 @@ class CashNanProvider:
 register_provider(CashNanProvider())
 
 
+def _provider_class(module: str, name: str):
+    """构造指定模块来源的测试提供者类。"""
+    return type(
+        "NamedProvider",
+        (),
+        {
+            "__module__": module,
+            "name": name,
+            "version": "1",
+            "description": "测试来源",
+            "required_factors": (),
+            "build": lambda self, data, eligible, params: pd.DataFrame(),
+        },
+    )
+
+
+def _unregister(name: str) -> None:
+    """移除测试临时注册的提供者。"""
+    providers._REGISTRY.pop(name, None)
+    providers._ORIGINS.pop(name, None)
+
+
 def _provider_strategy(**params) -> StrategySpec:
     return StrategySpec(
         name="测试提供者",
@@ -162,6 +187,61 @@ def test_provider_registry_and_metadata():
     assert len(metadata["code_sha256"]) == 64
     assert signal_metadata(_provider_strategy().signal)["kind"] == "provider"
     assert signal_metadata(StrategySpec().signal)["kind"] == "factor"
+
+
+def test_provider_duplicate_error_includes_both_modules_and_logs():
+    """重复注册要指出两个来源模块，并记录名称、版本和模块。"""
+    first = _provider_class("providers.alpha", "duplicate_origin")
+    second = _provider_class("providers.beta", "duplicate_origin")
+    try:
+        register_provider(first)
+        with pytest.raises(SpecError, match=r"providers\.alpha.*providers\.beta"):
+            register_provider(second)
+
+        messages = []
+
+        class Capture(logging.Handler):
+            def emit(self, record):
+                messages.append(record.getMessage())
+
+        handler = Capture()
+        providers.logger.addHandler(handler)
+        try:
+            register_provider(_provider_class("providers.gamma", "logged_provider"))
+        finally:
+            providers.logger.removeHandler(handler)
+        assert any(
+            "logged_provider" in message
+            and "v1" in message
+            and "providers.gamma" in message
+            for message in messages
+        )
+    finally:
+        _unregister("duplicate_origin")
+        _unregister("logged_provider")
+
+
+def test_provider_import_failure_includes_module_and_cause(monkeypatch):
+    """提供者模块导入失败要给出模块名、异常类型和原始原因。"""
+    real_import = providers.importlib.import_module
+
+    def broken_import(name, *args, **kwargs):
+        if name == "backtest.strategies.broken_test":
+            raise RuntimeError("模块初始化失败")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(providers, "_DISCOVERED", False)
+    monkeypatch.setattr(
+        providers.pkgutil,
+        "iter_modules",
+        lambda path: [SimpleNamespace(name="broken_test")],
+    )
+    monkeypatch.setattr(providers.importlib, "import_module", broken_import)
+    with pytest.raises(
+        SpecError,
+        match=r"backtest\.strategies\.broken_test.*RuntimeError.*模块初始化失败",
+    ):
+        providers.discover_providers()
 
 
 def test_momentum_timing_sample_provider(make_data):

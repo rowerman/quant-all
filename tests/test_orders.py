@@ -11,6 +11,7 @@ from backtest.orders import (
     execution_targets,
     liquidation_cells,
     probe_matrices,
+    RuleState,
     WRITEOFF_COLUMNS,
 )
 from backtest.specs import ExecutionSpec
@@ -76,6 +77,66 @@ def test_suspended_execution_day_is_retried_next_day(panel):
         "retry_attempts": 1, "retried_filled_cells": 1, "pending_at_end_cells": 0,
         "cash_retry_attempts": 0,
     }
+
+
+def test_suspended_switch_off_defers_without_advancing_state(panel):
+    """关闭停牌拒单只隐藏拒单记录，订单仍要等复牌，不能提前进入持仓状态。"""
+    suspended = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
+    suspended.loc[INDEX[1], "SH600000"] = True
+    data = panel(is_suspended=suspended)
+    targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
+    filtered, rejection, _, _, stats, state = apply_rules(
+        data, targets, ExecutionSpec(reject_suspended=False)
+    )
+    assert rejection.empty
+    assert np.isnan(filtered.loc[INDEX[1], "SH600000"])
+    assert filtered.loc[INDEX[2], "SH600000"] == 0.5
+    assert bool(state.held.loc["SH600000"])
+    assert stats == {
+        "retry_attempts": 1, "retried_filled_cells": 1, "pending_at_end_cells": 0,
+        "cash_retry_attempts": 0,
+    }
+
+
+def test_suspended_switch_off_keeps_existing_holding_until_resume(panel):
+    """持仓卖出遇到停牌时，关闭开关也不能把持仓状态提前清零。"""
+    suspended = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
+    suspended.loc[INDEX[3], "SH600000"] = True
+    data = panel(is_suspended=suspended)
+    targets = _targets([[np.nan, np.nan], [np.nan, np.nan], [np.nan, np.nan], [0.0, np.nan]])
+    held = pd.Series({"SH600000": True, "SZ000001": True})
+    shadow = pd.Series({"SH600000": 0.5, "SZ000001": 0.5})
+    pending = pd.Series({"SH600000": np.nan, "SZ000001": np.nan})
+    filtered, rejection, _, _, stats, state = apply_rules(
+        data,
+        targets,
+        ExecutionSpec(reject_suspended=False),
+        initial_state=RuleState(held=held, shadow=shadow, pending=pending),
+    )
+    assert rejection.empty
+    assert np.isnan(filtered.loc[INDEX[3], "SH600000"])
+    assert bool(state.held.loc["SH600000"])
+    assert state.shadow.loc["SH600000"] == 0.5
+    assert state.pending.loc["SH600000"] == 0.0
+    assert stats["pending_at_end_cells"] == 1
+
+
+def test_missing_open_price_is_always_rejected(panel):
+    """开盘价缺失不是停牌开关能放宽的情况，必须单独记录 no_price 并等下一日。"""
+    open_price = pd.DataFrame(10.0, index=INDEX, columns=COLUMNS)
+    open_price.loc[INDEX[1], "SH600000"] = np.nan
+    data = panel(open=open_price)
+    targets = _targets([[np.nan, np.nan], [0.5, np.nan], [np.nan, np.nan], [np.nan, np.nan]])
+    filtered, rejection, _, _, stats, _ = apply_rules(
+        data, targets, ExecutionSpec(reject_suspended=False)
+    )
+    assert np.isnan(filtered.loc[INDEX[1], "SH600000"])
+    assert filtered.loc[INDEX[2], "SH600000"] == 0.5
+    assert rejection.to_dict("records") == [
+        {"trade_date": INDEX[1], "stock_code": "SH600000", "reason": "no_price"}
+    ]
+    assert stats["retry_attempts"] == 1
+    assert stats["retried_filled_cells"] == 1
 
 
 def test_limit_up_blocks_buy_and_keeps_position(panel):

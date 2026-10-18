@@ -27,7 +27,7 @@ from backtest.costs import cost_model_summary
 from backtest.errors import DataAlignmentError, SpecError
 from backtest.providers import provider_snapshot_metadata
 from backtest.specs import StrategySpec, TOTAL_RETURN_BENCHMARKS
-from backtest.trading_rules import RULE_VERSION, rule_summary
+from backtest.trading_rules import ORDER_RULE_VERSION, RULE_VERSION, rule_summary
 from backtest.universe import membership_rows, resolve_universe, universe_stocks
 
 
@@ -665,6 +665,7 @@ def _rules_component(strategy: StrategySpec) -> dict[str, Any]:
         "strategy": strategy.to_dict(),
         "strategy_hash": strategy.config_hash,
         "board_rule_version": RULE_VERSION,
+        "order_rule_version": ORDER_RULE_VERSION,
         "board_rules": rule_summary(),
         "cost_model": cost_model_summary(strategy.costs),
         "delisting_rule_version": DELISTING_RULE_VERSION,

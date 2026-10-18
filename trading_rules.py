@@ -12,6 +12,8 @@ import math
 from backtest.errors import ExecutionError
 
 RULE_VERSION = "cn_a_board_v1"
+# 订单状态机口径：V57 起停牌开关关闭时只静默顺延，不再提前记为成交。
+ORDER_RULE_VERSION = "cn_a_execution_v2"
 BOARD_MAIN = "主板"
 BOARD_CHINEXT = "创业板"
 BOARD_STAR = "科创板"

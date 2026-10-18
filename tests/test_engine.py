@@ -296,6 +296,44 @@ def test_execution_switches_off_keeps_orders(make_data):
     assert result.rejections.empty
 
 
+def test_suspended_switch_off_never_creates_a_phantom_holding(make_data):
+    """停牌执行日不成交也不记拒单，持仓必须等复牌后的首个开盘成交才出现。"""
+    score, price = _frames()
+    suspended = pd.DataFrame(False, index=DATES, columns=STOCKS)
+    suspended.loc[DATES[3], "SH600000"] = True
+    data = make_data(
+        dates=DATES,
+        stocks=STOCKS,
+        open=price.astype("float32"),
+        close=(price + 0.5).astype("float32"),
+        is_suspended=suspended,
+        factors={"MOM_20": score.astype("float32")},
+    )
+    strategy = _strategy(
+        rebalance=RebalanceSpec(frequency="monthly"),
+        execution=ExecutionSpec(reject_suspended=False),
+    )
+    result = run_backtest(
+        data,
+        strategy,
+        BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 1_000_000.0),
+    )
+    assert result.rejections.empty
+    held_dates = set(
+        result.holdings.loc[
+            result.holdings["stock_code"] == "SH600000", "trade_date"
+        ]
+    )
+    assert DATES[3] not in held_dates
+    assert DATES[4] in held_dates
+    orders = result.orders.loc[result.orders["stock_code"] == "SH600000"]
+    assert orders["trade_date"].min() == DATES[4]
+    calibration = result.metadata["calibration"]
+    assert calibration["retry_attempts"] == 1
+    assert calibration["retried_filled_cells"] == 1
+    assert calibration["pending_at_end_cells"] == 0
+
+
 def _delist_inputs():
     """SZ000001 在 DATES[2] 退市：之后没有行情、也没有因子值。"""
     score, price = _frames()
