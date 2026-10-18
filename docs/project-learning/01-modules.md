@@ -82,6 +82,32 @@
   `providers.py:get_provider`、`orders.py:apply_rules`、`orders.py:build_order_plan`。
 - 下级模块：`signals.py`、`providers.py`、`strategies/`、`orders.py`。
 
+### 目标权重提供者
+
+- 功能：注册和发现外部策略，把行情、因子和 eligible 矩阵转换成信号日目标权重。
+- 定位：信号层的扩展点；不负责真实成交、现金、风险上限、订单规则和账本。
+- 调用：`data.MarketData`、`specs`、`errors`、`logging_conf`。
+- 被调用：`signals.build_signal_targets`、`pipeline`/`store`/`backtest_service` 的配置校验、
+  `GET /api/backtest/options`。
+- 核心逻辑位置：`providers.py:register_provider`、`providers.py:get_provider`、
+  `providers.py:validate_strategy_provider`、
+  `strategies/momentum_timing.py:MomentumTimingProvider.build`。
+- 下级模块：`providers.py`、`strategies/`。
+
+注意事项：
+
+- 提供者只看到行情、因子和统一 `eligible` 矩阵，不获得账本的真实现金或持仓；
+  止损、移动止损和按持仓动态加减仓不能在这里伪造。
+- `build` 必须确定性、因果、只读输入；跨资源块的滚动历史必须使用已落盘因子，
+  不能依赖块边界之前的原始价格。
+- 返回矩阵整行 `NaN` 表示不调仓，全 0 行表示清仓；非空行必须有限、非负、单行合计
+  不超过 1，正权重只能落在 `eligible=True` 的股票上。
+- `signal.factors` 是提供者声明的输入因子，`signal.weights` 必须为空；
+  提供者模式下必须使用 `portfolio.selection=provider` 和 `rebalance.frequency=custom`。
+- 提供者名称和版本必须与注册对象一致；代码改动要提升版本。本轮只记录源码 SHA-256，
+  还不是不可变快照，完整数据/代码快照属于 P1-3。
+- 风险上限由执行层统一施加一次；提供者不要提前按风险上限改写目标。
+
 ### 执行与指标
 
 - 功能：调用 VectorBT 两遍执行，生成标准结果并计算绩效。

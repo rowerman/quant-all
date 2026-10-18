@@ -68,11 +68,10 @@ pipeline.iter_run
 
 ```text
 run_backtest
-  -> build_target_weights
-     -> build_scores
-     -> eligible_mask
-     -> rebalance_mask
-     -> _weights_for
+  -> build_signal_targets
+     ├─ 无 provider：build_target_weights
+     │  -> build_scores / eligible_mask / rebalance_mask / _weights_for
+     └─ 有 provider：get_provider -> provider.build(data, eligible, params)
 ```
 
 ### 关键函数
@@ -85,9 +84,63 @@ run_backtest
 
 `build_target_weights(...) -> tuple[DataFrame, DataFrame]`（`signals.py:101-137`）只在调仓日生成目标。先把整行置为 0，再给 Top-N 股票写入正权重；非调仓日保持 NaN。
 
+`build_signal_targets(data, strategy, rebalance_days=None) -> tuple[DataFrame, DataFrame]`
+是因子策略和提供者策略的共同入口。提供者路径拒绝同时传 `rebalance_days`，由提供者返回的
+矩阵决定调仓日；返回矩阵会经过形状、部分 `NaN`、有限性、非负性、单行合计和 eligible
+正权重校验，再按正权重派生排名。
+
+### 提供者假设
+
+- `data` 是当前面板的 `MarketData`，`eligible` 是与它同形的布尔矩阵；提供者不获得真实现金、
+  持仓和订单状态。
+- 整行 `NaN` 表示不调仓，全 0 行表示清仓；非空行合计可以小于 1，剩余部分留现金。
+- 提供者必须确定性、因果、只读输入，不能修改 `data` 或 `eligible`。
+- 跨资源块的滚动计算必须使用因子库中已经算好的因子；提供者不会拿到块边界之前的完整行情。
+- `signal.factors` 是输入因子声明；`required_factors` 必须是它的子集，`signal.weights` 必须为空。
+- 提供者名称、版本和参数必须匹配；代码改动要提升版本，源码哈希只用于审计，不是 P1-3 的
+  不可变快照。
+
 ### 设计取舍
 
 用矩阵表达 `NaN/0/正数` 三种状态，能够直接映射到 VectorBT 的“今天不下单/清仓/目标仓位”。如果把这三种状态压成一个布尔信号，清仓和不动作会无法区分。
+
+## `providers.py` 与 `strategies/`
+
+### 职责边界
+
+负责提供者的注册、自动发现、版本/参数/必需因子校验和源码哈希；不负责信号计算之后的
+风险上限、订单状态机、资金分配和账本。`strategies/` 下的模块在导入时注册，文件名以下划线
+开头的不自动导入。
+
+### 调用链
+
+```text
+build_signal_targets / store.create_strategy / backtest_service.prepare / options
+  -> get_provider
+     -> discover_providers
+        -> import backtest.strategies.*
+  -> validate_strategy_provider
+     -> 版本、必需因子、validate_params
+```
+
+### 关键函数
+
+- `register_provider(provider)`：注册实例或类，检查名称、版本、描述、`required_factors`
+  和 `build` 是否存在，重复名称直接报 `BT-101`。
+- `discover_providers()`：导入 `backtest.strategies` 下的模块，触发模块内注册。
+- `get_provider(spec)`：按名称取提供者并校验版本，未知名称列出可用提供者。
+- `validate_strategy_provider(spec)`：校验提供者版本、必需因子和 `validate_params`。
+- `provider_metadata(spec)` / `signal_metadata(signal)`：生成运行元数据，含模块和源码哈希。
+
+### 设计取舍与注意事项
+
+- 固定目录自动发现比策略 JSON 保存任意 `module:function` 更容易审计，也避免 HTTP 创建策略时
+  引入任意代码导入；新增提供者必须把模块放进 `backtest/strategies/`。
+- `params` 必须是可 JSON 序列化对象，不能含 `NaN`；版本和参数进入策略配置哈希，
+  源码哈希只进入运行元数据。代码改动必须提升提供者版本，不能只改源码。
+- 提供者只能依赖行情、因子和 eligible 矩阵；真实持仓止损、动态订单需要执行层状态钩子，
+  不应在提供者里模拟。
+- `providers` 不保证跨资源块的历史行情；提供者应使用已落盘因子做滚动计算。
 
 ## `orders.py`
 
@@ -141,7 +194,7 @@ run_backtest
 ```text
 run_backtest
   -> data.crop
-  -> build_target_weights
+  -> build_signal_targets（或使用分块准备阶段传入的 target_override）
   -> execution_targets
   -> _run_portfolio (探针，无费用)
   -> _probe_frame
@@ -157,6 +210,10 @@ run_backtest
 `_daily_frame(...)`（`engine.py:133-166`）生成组合价值、现金、持仓市值、收益、净值、回撤、成本、换手和基准超额列。
 
 `run_backtest(...)`（`engine.py:282-370`）是执行层总入口。它还负责发出 `signals`、`probe`、`orders`、`execute` 进度事件，并在元数据中保存策略哈希、价格口径、数据版本、VectorBT 版本和校准信息。
+
+分块回测时，`chunked._prepare_chunks` 先按资源块调用一次提供者，`run_windows` 把目标权重和
+排名按调仓段传给 `run_backtest(target_override=...)`。提供者路径的风险上限只在这个执行入口
+统一施加，避免准备阶段先封顶导致风险统计被清零；因子路径仍沿用原有的准备和执行口径。
 
 ## `pipeline.py` 与 `store.py`
 
