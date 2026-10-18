@@ -525,3 +525,26 @@ def test_engine_allows_stable_cash_carry_at_segment_boundary(make_data):
     assert calibration["cash_carry_over_cells"] >= 1
     assert result.final_state is not None
     assert result.final_state.carry.notna().any()
+
+
+def test_engine_t_plus_1_toggle_is_noop_for_daily_execution(make_data):
+    """当前日频路径不会同日双向，T+1 开关不应改变结果。"""
+    score, price = _frames()
+    data = make_data(
+        dates=DATES,
+        stocks=STOCKS,
+        open=price.astype("float32"),
+        close=(price + 0.5).astype("float32"),
+        factors={"MOM_20": score.astype("float32")},
+    )
+    params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
+    enabled = run_backtest(
+        data, _strategy(execution=ExecutionSpec(enforce_t_plus_1=True)), params
+    )
+    disabled = run_backtest(
+        data, _strategy(execution=ExecutionSpec(enforce_t_plus_1=False)), params
+    )
+    pd.testing.assert_frame_equal(enabled.orders, disabled.orders)
+    pd.testing.assert_frame_equal(enabled.daily, disabled.daily)
+    assert enabled.metadata["calibration"]["t_plus_1_blocked_cells"] == 0
+    assert disabled.metadata["calibration"]["t_plus_1_blocked_cells"] == 0

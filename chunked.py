@@ -104,6 +104,9 @@ SUM_KEYS = (
     "turnover_limited_days",
     "turnover_limited_cells",
     "cash_carry_over_cells",
+    "t_plus_1_blocked_cells",
+    "t_plus_1_blocked_shares",
+    "t_plus_1_blocked_value",
 )
 MAX_KEYS = (
     "fee_matrix_max_diff",

@@ -235,7 +235,9 @@ def test_versions_are_read_from_manifests():
     assert versions["dataset"]["rows"] == 17999882
     assert versions["dataset"]["generated_at"]
     assert versions["factors"]["factor_version"] == "factors_v1"
-    assert versions["factors"]["factor_count"] == 29
+    assert versions["factors"]["factor_count"] == len(
+        quant.load_factor_list(status="implemented")
+    )
 
 
 def test_versions_degrade_without_factor_db(tmp_path):

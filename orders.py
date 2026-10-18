@@ -45,6 +45,7 @@ import pandas as pd
 from backtest.allocation import allocate_shares, execution_price
 from backtest.data import MarketData
 from backtest.specs import CostSpec, ExecutionSpec
+from backtest.t1 import cap_sells_to_prior_holdings
 
 REJECTION_COLUMNS = ["trade_date", "stock_code", "reason"]
 PROBE_COLUMNS = ["trade_date", "stock_code", "side", "value"]
@@ -543,6 +544,21 @@ def build_order_plan(
             if capacity_exempt is None else capacity_exempt
         ),
     )
+    prior_holdings = (
+        baseline_shares.reindex(index=targets.index, columns=targets.columns)
+        .shift(1)
+        .fillna(0.0)
+    )
+    _, blocked_t1, t1_stats = cap_sells_to_prior_holdings(
+        shares - prior_holdings,
+        prior_holdings,
+        price,
+        execution.enforce_t_plus_1,
+    )
+    if blocked_t1.any():
+        capped = shares.to_numpy(dtype="float64", copy=True)
+        capped[blocked_t1] = np.nan
+        shares = pd.DataFrame(capped, index=targets.index, columns=targets.columns)
     if seed_shares is not None and len(shares.index):
         # 播种行：把上一块的收盘持股原样买回来，供后续交易日算真实差值；
         # 没有持仓的格子留空，避免提交一笔 0 股订单
@@ -591,6 +607,7 @@ def build_order_plan(
         "forced_liquidations": int(len(executed)),
         **rule_stats,
         **allocation_stats,
+        **t1_stats,
     }
     return OrderPlan(
         target_percent=filtered,
