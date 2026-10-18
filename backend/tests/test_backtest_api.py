@@ -88,6 +88,13 @@ def test_strategy_api_accepts_complete_supported_configuration(client):
     assert detail["spec"]["risk"]["max_one_way_turnover"] == pytest.approx(0.3)
 
 
+def test_strategy_api_uses_ten_percent_participation_by_default(client):
+    created = client.post("/api/strategies", json={"name": "默认容量"})
+    assert created.status_code == 200
+    detail = client.get(f"/api/strategies/{created.json()['strategy_id']}").json()
+    assert detail["spec"]["execution"]["max_participation_rate"] == pytest.approx(0.1)
+
+
 def test_strategy_api_rejects_invalid_weights_and_costs(client):
     mismatch = client.post(
         "/api/strategies",
