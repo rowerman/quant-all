@@ -100,6 +100,26 @@ def test_membership_filter_limits_the_pool(make_data):
     assert weights.loc[INDEX[0], "SH600000"] == 0.0
 
 
+def test_delisting_stock_is_excluded_and_top_n_backfills(make_data):
+    delisting = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
+    delisting["SH600000"] = True
+    data = make_data(
+        is_delisting=delisting,
+        factors={"MOM_20": _frame([3.0, 2.0, 1.0]).astype("float32")},
+    )
+    mask = eligible_mask(data)
+    assert not mask["SH600000"].any()
+    weights, _ = build_target_weights(
+        data,
+        SignalSpec(standardize=False),
+        PortfolioSpec(top_n=2),
+        RebalanceSpec(frequency="daily"),
+    )
+    assert weights.loc[INDEX[0], "SH600000"] == 0.0
+    assert weights.loc[INDEX[0], "SZ000001"] == 0.5
+    assert weights.loc[INDEX[0], "SZ000002"] == 0.5
+
+
 def test_newly_listed_stock_is_excluded(make_data):
     data = make_data(list_date=pd.Series(pd.Timestamp("2024-01-29"), index=COLUMNS))
     mask = eligible_mask(data)

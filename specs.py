@@ -105,6 +105,9 @@ class ExecutionSpec:
 
     ``lot_size`` 只保留为旧策略 JSON 的兼容字段；实际申报单位由
     :mod:`backtest.trading_rules` 按股票所属板块解析。
+
+    ``max_participation_rate`` 新建策略默认 10%；旧策略 JSON 缺少该字段时
+    :meth:`StrategySpec.from_dict` 会显式按 ``None`` 解释，保持历史哈希和口径。
     """
 
     lot_size: int = 100
@@ -113,7 +116,7 @@ class ExecutionSpec:
     reject_limit_up_buy: bool = True
     reject_limit_down_sell: bool = True
     enforce_t_plus_1: bool = True
-    max_participation_rate: float | None = None
+    max_participation_rate: float | None = 0.1
 
     def __post_init__(self) -> None:
         if type(self.lot_size) is not int or self.lot_size <= 0:
@@ -242,6 +245,17 @@ class StrategySpec:
         unknown = set(payload) - known
         if unknown:
             raise SpecError(f"策略配置包含未知字段：{sorted(unknown)}")
+        # 旧策略 JSON 没有这个字段时按 None 解释，保证历史版本哈希与执行口径不变；
+        # 新构造的 ExecutionSpec() 才使用默认 10%。
+        execution_payload = payload.get("execution")
+        if (
+            isinstance(execution_payload, dict)
+            and "max_participation_rate" not in execution_payload
+        ):
+            execution_payload = {**execution_payload, "max_participation_rate": None}
+        payload = {**payload}
+        if execution_payload is not None:
+            payload["execution"] = execution_payload
         def section(name: str, kind):
             value = payload.get(name, {})
             if not isinstance(value, dict):

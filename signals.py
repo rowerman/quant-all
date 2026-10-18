@@ -59,8 +59,8 @@ def build_scores(data: MarketData, spec: SignalSpec) -> pd.DataFrame:
 def eligible_mask(data: MarketData) -> pd.DataFrame:
     """给出「信号日可入选」的布尔矩阵。
 
-    口径与因子评估的股票池一致：可买入收盘、非 ST、非停牌、上市满
-    ``MIN_LISTED_DAYS`` 个自然日；指数成分池再叠加当日成分归属。
+    口径与因子评估的股票池基本一致：可买入收盘、非 ST、非停牌、非退市整理期、
+    上市满 ``MIN_LISTED_DAYS`` 个自然日；指数成分池再叠加当日成分归属。
 
     参数:
         data: 回测输入面板。
@@ -71,6 +71,7 @@ def eligible_mask(data: MarketData) -> pd.DataFrame:
         data.can_buy_close.to_numpy()
         & ~data.is_suspended.to_numpy()
         & ~data.is_st.to_numpy()
+        & ~data.is_delisting.to_numpy()
         & (days >= threshold[None, :])
     )
     if data.membership is not None:

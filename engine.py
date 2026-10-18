@@ -55,6 +55,7 @@ from backtest.orders import (
     baseline_inputs,
     build_order_plan,
     execution_targets,
+    writeoff_cells,
 )
 from backtest.risk import cap_target_weights, constrain_one_way_turnover, industry_weight_witnesses
 from backtest.signals import build_target_weights
@@ -135,6 +136,7 @@ def _run_portfolio(
     initial_state: LedgerSnapshot | None = None,
     warmup_rows: int = 0,
     charge_costs: bool = True,
+    writeoffs: pd.DataFrame | None = None,
 ):
     """调用原始价执行账本。
 
@@ -151,8 +153,15 @@ def _run_portfolio(
         initial_state: 上一块交接的账本状态。
         warmup_rows: 预热行数；这些行只保留价格，不执行订单。
         charge_costs: 是否按策略成本计费；探针遍传 False。
+        writeoffs: 本面板内的退市零价值核销候选。
     """
     try:
+        forced_exit_panel = data.is_delisting.copy()
+        if writeoffs is not None and not writeoffs.empty:
+            rows = data.index.get_indexer(pd.DatetimeIndex(writeoffs["trade_date"]))
+            cols = data.columns.get_indexer(writeoffs["stock_code"])
+            valid = (rows >= 0) & (cols >= 0)
+            forced_exit_panel.values[rows[valid], cols[valid]] = True
         return LedgerPortfolio.from_orders(
             close=valuation,
             size=targets,
@@ -169,6 +178,8 @@ def _run_portfolio(
             allow_board_adjustment=True,
             initial_state=initial_state,
             warmup_rows=warmup_rows,
+            writeoffs=writeoffs,
+            forced_exit=forced_exit_panel,
         )
     except Exception as error:
         raise ExecutionError(f"执行账本失败：{error}") from error
@@ -203,6 +214,7 @@ def _order_records(portfolio, label: str) -> pd.DataFrame:
                 "Order Id", "stock_code", "trade_date", "Size", "Price", "Fees", "Side",
                 "Board", "Order Valid", "reference_price", "gross_amount", "commission",
                 "stamp_tax", "transfer_fee", "slippage_rate", "slippage_cost", "total_cost",
+                "forced_exit",
             ]
         )
     frame = frame.rename(columns={"Column": "stock_code", "Timestamp": "trade_date"})
@@ -234,6 +246,8 @@ def derive_daily(
     dividend_tax: pd.Series | None = None,
     dividend_receivable: pd.Series | None = None,
     fractional_cash: pd.Series | None = None,
+    writeoff_size: pd.Series | None = None,
+    writeoff_value: pd.Series | None = None,
 ) -> pd.DataFrame:
     """由组合价值、现金与成交明细推导标准化日结果。
 
@@ -273,6 +287,16 @@ def derive_daily(
         pd.Series(0.0, index=daily.index)
         if fractional_cash is None
         else pd.Series(fractional_cash).reindex(daily.index).fillna(0.0)
+    )
+    daily["writeoff_size"] = (
+        pd.Series(0.0, index=daily.index)
+        if writeoff_size is None
+        else pd.Series(writeoff_size).reindex(daily.index).fillna(0.0)
+    )
+    daily["writeoff_value"] = (
+        pd.Series(0.0, index=daily.index)
+        if writeoff_value is None
+        else pd.Series(writeoff_value).reindex(daily.index).fillna(0.0)
     )
     daily["return"] = daily["portfolio_value"].pct_change().fillna(0.0)
     daily["nav"] = daily["portfolio_value"] / float(daily["portfolio_value"].iloc[0])
@@ -433,34 +457,52 @@ def _weight_witnesses(plan: OrderPlan, holdings: pd.DataFrame) -> dict:
     return weight_witnesses(plan.target_percent, holdings)
 
 
-def _liquidation_records(plan: OrderPlan, orders: pd.DataFrame) -> pd.DataFrame:
-    """把强制清算格与实际成交明细对齐，给出落库用的明细。
-
-    参数:
-        plan: 订单计划，``liquidations`` 是实际提交的清算格。
-        orders: 最终一遍的成交明细。
-    """
-    columns = ["trade_date", "stock_code", "delist_date", "size", "price", "value"]
-    frame = plan.liquidations.copy()
-    if frame.empty:
-        return pd.DataFrame(columns=columns)
-    frame = frame.rename(columns={"price": "reference_price"})
-    if orders.empty:
-        frame["size"] = np.nan
-        frame["price"] = np.nan
-    else:
-        filled = orders[["trade_date", "stock_code", "Size", "Price"]].rename(
-            columns={"Size": "size", "Price": "price"}
+def _liquidation_records(portfolio) -> pd.DataFrame:
+    """返回账本实际执行的退市零价值核销明细。"""
+    if not hasattr(portfolio, "writeoff_records"):
+        return pd.DataFrame(
+            columns=[
+                "trade_date", "stock_code", "delist_date", "size", "price", "value",
+                "reference_price", "reason",
+            ]
         )
-        frame = frame.merge(filled, on=["trade_date", "stock_code"], how="left")
-    missing = frame["price"].isna()
-    if missing.any():
-        logger.warning("强制清算有 %d 格没有对应成交，按参考价记账", int(missing.sum()))
-        frame.loc[missing, "price"] = frame.loc[missing, "reference_price"]
-        frame["size"] = frame["size"].fillna(0.0)
-    frame["value"] = frame["size"].abs() * frame["price"].astype("float64")
-    frame["size"] = frame["size"].abs()
-    return frame[columns]
+    return portfolio.writeoff_records()
+
+
+def _align_writeoff_cells(
+    cells: pd.DataFrame | None,
+    index: pd.Index,
+    warmup_rows: int,
+) -> pd.DataFrame:
+    """把整段核销候选对齐到当前面板，并顺延预热行。"""
+    columns = ["trade_date", "stock_code", "delist_date", "reference_price"]
+    if cells is None or cells.empty or not len(index):
+        return pd.DataFrame(columns=columns)
+    stamps = pd.to_datetime(cells["trade_date"])
+    positions = index.searchsorted(stamps.to_numpy(), side="left")
+    keep = positions < len(index)
+    if not keep.any():
+        return pd.DataFrame(columns=columns)
+    frame = cells.loc[keep].copy()
+    positions = np.maximum(positions[keep], int(warmup_rows))
+    frame["trade_date"] = index[positions]
+    frame = frame.drop_duplicates(["trade_date", "stock_code"], keep="last")
+    return frame[columns].sort_values(["trade_date", "stock_code"]).reset_index(drop=True)
+
+
+def _clear_carry_after_writeoff(
+    carry: pd.DataFrame,
+    writeoffs: pd.DataFrame,
+) -> pd.DataFrame:
+    """核销后的股票不再需要现金或流动性补回。"""
+    if writeoffs.empty or carry.empty:
+        return carry
+    result = carry.copy()
+    for item in writeoffs.itertuples(index=False):
+        if item.stock_code not in result.columns:
+            continue
+        result.loc[result.index >= pd.Timestamp(item.trade_date), item.stock_code] = np.nan
+    return result
 
 
 def _same_matrix(first: pd.DataFrame, second: pd.DataFrame) -> bool:
@@ -661,7 +703,7 @@ def run_backtest(
         initial_state: 分块回测从上一块继承的组合与规则状态；None 表示从初始资金空仓起步。
         warmup_rows: 预热行数。分块回测的块首行只提供价格与平移口径，不下单、不进结果。
         rebalance_days: 整段区间的调仓日掩码；None 表示按本面板现算。
-        liquidations: 整段区间的退市强制清算格；None 表示按本面板现算。
+        liquidations: 整段区间的退市零价值核销候选；None 表示按本面板现算。
         chunk_boundary: 本块之后还有下一块。块末仍有现金补回待办时记为跨块携带，
             不算未收敛。
     """
@@ -673,6 +715,11 @@ def run_backtest(
             "请用 load_market_data(universe=...) 取数"
         )
     data = data.crop(params.start, params.end)
+    writeoffs = _align_writeoff_cells(
+        writeoff_cells(data) if liquidations is None else liquidations,
+        data.index,
+        warmup_rows,
+    )
     if warmup_rows and warmup_rows >= len(data.index):
         raise ExecutionError(f"预热行数 {warmup_rows} 不小于面板交易日数 {len(data.index)}")
     started = time.perf_counter()
@@ -713,6 +760,7 @@ def run_backtest(
         initial_state=initial_ledger,
         warmup_rows=warmup_rows,
         charge_costs=False,
+        writeoffs=writeoffs,
     )
     probe_orders = _probe_frame(_order_records(probe, "探针运行"))
     if warmup_rows:
@@ -728,7 +776,7 @@ def run_backtest(
         targets,
         strategy.execution,
         probe_orders,
-        liquidations,
+        writeoffs,
         None if initial_state is None else initial_state.rule_state,
         warmup_rows,
     )
@@ -738,6 +786,7 @@ def run_backtest(
         init_cash=init_cash,
         initial_state=initial_ledger,
         warmup_rows=warmup_rows,
+        writeoffs=writeoffs,
     )
     state_cash, state_shares = _state_frames(baseline)
     state_open_cash = baseline.opening_cash()
@@ -809,7 +858,7 @@ def run_backtest(
             strategy.costs, carry,
             initial_state=None if initial_state is None else initial_state.rule_state,
             warmup_rows=warmup_rows,
-            liquidations=liquidations,
+            liquidations=writeoffs,
             opening_shares=state_open_shares,
         )
         if (
@@ -840,6 +889,7 @@ def run_backtest(
             size_type="targetamount", init_cash=init_cash,
             initial_state=initial_ledger,
             warmup_rows=warmup_rows,
+            writeoffs=writeoffs,
         )
         state_cash, state_shares = _state_frames(portfolio)
         state_open_cash = portfolio.opening_cash()
@@ -852,6 +902,7 @@ def run_backtest(
         next_carry = cash_carry(plan.allocation, effective_targets, carry)
         if iteration == 1:
             next_carry = extend_carry(next_carry, effective_targets)
+        next_carry = _clear_carry_after_writeoff(next_carry, writeoffs)
         if not _same_matrix(next_carry, carry):
             carry_iterations += 1
         carry = next_carry
@@ -925,7 +976,49 @@ def run_backtest(
         if hasattr(portfolio, "corporate_action_records")
         else pd.DataFrame()
     )
-    liquidation_records = _liquidation_records(plan, orders)
+    liquidation_records = _liquidation_records(portfolio)
+    final_shares = state_shares.iloc[-1].astype("float64")
+    known_delisted = (
+        pd.to_datetime(data.delist_date).reindex(data.columns)
+        if data.delist_date is not None
+        else pd.Series(pd.NaT, index=data.columns)
+    )
+    must_be_flat = known_delisted.notna() & (known_delisted <= data.index[-1])
+    residual = final_shares.where(must_be_flat, 0.0)
+    residual_shares = float(residual[residual > 1e-9].sum())
+    if residual_shares > 1e-9:
+        sample = [str(item) for item in residual.index[residual > 1e-9][:5]]
+        raise ExecutionError(f"退市持仓未清零：{sample}，合计 {residual_shares:.0f} 股")
+    delisting_buy_orders = 0
+    forced_exit_orders = 0
+    if not orders.empty:
+        order_rows = data.index.get_indexer(pd.DatetimeIndex(orders["trade_date"]))
+        order_cols = data.columns.get_indexer(orders["stock_code"])
+        valid_orders = (order_rows >= 0) & (order_cols >= 0)
+        delisting_order = np.zeros(len(orders), dtype=bool)
+        delisting_order[valid_orders] = data.is_delisting.to_numpy(dtype=bool)[
+            order_rows[valid_orders], order_cols[valid_orders]
+        ]
+        is_buy = orders["Side"].astype(str).str.lower().eq("buy").to_numpy()
+        delisting_buy_orders = int((delisting_order & is_buy).sum())
+        if delisting_buy_orders:
+            raise ExecutionError(f"退市整理期出现 {delisting_buy_orders} 笔买入成交")
+        if "forced_exit" in orders:
+            forced_exit_orders = int(orders["forced_exit"].fillna(False).astype(bool).sum())
+    delisting_capacity_shortfall = 0.0
+    if not plan.allocation.empty and "capacity_shortfall_shares" in plan.allocation:
+        allocation_rows = data.index.get_indexer(
+            pd.DatetimeIndex(plan.allocation["trade_date"])
+        )
+        allocation_cols = data.columns.get_indexer(plan.allocation["stock_code"])
+        valid_allocations = (allocation_rows >= 0) & (allocation_cols >= 0)
+        flag = np.zeros(len(plan.allocation), dtype=bool)
+        flag[valid_allocations] = data.is_delisting.to_numpy(dtype=bool)[
+            allocation_rows[valid_allocations], allocation_cols[valid_allocations]
+        ]
+        delisting_capacity_shortfall = float(
+            plan.allocation.loc[flag, "capacity_shortfall_shares"].sum()
+        )
     # 区间末仍被现金限制、来不及补回的格子（末日的补回目标没有下一交易日可落）
     last_allocations = plan.allocation.loc[
         pd.DatetimeIndex(plan.allocation["trade_date"]) == effective_targets.index[-1]
@@ -971,8 +1064,19 @@ def run_backtest(
         ) if hasattr(portfolio, "dividend_tax_pending") and len(daily) else 0.0,
         "fractional_cash": float(daily.get("fractional_cash", pd.Series(dtype=float)).sum()),
         "total_cost_total": float(daily.get("total_cost", pd.Series(dtype=float)).sum()),
+        "forced_exit_orders": forced_exit_orders,
+        "delisting_writeoff_shares": float(
+            liquidation_records["size"].sum() if not liquidation_records.empty else 0.0
+        ),
+        "delisting_writeoff_value": float(
+            daily.get("writeoff_value", pd.Series(dtype=float)).sum()
+        ),
+        "delisting_residual_shares_at_end": residual_shares,
+        "delisting_buy_orders": delisting_buy_orders,
+        "delisting_capacity_shortfall_shares": delisting_capacity_shortfall,
         **risk_stats,
         **plan.plan_stats,
+        "forced_liquidations": int(len(liquidation_records)),
         **witnesses,
         **_weight_witnesses(plan, holdings),
     }
@@ -988,6 +1092,15 @@ def run_backtest(
         "dividend_tax_mode": strategy.costs.dividend_tax_mode,
         "lot_rule_version": RULE_VERSION,
         "lot_rules": rule_summary(),
+        "delisting_rule": {
+            "buy": "excluded_from_universe_and_blocked",
+            "exit_start": "first_sellable_day_in_delisting_period",
+            "blocked_exit": "retry_daily_respecting_suspension_and_limit_down",
+            "residual_settlement": "zero_writeoff_on_delist_date",
+            "writeoff_fees": False,
+            "writeoff_dividend_tax": False,
+            "rule_version": "cn_a_delisting_v1",
+        },
     }
     if strategy.execution.max_participation_rate is not None:
         execution_metadata["max_participation_rate"] = strategy.execution.max_participation_rate
@@ -1011,7 +1124,7 @@ def run_backtest(
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
     logger.info(
-        "回测完成：区间=%s~%s 订单=%d 拒单=%d 强制清算=%d 耗时=%.1fs",
+        "回测完成：区间=%s~%s 订单=%d 拒单=%d 退市核销=%d 耗时=%.1fs",
         params.start,
         params.end,
         len(orders),
@@ -1019,6 +1132,13 @@ def run_backtest(
         len(liquidation_records),
         metadata["elapsed_seconds"],
     )
+    final_carry = pending_carry(carry, plan.allocation, effective_targets)
+    if not writeoffs.empty:
+        written_columns = [
+            code for code in writeoffs["stock_code"].astype(str).unique()
+            if code in final_carry.index
+        ]
+        final_carry[written_columns] = np.nan
     return BacktestResult(
         portfolio=portfolio,
         daily=daily,
@@ -1038,7 +1158,7 @@ def run_backtest(
             mark_prices=valuation.iloc[-1].astype("float64"),
             last_prices=execution_price(data.open, valuation).iloc[-1].astype("float64"),
             rule_state=plan.rule_state,
-            carry=pending_carry(carry, plan.allocation, effective_targets),
+            carry=final_carry,
             ledger_state=portfolio.snapshot() if hasattr(portfolio, "snapshot") else None,
         ),
     )

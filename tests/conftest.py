@@ -31,9 +31,11 @@ def make_data():
             "can_sell_open_next": panel(True, bool),
             "is_suspended": panel(False, bool),
             "is_st": panel(False, bool),
+            "is_delisting": panel(False, bool),
             "is_limit_up": panel(False, bool),
             "is_limit_down": panel(False, bool),
             "total_mv": panel(1000.0, "float32"),
+            "amount_cny": panel(1e9, "float32"),
             "list_date": pd.Series(pd.Timestamp("2023-01-01"), index=columns),
             "board": pd.Series(
                 [board_from_stock_code(code) for code in columns],

@@ -43,6 +43,7 @@ FLAG_FIELDS = (
     "can_sell_open_next",
     "is_suspended",
     "is_st",
+    "is_delisting",
     "is_limit_up",
     "is_limit_down",
 )
@@ -52,8 +53,8 @@ PANEL_FIELDS = PRICE_FIELDS + FLAG_FIELDS + VALUE_FIELDS
 PRICE_ADJUST = "raw"
 STATE_ADJUST = "raw"
 
-# 退市强制清算候选的列，与 backtest.orders.LIQUIDATION_COLUMNS 一致
-LIQUIDATION_COLUMNS = ("trade_date", "stock_code", "price", "delist_date")
+# 退市零价值核销候选的列，与 backtest.orders.WRITEOFF_COLUMNS 一致
+WRITEOFF_COLUMNS = ("trade_date", "stock_code", "delist_date", "reference_price")
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,8 @@ class MarketData:
     ``factors`` 是「因子名 → 宽表」，``list_date`` 是每股上市日；
     ``board`` 是每股所属板块，交易单位按它解析；
     ``membership`` 只在指数成分池下存在，为 True 表示当日属于成分。
-    ``delist_date`` 为 None 时不做退市强制清算；``versions`` 是数据与因子版本。
+    ``is_delisting`` 标记退市整理期，``delist_date`` 决定退市日核销；
+    ``versions`` 是数据与因子版本。
     """
 
     open: pd.DataFrame
@@ -89,10 +91,17 @@ class MarketData:
     versions: dict | None = None
     amount_cny: pd.DataFrame | None = None
     corporate_actions: pd.DataFrame | None = None
+    is_delisting: pd.DataFrame | None = None
 
     def __post_init__(self) -> None:
+        if self.is_delisting is None:
+            object.__setattr__(
+                self,
+                "is_delisting",
+                pd.DataFrame(False, index=self.open.index, columns=self.open.columns),
+            )
         if self.amount_cny is None:
-            # 旧的合成夹具未提供成交额；关闭参与率时保持旧行为，启用时按成交额不可用处理。
+            # 合成面板未提供成交额时按容量不可用处理；测试夹具应显式给出成交额。
             object.__setattr__(
                 self,
                 "amount_cny",
@@ -490,19 +499,19 @@ def estimate_panel(
     return days, len(stocks) if stocks else _stock_upper_bound(start, end, db_path)
 
 
-def load_liquidation_candidates(
+def load_writeoff_candidates(
     start: str,
     end: str,
     *,
     db_path: Path | str | None = None,
 ) -> pd.DataFrame:
-    """读取整段区间的退市强制清算候选：每只退市股在区间内最后一只有价行情日。
+    """读取整段区间的退市零价值核销候选。
 
-    分块回测必须一次算好整段区间的清算候选：按块现算时，持仓股最后一条行情日
-    正好落在块边界，清算会被记到下一块的预热行，与原块的日结果打架。
+    每只区间内正式退市的股票取不晚于 ``delist_date`` 的最后一个面板交易日；
+    参考价取该日前最后一条有效收盘价。分块回测必须一次算好整段候选，避免退市日
+    正好落在块边界时，核销被记到下一块的预热行。
 
-    口径与 :func:`backtest.orders.liquidation_cells` 的面板版一致：退市日不晚于区间末、
-    最后一只有价行情日早于区间末（最后一天仍在交易的股票不按清算处理）。
+    口径与 :func:`backtest.orders.writeoff_cells` 的面板版一致。
 
     参数:
         start: 起始交易日。
@@ -512,33 +521,59 @@ def load_liquidation_candidates(
     frame = db_query(
         """
         WITH delisted AS (
-            SELECT DISTINCT stock_code, delist_date
+            SELECT stock_code, MAX(delist_date) AS delist_date
             FROM md.daily_bar
-            WHERE delist_date IS NOT NULL AND delist_date <= CAST(? AS DATE)
+            WHERE delist_date IS NOT NULL
+              AND delist_date >= CAST(? AS DATE)
+              AND delist_date <= CAST(? AS DATE)
+            GROUP BY stock_code
         ),
-        last_priced AS (
+        last_row AS (
             SELECT b.stock_code, MAX(b.trade_date) AS trade_date
             FROM md.daily_bar b
-            WHERE b.trade_date >= CAST(? AS DATE) AND b.trade_date < CAST(? AS DATE)
-              AND b.open IS NOT NULL
-              AND b.stock_code IN (SELECT stock_code FROM delisted)
+            JOIN delisted d ON d.stock_code = b.stock_code
+            WHERE b.trade_date >= CAST(? AS DATE)
+              AND b.trade_date <= d.delist_date
             GROUP BY b.stock_code
+        ),
+        last_close AS (
+            SELECT stock_code, close
+            FROM (
+                SELECT b.stock_code, b.close,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY b.stock_code ORDER BY b.trade_date DESC
+                       ) AS rn
+                FROM md.daily_bar b
+                JOIN delisted d ON d.stock_code = b.stock_code
+                WHERE b.trade_date <= d.delist_date
+                  AND b.close IS NOT NULL
+            )
+            WHERE rn = 1
         )
-        SELECT b.trade_date, b.stock_code, b.open AS price, d.delist_date
-        FROM last_priced l
-        JOIN md.daily_bar b
-          ON b.stock_code = l.stock_code AND b.trade_date = l.trade_date
+        SELECT l.trade_date, d.stock_code, d.delist_date, c.close AS reference_price
+        FROM last_row l
         JOIN delisted d ON d.stock_code = l.stock_code
-        ORDER BY b.trade_date, b.stock_code
+        LEFT JOIN last_close c ON c.stock_code = l.stock_code
+        ORDER BY l.trade_date, d.stock_code
         """,
-        [start, start, end],
+        [start, end, start],
         path=db_path,
     )
     if frame.empty:
-        return pd.DataFrame(columns=list(LIQUIDATION_COLUMNS))
+        return pd.DataFrame(columns=list(WRITEOFF_COLUMNS))
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
     frame["delist_date"] = pd.to_datetime(frame["delist_date"])
-    return frame[list(LIQUIDATION_COLUMNS)]
+    return frame[list(WRITEOFF_COLUMNS)]
+
+
+def load_liquidation_candidates(
+    start: str,
+    end: str,
+    *,
+    db_path: Path | str | None = None,
+) -> pd.DataFrame:
+    """兼容旧名：返回退市零价值核销候选。"""
+    return load_writeoff_candidates(start, end, db_path=db_path)
 
 
 def load_benchmark(
@@ -665,7 +700,7 @@ def load_market_data(
         else None
     )
     if delist_date is None:
-        logger.warning("股票基础表没有 delist_date，本次运行不做退市强制清算")
+        logger.warning("股票基础表没有 delist_date，本次运行不做退市零价值核销")
     logger.info(
         "回测输入就绪：池=%s 交易日=%d 股票=%d 因子=%s",
         spec.key,

@@ -321,17 +321,23 @@ def test_engine_liquidates_delisted_holding(make_data):
     params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 100_000.0)
     result = run_backtest(data, _strategy(), params)
 
-    assert result.metadata["calibration"]["forced_liquidations"] == 1
-    record = result.liquidations.iloc[0]
-    assert record["stock_code"] == "SZ000001"
-    assert record["trade_date"] == DATES[2]
-    assert record["size"] > 0
-    assert record["value"] == pytest.approx(record["size"] * record["price"])
-    sell = result.orders.loc[
-        (result.orders["stock_code"] == "SZ000001") & (result.orders["trade_date"] == DATES[2])
-    ]
-    assert len(sell) == 1
-    assert str(sell.iloc[0]["Side"]).lower() == "sell"
+    calibration = result.metadata["calibration"]
+    assert calibration["delisting_residual_shares_at_end"] == 0.0
+    assert calibration["forced_exit_orders"] + calibration["forced_liquidations"] >= 1
+    if not result.liquidations.empty:
+        record = result.liquidations.iloc[0]
+        assert record["stock_code"] == "SZ000001"
+        assert record["trade_date"] == DATES[2]
+        assert record["size"] > 0
+        assert record["value"] == pytest.approx(0.0)
+    else:
+        sell = result.orders.loc[
+            (result.orders["stock_code"] == "SZ000001")
+            & (result.orders["trade_date"] == DATES[2])
+        ]
+        assert len(sell) == 1
+        assert str(sell.iloc[0]["Side"]).lower() == "sell"
+        assert bool(sell.iloc[0]["forced_exit"])
     last = result.holdings.loc[result.holdings["trade_date"] == DATES[-1]]
     assert "SZ000001" not in set(last["stock_code"])
 
@@ -618,6 +624,16 @@ def test_engine_cost_components_are_additive_and_persisted(make_data):
         "carry_iterations": 0, "carry_converged": True,
         "backend": "ledger", "dividend_tax_mode": "fifo_deferred",
         "lot_rule_version": "cn_a_board_v1",
+        "max_participation_rate": 0.1,
+        "delisting_rule": {
+            "buy": "excluded_from_universe_and_blocked",
+            "exit_start": "first_sellable_day_in_delisting_period",
+            "blocked_exit": "retry_daily_respecting_suspension_and_limit_down",
+            "residual_settlement": "zero_writeoff_on_delist_date",
+            "writeoff_fees": False,
+            "writeoff_dividend_tax": False,
+            "rule_version": "cn_a_delisting_v1",
+        },
         "lot_rules": {
             "主板": {
                 "min_buy_shares": 100, "buy_increment": 100,

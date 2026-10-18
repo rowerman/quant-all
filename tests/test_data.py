@@ -14,6 +14,7 @@ from backtest.data import (
     _load_versions,
     load_benchmark,
     load_market_data,
+    load_writeoff_candidates,
 )
 from backtest.coverage import default_run_end, market_coverage
 from backtest.errors import DataAlignmentError, ResourceLimitError, SpecError
@@ -91,6 +92,17 @@ def test_default_benchmark_covers_latest_market_day():
     """默认基准必须覆盖行情最后一天，否则标准回测会在读取阶段失败。"""
     market = market_coverage()
     assert default_run_end("H00300.CSI") == market.end
+
+
+def test_load_writeoff_candidates_uses_last_row_before_delist():
+    cells = load_writeoff_candidates("2026-06-01", "2026-07-31")
+    assert list(cells.columns) == [
+        "trade_date", "stock_code", "delist_date", "reference_price",
+    ]
+    sample = cells.loc[cells["stock_code"] == "SH600193"].iloc[0]
+    assert sample["trade_date"] == pd.Timestamp("2026-07-06")
+    assert sample["delist_date"] == pd.Timestamp("2026-07-06")
+    assert sample["reference_price"] == pytest.approx(0.16)
 
 
 def test_market_data_rejects_unknown_board(make_data):

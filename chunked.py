@@ -29,7 +29,7 @@ from backtest.data import (
     MarketData,
     PRICE_ADJUST,
     load_benchmark,
-    load_liquidation_candidates,
+    load_writeoff_candidates,
     load_market_data,
 )
 from backtest.engine import (
@@ -44,7 +44,7 @@ from backtest.logging_conf import get_logger
 from backtest.metrics import summarize
 from backtest.orders import (
     execution_targets,
-    liquidation_cells,
+    writeoff_cells,
 )
 from backtest.risk import cap_target_weights
 from backtest.signals import build_target_weights, rebalance_mask
@@ -85,6 +85,11 @@ SUM_KEYS = (
     "final_orders",
     "final_buys",
     "final_sells",
+    "forced_exit_orders",
+    "delisting_writeoff_shares",
+    "delisting_writeoff_value",
+    "delisting_buy_orders",
+    "delisting_capacity_shortfall_shares",
     "fallback_fee_orders",
     "cash_clipped_cells",
     "weight_deviation_over_1pct",
@@ -135,6 +140,7 @@ LAST_KEYS = (
     "liquidity_pending_at_end_cells",
     "dividend_receivable_at_end",
     "dividend_tax_pending_at_end",
+    "delisting_residual_shares_at_end",
 )
 
 
@@ -533,7 +539,7 @@ def run_loaded(
         loader=loader,
         benchmark=data.benchmark,
         benchmark_info=data.benchmark_info,
-        liquidations=liquidation_cells(data),
+        liquidations=writeoff_cells(data),
         progress=progress,
         should_cancel=should_cancel,
     )
@@ -589,7 +595,7 @@ def run_chunked(
     stock_codes = _global_stock_codes(
         strategy.universe, params.start, params.end, db_path
     )
-    liquidations = load_liquidation_candidates(params.start, params.end, db_path=db_path)
+    liquidations = load_writeoff_candidates(params.start, params.end, db_path=db_path)
     benchmark, benchmark_info = load_benchmark(
         strategy.benchmark.index_code, params.start, params.end, days, db_path
     )
@@ -644,7 +650,11 @@ def _aggregate_calibration(items: list[dict]) -> dict:
         value = items[-1].get(key, 0) or 0
         merged[key] = (
             float(value)
-            if key in ("dividend_receivable_at_end", "dividend_tax_pending_at_end")
+            if key in (
+                "dividend_receivable_at_end",
+                "dividend_tax_pending_at_end",
+                "delisting_residual_shares_at_end",
+            )
             else int(value)
         )
     merged["cash_buffer"] = items[0].get("cash_buffer")
@@ -697,6 +707,8 @@ def _stitch(
     dividend_tax_parts: list[pd.Series] = []
     dividend_receivable_parts: list[pd.Series] = []
     fractional_cash_parts: list[pd.Series] = []
+    writeoff_size_parts: list[pd.Series] = []
+    writeoff_value_parts: list[pd.Series] = []
     position_parts: list[pd.DataFrame] = []
     order_offset = 0
     for window, result in results:
@@ -740,6 +752,12 @@ def _stitch(
         fractional_cash_parts.append(
             daily.get("fractional_cash", pd.Series(0.0, index=daily.index))
         )
+        writeoff_size_parts.append(
+            daily.get("writeoff_size", pd.Series(0.0, index=daily.index))
+        )
+        writeoff_value_parts.append(
+            daily.get("writeoff_value", pd.Series(0.0, index=daily.index))
+        )
         positions = result.positions.copy()
         if warmup is not None and "Status" in positions:
             positions = positions.loc[positions["Status"].astype(str) != "Open"]
@@ -758,7 +776,12 @@ def _stitch(
     liquidations = (
         pd.concat(liquidation_parts, ignore_index=True)
         if liquidation_parts
-        else pd.DataFrame(columns=["trade_date", "stock_code", "delist_date", "size", "price", "value"])
+        else pd.DataFrame(
+            columns=[
+                "trade_date", "stock_code", "delist_date", "size", "price", "value",
+                "reference_price", "reason",
+            ]
+        )
     )
     allocations = (
         pd.concat(allocation_parts, ignore_index=True) if allocation_parts else pd.DataFrame()
@@ -791,6 +814,8 @@ def _stitch(
         pd.concat(dividend_tax_parts).sort_index(),
         pd.concat(dividend_receivable_parts).sort_index(),
         pd.concat(fractional_cash_parts).sort_index(),
+        pd.concat(writeoff_size_parts).sort_index(),
+        pd.concat(writeoff_value_parts).sort_index(),
     )
     calibration = _aggregate_calibration([item.metadata["calibration"] for _, item in results])
     calibration.update(weight_witnesses(target_weights, holdings))

@@ -23,7 +23,16 @@ def test_strategy_json_round_trip_is_stable():
 
 
 def test_default_strategy_hash_is_stable():
-    assert StrategySpec().config_hash == "03d03da50fc105e5"
+    assert StrategySpec().config_hash == "956f4864e107cd68"
+
+
+def test_legacy_execution_block_without_participation_rate_stays_disabled():
+    """旧策略 JSON 没有该字段时不能被新默认 10% 改写。"""
+    spec = StrategySpec.from_dict(
+        {"execution": {"cash_buffer": 0.02, "lot_size": 100}}
+    )
+    assert spec.execution.max_participation_rate is None
+    assert spec.config_hash == "03d03da50fc105e5"
 
 
 def test_dividend_tax_mode_is_validated_and_serialized():

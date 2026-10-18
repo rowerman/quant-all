@@ -1,11 +1,12 @@
-"""退市强制清算的手工账本黄金用例。"""
+"""退市整理期退出与零价值核销的手工账本黄金用例。"""
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from backtest.engine import run_backtest
-from backtest.orders import LIQUIDATION_COLUMNS
+from backtest.errors import ExecutionError
+from backtest.orders import WRITEOFF_COLUMNS
 from backtest.specs import (
     BacktestParams,
     CostSpec,
@@ -17,150 +18,194 @@ from backtest.specs import (
 )
 
 DATES = pd.date_range("2026-01-05", periods=30, freq="B")
-STOCKS = ["SH600000", "SZ000001"]
-DELIST_STOCK = "SZ000001"
+STOCK = "SZ000001"
 BUY_DATE = pd.Timestamp("2026-02-02")
-BEFORE_DELIST = pd.Timestamp("2026-02-06")
 DELIST_DATE = pd.Timestamp("2026-02-09")
+LAST_DATE = DATES[-1]
 INIT_CASH = 100_000.0
 
 
-def _delisting_panel(make_data):
-    """构造一只股票在非调仓日退市、且当日停牌不可卖的双股票面板。"""
+def _panel(
+    make_data,
+    *,
+    delist_date=DELIST_DATE,
+    delisting_from=DELIST_DATE,
+    suspended=None,
+    amount=1e9,
+    delist_amount=None,
+):
     index = pd.DatetimeIndex(DATES)
-    columns = pd.Index(STOCKS, name="stock_code")
-    open_price = pd.DataFrame(10.0, index=index, columns=columns)
-    close_price = pd.DataFrame(10.5, index=index, columns=columns)
-    after_delist = index > DELIST_DATE
-    open_price.loc[after_delist, DELIST_STOCK] = np.nan
-    close_price.loc[after_delist, DELIST_STOCK] = np.nan
+    columns = pd.Index([STOCK], name="stock_code")
 
-    suspended = pd.DataFrame(False, index=index, columns=columns)
-    suspended.loc[DELIST_DATE, DELIST_STOCK] = True
-    can_sell = pd.DataFrame(True, index=index, columns=columns)
-    can_sell.loc[BEFORE_DELIST, DELIST_STOCK] = False
-    score = pd.DataFrame(1.0, index=index, columns=columns)
-    delist = pd.Series(pd.NaT, index=columns)
-    delist[DELIST_STOCK] = DELIST_DATE
+    def wide(value):
+        return pd.DataFrame(value, index=index, columns=columns)
+
+    open_price = wide(10.0)
+    close_price = wide(10.0)
+    after = index > pd.Timestamp(delist_date)
+    open_price.loc[after, STOCK] = np.nan
+    close_price.loc[after, STOCK] = np.nan
+    is_suspended = wide(False)
+    if suspended is not None:
+        is_suspended.loc[suspended, STOCK] = True
+    is_delisting = wide(False)
+    is_delisting.loc[index >= pd.Timestamp(delisting_from), STOCK] = True
+    amount_frame = wide(amount)
+    if delist_amount is not None:
+        amount_frame.loc[pd.Timestamp(delist_date), STOCK] = delist_amount
     return make_data(
         dates=index,
-        stocks=STOCKS,
+        stocks=[STOCK],
         open=open_price.astype("float32"),
         close=close_price.astype("float32"),
-        can_sell_open_next=can_sell,
-        is_suspended=suspended,
-        factors={"MOM_20": score.astype("float32")},
-        delist_date=delist,
-        amount_cny=pd.DataFrame(1e9, index=index, columns=columns).astype("float32"),
+        is_suspended=is_suspended,
+        is_delisting=is_delisting,
+        amount_cny=amount_frame.astype("float32"),
+        delist_date=pd.Series([pd.Timestamp(delist_date)], index=columns),
     )
 
 
-def _strategy():
-    """月度等权两只股票，关闭现金缓冲以便手工复算加减仓金额。"""
+def _strategy(*, participation=None):
     return StrategySpec(
         signal=SignalSpec(factors=("MOM_20",), weights=(1.0,), standardize=False),
-        portfolio=PortfolioSpec(top_n=2),
+        portfolio=PortfolioSpec(top_n=1),
         rebalance=RebalanceSpec(frequency="monthly"),
-        execution=ExecutionSpec(cash_buffer=0.0),
-        costs=CostSpec(),
+        execution=ExecutionSpec(
+            cash_buffer=0.0,
+            max_participation_rate=participation,
+        ),
+        costs=CostSpec.zero(),
     )
 
 
 def _params():
-    """返回与面板一致的运行区间和初始资金。"""
     return BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), INIT_CASH)
 
 
-def test_delisting_liquidation_matches_manual_ledger(make_data):
-    """非调仓日退市仍应在最后有价日强卖，现金与费用逐项对上手算账本。"""
-    result = run_backtest(_delisting_panel(make_data), _strategy(), _params())
+def test_suspended_delisting_writeoff_matches_manual_ledger(make_data):
+    """退市日停牌卖不掉时，10,000 股按零价值核销，现金不变。"""
+    data = _panel(make_data, suspended=[DELIST_DATE])
+    result = run_backtest(data, _strategy(), _params())
 
-    orders = result.orders.sort_values(["trade_date", "stock_code"]).reset_index(drop=True)
-    buys = orders.loc[orders["trade_date"] == BUY_DATE]
-    assert buys["stock_code"].tolist() == STOCKS
-    assert buys["Size"].tolist() == [4900.0, 4900.0]
-    assert buys["Price"].tolist() == pytest.approx([10.005, 10.005])
-    assert buys["commission"].tolist() == pytest.approx([14.71, 14.71])
-    assert buys["stamp_tax"].tolist() == pytest.approx([0.0, 0.0])
-    assert buys["transfer_fee"].tolist() == pytest.approx([0.49, 0.49])
-    assert buys["Fees"].tolist() == pytest.approx([15.20, 15.20])
-    assert buys["slippage_cost"].tolist() == pytest.approx([24.50, 24.50])
+    assert result.orders[["trade_date", "stock_code", "Side", "Size"]].to_dict("records") == [
+        {
+            "trade_date": BUY_DATE,
+            "stock_code": STOCK,
+            "Side": "Buy",
+            "Size": 10_000.0,
+        }
+    ]
+    assert result.liquidations.to_dict("records") == [
+        {
+            "trade_date": DELIST_DATE,
+            "stock_code": STOCK,
+            "delist_date": DELIST_DATE,
+            "size": 10_000.0,
+            "price": 0.0,
+            "value": 0.0,
+            "reference_price": 10.0,
+            "reason": "zero_writeoff",
+        }
+    ]
+    settled = result.daily.loc[DELIST_DATE]
+    assert settled["cash"] == pytest.approx(0.0)
+    assert settled["holdings_value"] == pytest.approx(0.0)
+    assert settled["portfolio_value"] == pytest.approx(0.0)
+    assert settled["writeoff_size"] == pytest.approx(10_000.0)
+    assert settled["writeoff_value"] == pytest.approx(100_000.0)
 
-    sells = orders.loc[orders["Side"].astype(str).str.lower() == "sell"]
+    closed = result.positions.iloc[0]
+    assert closed["Status"] == "Closed"
+    assert closed["Exit Timestamp"] == DELIST_DATE
+    assert closed["Avg Exit Price"] == pytest.approx(0.0)
+    assert closed["PnL"] == pytest.approx(-100_000.0)
+    assert result.final_state is not None
+    assert result.final_state.shares[STOCK] == 0.0
+    assert result.final_state.cash == pytest.approx(0.0)
+    assert result.rejections.to_dict("records") == [
+        {"trade_date": DELIST_DATE, "stock_code": STOCK, "reason": "suspended"}
+    ]
+
+    calibration = result.metadata["calibration"]
+    assert calibration["forced_liquidations"] == 1
+    assert calibration["delisting_writeoff_shares"] == pytest.approx(10_000.0)
+    assert calibration["delisting_writeoff_value"] == pytest.approx(100_000.0)
+    assert calibration["delisting_residual_shares_at_end"] == pytest.approx(0.0)
+    assert calibration["forced_exit_orders"] == 0
+
+
+def test_first_sellable_day_exits_before_delist(make_data):
+    """整理期首日停牌、下一交易日可卖时，按开盘价正常卖出，不产生核销。"""
+    first_delisting = pd.Timestamp("2026-02-06")
+    data = _panel(
+        make_data,
+        delisting_from=first_delisting,
+        suspended=[first_delisting],
+    )
+    result = run_backtest(data, _strategy(), _params())
+
+    sells = result.orders.loc[result.orders["Side"].astype(str).str.lower() == "sell"]
     assert len(sells) == 1
     sell = sells.iloc[0]
     assert sell["trade_date"] == DELIST_DATE
-    assert sell["stock_code"] == DELIST_STOCK
-    assert sell["Size"] == -4900.0
-    assert sell["Price"] == pytest.approx(9.995)
-    assert sell["commission"] == pytest.approx(14.69)
-    assert sell["stamp_tax"] == pytest.approx(24.49)
-    assert sell["transfer_fee"] == pytest.approx(0.49)
-    assert sell["Fees"] == pytest.approx(39.67)
-    assert sell["slippage_cost"] == pytest.approx(24.50)
-    assert len(orders) == 3
-
-    assert list(result.liquidations.columns) == [
-        "trade_date", "stock_code", "delist_date", "size", "price", "value",
-    ]
-    liquidation = result.liquidations.iloc[0]
-    assert liquidation["trade_date"] == DELIST_DATE
-    assert liquidation["stock_code"] == DELIST_STOCK
-    assert liquidation["delist_date"] == DELIST_DATE
-    assert liquidation["size"] == pytest.approx(4900.0)
-    assert liquidation["price"] == pytest.approx(9.995)
-    assert liquidation["value"] == pytest.approx(48_975.50)
-    assert result.rejections.empty
-
-    before = result.daily.loc[BEFORE_DELIST]
-    assert before["cash"] == pytest.approx(1_920.60)
-    assert before["holdings_value"] == pytest.approx(102_900.0)
-    assert before["portfolio_value"] == pytest.approx(104_820.60)
-
-    settled = result.daily.loc[DELIST_DATE]
-    assert settled["cash"] == pytest.approx(50_856.43)
-    assert settled["holdings_value"] == pytest.approx(51_450.0)
-    assert settled["portfolio_value"] == pytest.approx(102_306.43)
-    assert result.daily.loc[result.daily.index > DELIST_DATE, "portfolio_value"].tolist() == pytest.approx(
-        [102_306.43] * int((result.daily.index > DELIST_DATE).sum())
-    )
-
-    assert DELIST_STOCK not in set(
-        result.holdings.loc[result.holdings["trade_date"] >= DELIST_DATE, "stock_code"]
-    )
-    last_holdings = result.holdings.loc[result.holdings["trade_date"] == DATES[-1]]
-    assert last_holdings["stock_code"].tolist() == ["SH600000"]
-    assert last_holdings["market_value"].tolist() == pytest.approx([51_450.0])
-
-    closed = result.positions.loc[result.positions["Column"] == DELIST_STOCK]
-    assert len(closed) == 1
-    assert closed.iloc[0]["Status"] == "Closed"
-    assert closed.iloc[0]["Size"] == pytest.approx(4900.0)
-    assert closed.iloc[0]["Exit Timestamp"] == DELIST_DATE
-    assert closed.iloc[0]["Exit Fees"] == pytest.approx(39.67)
-    assert closed.iloc[0]["PnL"] == pytest.approx(-103.87)
-
-    assert result.metadata["calibration"]["forced_liquidations"] == 1
-    assert result.metadata["calibration"]["final_orders"] == 3
-    assert result.metadata["calibration"]["final_sells"] == 1
-    assert result.metadata["calibration"]["cash_clipped_cells"] == 0
-    assert result.final_state is not None
-    assert result.final_state.shares[DELIST_STOCK] == 0.0
-    assert result.final_state.cash == pytest.approx(50_856.43)
-
-
-def test_without_liquidation_candidates_leaves_delisted_position(make_data):
-    """负向对照：移除强制清算候选后，同一面板会留下退市持仓。"""
-    result = run_backtest(
-        _delisting_panel(make_data),
-        _strategy(),
-        _params(),
-        liquidations=pd.DataFrame(columns=LIQUIDATION_COLUMNS),
-    )
-
+    assert sell["Size"] == -10_000.0
+    assert sell["Price"] == pytest.approx(10.0)
+    assert bool(sell["forced_exit"])
     assert result.liquidations.empty
+    assert result.daily.loc[DELIST_DATE, "cash"] == pytest.approx(INIT_CASH)
+    assert result.metadata["calibration"]["forced_exit_orders"] == 1
     assert result.metadata["calibration"]["forced_liquidations"] == 0
-    last_holdings = result.holdings.loc[result.holdings["trade_date"] == DATES[-1]]
-    assert DELIST_STOCK in set(last_holdings["stock_code"])
+
+
+def test_window_end_delisting_is_written_off_without_residual(make_data):
+    """退市日等于区间末且不可卖时，区间末核销且不留下持仓。"""
+    data = _panel(
+        make_data,
+        delist_date=LAST_DATE,
+        delisting_from=LAST_DATE,
+        suspended=[LAST_DATE],
+    )
+    result = run_backtest(data, _strategy(), _params())
+
+    assert result.liquidations["trade_date"].tolist() == [LAST_DATE]
+    assert result.liquidations["size"].tolist() == [10_000.0]
     assert result.final_state is not None
-    assert result.final_state.shares[DELIST_STOCK] == pytest.approx(4900.0)
+    assert result.final_state.shares[STOCK] == 0.0
+    assert result.metadata["calibration"]["delisting_residual_shares_at_end"] == 0.0
+
+
+def test_capacity_shortfall_is_sold_then_written_off(make_data):
+    """成交额容量只允许卖出 100 股，剩余 9,900 股在退市日核销。"""
+    data = _panel(make_data, delist_amount=10_000.0)
+    result = run_backtest(data, _strategy(participation=0.1), _params())
+
+    sells = result.orders.loc[result.orders["Side"].astype(str).str.lower() == "sell"]
+    assert len(sells) == 1
+    assert sells.iloc[0]["Size"] == -100.0
+    assert bool(sells.iloc[0]["forced_exit"])
+    liquidation = result.liquidations.iloc[0]
+    assert liquidation["size"] == pytest.approx(9_900.0)
+    assert liquidation["value"] == pytest.approx(0.0)
+    assert result.daily.loc[DELIST_DATE, "cash"] == pytest.approx(1_000.0)
+    calibration = result.metadata["calibration"]
+    assert calibration["delisting_capacity_shortfall_shares"] == pytest.approx(9_900.0)
+    assert calibration["delisting_residual_shares_at_end"] == 0.0
+
+
+def test_delisting_stock_is_never_bought(make_data):
+    """整理期股票即使因子有值也不能进入组合。"""
+    data = _panel(make_data, delisting_from=DATES[0])
+    result = run_backtest(data, _strategy(), _params())
+    assert result.orders.empty
+    assert result.metadata["calibration"]["delisting_buy_orders"] == 0
+
+
+def test_removing_writeoff_candidates_is_rejected_by_residual_check(make_data):
+    """移除核销候选时，区间末残留退市持仓必须直接报错，不能静默保留。"""
+    with pytest.raises(ExecutionError, match="退市持仓未清零"):
+        run_backtest(
+            _panel(make_data, suspended=[DELIST_DATE]),
+            _strategy(),
+            _params(),
+            liquidations=pd.DataFrame(columns=WRITEOFF_COLUMNS),
+        )

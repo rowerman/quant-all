@@ -24,6 +24,7 @@ ORDER_COLUMNS = [
     "Order Id", "Column", "Timestamp", "Size", "Price", "Fees", "Side",
     "Board", "Order Valid", "reference_price", "gross_amount", "commission",
     "stamp_tax", "transfer_fee", "slippage_rate", "slippage_cost", "total_cost",
+    "forced_exit",
 ]
 POSITION_COLUMNS = [
     "Position Id",
@@ -52,6 +53,16 @@ ACTION_COLUMNS = [
     "fractional_cash",
     "source",
     "source_event_key",
+]
+WRITEOFF_COLUMNS = [
+    "trade_date",
+    "stock_code",
+    "delist_date",
+    "size",
+    "price",
+    "value",
+    "reference_price",
+    "reason",
 ]
 
 
@@ -186,8 +197,11 @@ class LedgerPortfolio:
         dividend_tax: pd.Series,
         dividend_tax_pending: pd.Series,
         fractional_cash: pd.Series,
+        writeoff_size: pd.Series,
+        writeoff_value: pd.Series,
         valuation: pd.DataFrame,
         sizes: pd.DataFrame,
+        writeoff_rows: list[dict],
     ) -> None:
         self.index = pd.DatetimeIndex(index)
         self.columns = columns
@@ -207,8 +221,11 @@ class LedgerPortfolio:
         self._dividend_tax = dividend_tax
         self._dividend_tax_pending = dividend_tax_pending
         self._fractional_cash = fractional_cash
+        self._writeoff_size = writeoff_size
+        self._writeoff_value = writeoff_value
         self._valuation = valuation
         self._sizes = sizes
+        self._writeoff_rows = writeoff_rows
         self.orders = SimpleNamespace(records_readable=orders)
         self.positions = SimpleNamespace(records_readable=positions)
 
@@ -232,6 +249,8 @@ class LedgerPortfolio:
         allow_board_adjustment: bool = False,
         initial_state: LedgerSnapshot | None = None,
         warmup_rows: int = 0,
+        writeoffs: pd.DataFrame | None = None,
+        forced_exit: pd.DataFrame | None = None,
         **_: Any,
     ) -> "LedgerPortfolio":
         """执行一次账本回测。
@@ -241,6 +260,8 @@ class LedgerPortfolio:
         ``boards`` 是按股票代码索引的板块序列；默认严格拒绝非法申报。
         ``allow_board_adjustment`` 仅供引擎固定点迭代使用，目标与真实开盘持股不一致时
         先按板块归一化，差异会由引擎的现金裁剪校验发现并触发下一轮。
+        ``writeoffs`` 是退市零价值核销候选；``forced_exit`` 标记整理期内应审计为
+        强制退出的成交格。
         """
         if not isinstance(close, pd.DataFrame):
             raise TypeError("账本需要日期 × 股票宽表 close")
@@ -248,6 +269,21 @@ class LedgerPortfolio:
         columns = pd.Index(close.columns)
         if boards is None:
             raise ValueError("账本需要以股票代码为索引的板块序列")
+        writeoff_frame = (
+            pd.DataFrame(columns=WRITEOFF_COLUMNS)
+            if writeoffs is None
+            else writeoffs.copy()
+        )
+        if not writeoff_frame.empty:
+            writeoff_frame["trade_date"] = pd.to_datetime(writeoff_frame["trade_date"])
+            writeoff_frame["delist_date"] = pd.to_datetime(
+                writeoff_frame["delist_date"], errors="coerce"
+            )
+        forced_exit_panel = (
+            pd.DataFrame(False, index=index, columns=columns)
+            if forced_exit is None
+            else forced_exit.reindex(index=index, columns=columns).fillna(False).astype(bool)
+        )
         aligned_boards = boards.reindex(columns)
         missing_boards = aligned_boards.isna() | (
             aligned_boards.astype(str).str.strip() == ""
@@ -297,11 +333,14 @@ class LedgerPortfolio:
         dividend_tax = np.zeros(len(index), dtype="float64")
         dividend_pending = np.zeros(len(index), dtype="float64")
         fractional_cash = np.zeros(len(index), dtype="float64")
+        writeoff_size = np.zeros(len(index), dtype="float64")
+        writeoff_value = np.zeros(len(index), dtype="float64")
         assets = np.zeros((len(index), len(columns)), dtype="float64")
         opening_assets = np.zeros((len(index), len(columns)), dtype="float64")
         order_rows: list[dict] = []
         position_rows: list[dict] = []
         action_rows: list[dict] = []
+        writeoff_rows: list[dict] = []
         order_id = 0
         last_prices = pd.Series(np.nan, index=columns, dtype="float64")
         col_lookup = {str(code): position for position, code in enumerate(columns)}
@@ -310,6 +349,44 @@ class LedgerPortfolio:
         for event in actions.to_dict("records") if not actions.empty else []:
             if pd.notna(event.get("ex_date")):
                 by_ex.setdefault(pd.Timestamp(event["ex_date"]), []).append(event)
+        writeoffs_by_day: dict[pd.Timestamp, list[pd.Series]] = {}
+        for item in writeoff_frame.to_dict("records") if not writeoff_frame.empty else []:
+            writeoffs_by_day.setdefault(pd.Timestamp(item["trade_date"]), []).append(item)
+
+        def apply_writeoffs(row: int, day: pd.Timestamp) -> None:
+            """在当日订单执行后清理退市残仓。"""
+            for item in writeoffs_by_day.get(day, []):
+                key = str(item["stock_code"])
+                position = col_lookup.get(key)
+                if position is None:
+                    continue
+                quantity = float(shares[position])
+                if quantity <= 1e-9:
+                    continue
+                reference = item.get("reference_price", np.nan)
+                reference = (
+                    float(reference)
+                    if pd.notna(reference) and np.isfinite(float(reference))
+                    else float(last_prices.get(key, np.nan))
+                )
+                if not np.isfinite(reference):
+                    reference = 0.0
+                remove_lots_writeoff(day, key, quantity)
+                shares[position] = 0.0
+                writeoff_size[row] += quantity
+                writeoff_value[row] += quantity * reference
+                writeoff_rows.append(
+                    {
+                        "trade_date": day,
+                        "stock_code": key,
+                        "delist_date": item.get("delist_date", pd.NaT),
+                        "size": quantity,
+                        "price": 0.0,
+                        "value": 0.0,
+                        "reference_price": reference,
+                        "reason": "zero_writeoff",
+                    }
+                )
 
         def add_action(
             day: pd.Timestamp,
@@ -493,6 +570,39 @@ class LedgerPortfolio:
                     items.pop(0)
             return tax, gross
 
+        def remove_lots_writeoff(day: pd.Timestamp, key: str, quantity: float) -> None:
+            """按零价值关闭持仓批次；核销不是卖出，不结算红利税。"""
+            items = lots.get(key, [])
+            remaining = float(quantity)
+            while remaining > 1e-9 and items:
+                item = items[0]
+                take = min(item.shares, remaining)
+                ratio = take / item.shares if item.shares else 0.0
+                entry_fees = item.entry_fees * ratio
+                pnl = -take * item.entry_price - entry_fees
+                position_rows.append(
+                    {
+                        "Position Id": len(position_rows),
+                        "Column": key,
+                        "Size": take,
+                        "Entry Timestamp": item.entry_date,
+                        "Avg Entry Price": item.entry_price,
+                        "Entry Fees": entry_fees,
+                        "Exit Timestamp": day,
+                        "Avg Exit Price": 0.0,
+                        "Exit Fees": 0.0,
+                        "PnL": pnl,
+                        "Return": -1.0 if item.entry_price else 0.0,
+                        "Direction": "Long",
+                        "Status": "Closed",
+                    }
+                )
+                item.entry_fees -= entry_fees
+                item.shares -= take
+                remaining -= take
+                if item.shares <= 1e-9:
+                    items.pop(0)
+
         def order_charge(
             day: pd.Timestamp,
             key: str,
@@ -552,6 +662,7 @@ class LedgerPortfolio:
             weights = targets.iloc[row].to_numpy(dtype="float64")
             active = np.flatnonzero(np.isfinite(weights))
             if not len(active):
+                apply_writeoffs(row, day)
                 assets[row] = shares
                 cash_values[row] = cash
                 receivable_values[row] = sum(float(item["amount"]) for item in receivable_rows)
@@ -654,6 +765,7 @@ class LedgerPortfolio:
                             "slippage_rate": charge.slippage_rate,
                             "slippage_cost": charge.slippage_cost,
                             "total_cost": charge.total_cost,
+                            "forced_exit": bool(forced_exit_panel.iat[row, position]),
                         }
                     )
                     order_id += 1
@@ -734,10 +846,12 @@ class LedgerPortfolio:
                             "slippage_rate": charge.slippage_rate,
                             "slippage_cost": charge.slippage_cost,
                             "total_cost": charge.total_cost,
+                            "forced_exit": False,
                         }
                     )
                     order_id += 1
 
+            apply_writeoffs(row, day)
             assets[row] = shares
             cash_values[row] = cash
             receivable_values[row] = sum(float(item["amount"]) for item in receivable_rows)
@@ -791,6 +905,8 @@ class LedgerPortfolio:
         dividend_tax_series = pd.Series(dividend_tax, index=index)
         pending_series = pd.Series(dividend_pending, index=index)
         fractional_series = pd.Series(fractional_cash, index=index)
+        writeoff_size_series = pd.Series(writeoff_size, index=index)
+        writeoff_value_series = pd.Series(writeoff_value, index=index)
         assets_frame = pd.DataFrame(assets, index=index, columns=columns)
         opening_assets_frame = pd.DataFrame(opening_assets, index=index, columns=columns)
         return cls(
@@ -812,8 +928,11 @@ class LedgerPortfolio:
             dividend_tax=dividend_tax_series,
             dividend_tax_pending=pending_series,
             fractional_cash=fractional_series,
+            writeoff_size=writeoff_size_series,
+            writeoff_value=writeoff_value_series,
             valuation=valuation,
             sizes=targets,
+            writeoff_rows=writeoff_rows,
         )
 
     def value(self) -> pd.Series:
@@ -860,6 +979,10 @@ class LedgerPortfolio:
         """逐日零头折现金额。"""
         return self._fractional_cash.copy()
 
+    def writeoff_records(self) -> pd.DataFrame:
+        """返回逐笔退市零价值核销明细。"""
+        return pd.DataFrame(self._writeoff_rows, columns=WRITEOFF_COLUMNS)
+
     def corporate_action_records(self) -> pd.DataFrame:
         """返回公司行动明细。"""
         frame = self._actions.copy()
@@ -889,6 +1012,8 @@ class LedgerPortfolio:
                 "dividend_tax": self._dividend_tax,
                 "dividend_receivable": self._receivables,
                 "fractional_cash": self._fractional_cash,
+                "writeoff_size": self._writeoff_size,
+                "writeoff_value": self._writeoff_value,
             },
             index=self.index,
         )

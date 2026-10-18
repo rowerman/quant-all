@@ -12,7 +12,13 @@ from backtest.errors import (
     SpecError,
 )
 from backtest.metrics import summarize
-from backtest.orders import OrderPlan, build_order_plan, execution_targets, liquidation_cells
+from backtest.orders import (
+    OrderPlan,
+    build_order_plan,
+    execution_targets,
+    liquidation_cells,
+    writeoff_cells,
+)
 from backtest.pipeline import RunRequest, iter_run, run
 from backtest.signals import build_target_weights, eligible_mask, rebalance_mask
 from backtest.specs import (
@@ -59,6 +65,7 @@ __all__ = [
     "execution_targets",
     "iter_run",
     "liquidation_cells",
+    "writeoff_cells",
     "list_universes",
     "load_market_data",
     "membership_frame",

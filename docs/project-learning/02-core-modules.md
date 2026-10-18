@@ -110,9 +110,9 @@ run_backtest
 
 `execution_targets(target_weights) -> DataFrame`（`orders.py:58-64`）整体向后移动一天，保证收盘信号次日开盘执行。
 
-`apply_rules(data, targets, execution, liquidations) -> tuple[...]`（`orders.py:185-263`）维护 `held` 和 `shadow` 状态。它把当前目标和上一成功目标比较，判定买、卖、再平衡；被拦下的格子不更新状态，下一次调仓继续尝试。
+`apply_rules(data, targets, execution, writeoffs) -> tuple[...]` 维护 `held` 和 `shadow` 状态。它把当前目标和上一成功目标比较，判定买、卖、再平衡；被拦下的格子不更新状态，下一次调仓继续尝试。退市整理期持仓从首个可卖日起强制目标为 0。
 
-`liquidation_cells(data) -> DataFrame`（`orders.py:111-144`）只处理区间内退市且最后有效行情日不是窗口末日的股票，返回强卖日期、参考价格和退市日期。
+`writeoff_cells(data) -> DataFrame` 处理区间内正式退市的股票，返回核销行、退市日和参考收盘价；`liquidation_cells()` 保留为兼容入口。
 
 成本不再由 `orders.py` 生成费率矩阵。`costs.py` 的 `CostSpec.charge()` 与
 `charge_arrays()` 统一处理佣金、最低佣金、历史印花税、历史过户费和历史红利税，
@@ -122,10 +122,11 @@ run_backtest
 
 | 条件 | 结果 |
 |---|---|
-| 停牌且非强平 | 目标置 NaN，记录 `suspended` |
+| 停牌且非退市强制退出 | 目标置 NaN，记录 `suspended` |
 | 涨停买入 | 目标置 NaN，记录 `limit_up_or_not_buyable` |
 | 跌停卖出 | 目标置 NaN，记录 `limit_down_or_not_sellable` |
-| 退市强平 | 绕过停牌和涨跌停，提交卖出 |
+| 退市整理期持仓 | 强制目标为 0，遵守停牌和跌停并每日重试 |
+| 退市日仍有残仓 | 账本按零价值核销，不计费用和红利税 |
 | 目标为 0 且空仓 | 不提交无效订单 |
 | 目标与上一目标相同 | 作为方向未知的再平衡，任一侧被封则不提交 |
 

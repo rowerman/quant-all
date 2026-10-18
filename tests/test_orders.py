@@ -11,6 +11,7 @@ from backtest.orders import (
     execution_targets,
     liquidation_cells,
     probe_matrices,
+    WRITEOFF_COLUMNS,
 )
 from backtest.specs import ExecutionSpec
 
@@ -298,7 +299,7 @@ def test_fee_estimate_uses_previous_close_shares(panel):
 
 
 def _delist_panel(panel, stock: str = "SZ000001", **overrides):
-    """构造一只股票在窗口内退市的面板：最后一条行情在 INDEX[2]。"""
+    """构造一只股票在 INDEX[2] 退市、之后没有行情的面板。"""
     prices = pd.DataFrame(10.0, index=INDEX, columns=COLUMNS)
     prices.loc[INDEX[3], stock] = np.nan
     delist = pd.Series(pd.NaT, index=COLUMNS)
@@ -306,27 +307,32 @@ def _delist_panel(panel, stock: str = "SZ000001", **overrides):
     return panel(open=prices.astype("float32"), delist_date=delist, **overrides)
 
 
-def test_liquidation_cells_pick_last_bar_before_window_end(panel):
+def test_writeoff_cells_pick_delist_date_and_reference_close(panel):
     data = _delist_panel(panel, "SZ000001")
     cells = liquidation_cells(data)
-    assert list(cells.columns) == ["trade_date", "stock_code", "price", "delist_date"]
+    assert list(cells.columns) == [
+        "trade_date", "stock_code", "delist_date", "reference_price",
+    ]
     assert cells["stock_code"].tolist() == ["SZ000001"]
     assert cells["trade_date"].tolist() == [INDEX[2]]
-    assert cells["price"].tolist() == [pytest.approx(10.0)]
+    assert cells["reference_price"].tolist() == [pytest.approx(10.5)]
     assert cells["delist_date"].tolist() == [INDEX[2]]
 
 
-def test_liquidation_cells_skip_delist_on_window_end(panel):
-    """退市日等于面板最后一天时不强卖，避免动到区间末的估值口径。"""
+def test_writeoff_cells_include_delist_on_window_end(panel):
+    """退市日等于面板最后一天时仍要留下核销候选。"""
     delist = pd.Series(pd.NaT, index=COLUMNS)
     delist["SZ000001"] = INDEX[3]
-    assert liquidation_cells(panel(delist_date=delist)).empty
+    cells = liquidation_cells(panel(delist_date=delist))
+    assert cells["trade_date"].tolist() == [INDEX[3]]
     # 没有退市日序列时整体不生效
     assert liquidation_cells(panel()).empty
 
 
-def test_delisted_position_is_sold_on_last_bar(panel):
-    data = _delist_panel(panel, "SZ000001")
+def test_delisting_position_is_sold_from_first_sellable_day(panel):
+    delisting = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
+    delisting.loc[INDEX[2], "SZ000001"] = True
+    data = _delist_panel(panel, "SZ000001", is_delisting=delisting)
     targets = _targets([[np.nan, np.nan], [0.5, 0.5], [np.nan, np.nan], [np.nan, np.nan]])
     liquidations = liquidation_cells(data)
     filtered, rejection, direction, executed, _, _ = apply_rules(
@@ -338,43 +344,88 @@ def test_delisted_position_is_sold_on_last_bar(panel):
     assert rejection.empty
 
 
-def test_forced_liquidation_bypasses_limit_down(panel):
-    """退市强卖不受跌停/停牌规则约束，也不写拒单。"""
+def test_forced_exit_respects_suspension_and_limit_down(panel):
+    """整理期强制退出不能绕过停牌或跌停。"""
+    delisting = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
+    delisting.loc[INDEX[2], "SZ000001"] = True
     can_sell = pd.DataFrame(True, index=INDEX, columns=COLUMNS)
-    can_sell.loc[INDEX[1], "SZ000001"] = False  # INDEX[2] 执行日跌停卖不掉
+    can_sell.loc[INDEX[1], "SZ000001"] = False
+    can_sell.loc[INDEX[2], "SZ000001"] = False
     suspended = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
     suspended.loc[INDEX[2], "SZ000001"] = True
-    data = _delist_panel(panel, can_sell_open_next=can_sell, is_suspended=suspended)
+    data = _delist_panel(
+        panel,
+        can_sell_open_next=can_sell,
+        is_suspended=suspended,
+        is_delisting=delisting,
+    )
     targets = _targets([[np.nan, np.nan], [0.5, 0.5], [np.nan, np.nan], [np.nan, np.nan]])
-    filtered, rejection, _, executed, _, _ = apply_rules(
+    filtered, rejection, direction, executed, _, state = apply_rules(
         data, targets, ExecutionSpec(), liquidation_cells(data)
     )
-    assert filtered.loc[INDEX[2], "SZ000001"] == 0.0
+    assert np.isnan(filtered.loc[INDEX[2], "SZ000001"])
+    assert direction[2, 1] == 0
     assert len(executed) == 1
-    assert rejection.empty
+    assert rejection.to_dict("records") == [
+        {"trade_date": INDEX[2], "stock_code": "SZ000001", "reason": "suspended"}
+    ]
+    assert not state.held["SZ000001"]
+    assert np.isnan(state.pending["SZ000001"])
 
 
-def test_liquidation_cells_follow_real_delist_date(make_data):
-    """真实退市股：强卖格落在它最后一条有价的行情日。
+def test_forced_exit_is_blocked_by_limit_down(panel):
+    """整理期强制退出遇到跌停时保留持仓并等待下一交易日重试。"""
+    delisting = pd.DataFrame(False, index=INDEX, columns=COLUMNS)
+    delisting.loc[INDEX[2], "SZ000001"] = True
+    can_sell = pd.DataFrame(True, index=INDEX, columns=COLUMNS)
+    can_sell.loc[INDEX[1], "SZ000001"] = False
+    can_sell.loc[INDEX[2], "SZ000001"] = False
+    data = _delist_panel(panel, can_sell_open_next=can_sell, is_delisting=delisting)
+    targets = _targets([[np.nan, np.nan], [0.5, 0.5], [np.nan, np.nan], [np.nan, np.nan]])
+    filtered, rejection, direction, _, _, state = apply_rules(
+        data,
+        targets,
+        ExecutionSpec(),
+        pd.DataFrame(columns=WRITEOFF_COLUMNS),
+    )
+    assert np.isnan(filtered.loc[INDEX[2], "SZ000001"])
+    assert direction[2, 1] == 0
+    assert rejection.to_dict("records") == [
+        {
+            "trade_date": INDEX[2],
+            "stock_code": "SZ000001",
+            "reason": "limit_down_or_not_sellable",
+        }
+    ]
+    assert state.held["SZ000001"]
 
-    退市整理期结束前就停牌的股票（如 SH600193 一直停到退市日）最后一条有价行情在退市日之前，
-    强卖格取的是那一天而不是退市日，这也是唯一能真正卖出的时点。
-    """
+
+def test_writeoff_cells_follow_real_delist_date(make_data):
+    """真实退市股：核销日不晚于退市日，参考价取最后有效收盘。"""
     codes = ["SZ002898", "SZ000004", "SH600193"]
     start, end = "2026-06-01", "2026-07-31"
     frame = quant.load_panel(
-        start=start, end=end, fields=["open"], adjust="raw", stocks=codes
+        start=start, end=end, fields=["open", "close"], adjust="raw", stocks=codes
     )
-    wide = frame.pivot(index="trade_date", columns="stock_code", values="open")
-    wide.index = pd.DatetimeIndex(wide.index)
+    open_wide = frame.pivot(index="trade_date", columns="stock_code", values="open")
+    close_wide = frame.pivot(index="trade_date", columns="stock_code", values="close")
+    open_wide.index = pd.DatetimeIndex(open_wide.index)
+    close_wide.index = pd.DatetimeIndex(close_wide.index)
     basic = quant.load_stock_basic().set_index("stock_code")
-    delist = pd.to_datetime(basic["delist_date"]).reindex(wide.columns)
-    data = make_data(dates=wide.index, stocks=wide.columns, open=wide, delist_date=delist)
+    delist = pd.to_datetime(basic["delist_date"]).reindex(open_wide.columns)
+    data = make_data(
+        dates=open_wide.index,
+        stocks=open_wide.columns,
+        open=open_wide,
+        close=close_wide,
+        delist_date=delist,
+    )
     cells = liquidation_cells(data)
     assert set(cells["stock_code"]) == set(codes)
     for row in cells.to_dict("records"):
-        last_bar = wide[row["stock_code"]].dropna().index[-1]
-        assert row["trade_date"] == last_bar
-        assert pd.Timestamp(row["delist_date"]) >= last_bar
-        assert row["price"] == pytest.approx(float(wide.loc[last_bar, row["stock_code"]]))
+        code = row["stock_code"]
+        last_valid = close_wide[code].dropna().index[-1]
+        assert row["trade_date"] <= row["delist_date"]
+        assert row["trade_date"] >= last_valid
+        assert row["reference_price"] == pytest.approx(float(close_wide.loc[last_valid, code]))
 

@@ -176,7 +176,6 @@ def allocate_shares(
     costs: CostSpec | None = None,
     amount_cny: pd.DataFrame | None = None,
     max_participation_rate: float | None = None,
-    capacity_exempt: pd.DataFrame | None = None,
     opening_shares: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, dict]:
     """按预算把目标权重换成目标股数，返回 ``(股数矩阵, 逐格明细, 方向矩阵, 统计)``。
@@ -193,7 +192,6 @@ def allocate_shares(
         costs: 最终成交使用的佣金、印花税和滑点口径；None 表示零成本。
         amount_cny: 执行日未复权成交额；None 表示不启用成交额参与率。
         max_participation_rate: 单票成交额参与率；None 表示关闭。
-        capacity_exempt: 不受参与率限制的格子，当前用于退市强制清算。
     """
     if not 0.0 <= float(cash_buffer) < 1.0:
         raise ExecutionError(f"现金缓冲必须在 [0, 1) 之间：{cash_buffer}")
@@ -212,15 +210,6 @@ def allocate_shares(
         None
         if amount_cny is None
         else amount_cny.reindex(index=index, columns=columns).to_numpy(dtype="float64")
-    )
-    exempt = (
-        np.zeros(weights.shape, dtype=bool)
-        if capacity_exempt is None
-        else (
-            capacity_exempt.reindex(index=index, columns=columns).fillna(False).to_numpy(dtype=bool)
-            if isinstance(capacity_exempt, pd.DataFrame)
-            else np.asarray(capacity_exempt, dtype=bool)
-        )
     )
     # 执行日开盘前持股已经包含当日公司行动；没有显式传入时退回旧的平移口径。
     if opening_shares is None:
@@ -410,8 +399,7 @@ def allocate_shares(
                 raw_amount * float(max_participation_rate),
                 0.0,
             )
-            capacity_unavailable = ~valid_amount & ~exempt[row, cells]
-            capacity_limit = np.where(exempt[row, cells], np.nan, capacity_limit)
+            capacity_unavailable = ~valid_amount
             before_capacity = cell_shares.copy()
             delta = before_capacity - previous_held
             active_delta = np.abs(delta) >= 0.5
@@ -435,7 +423,6 @@ def allocate_shares(
                 ],
                 dtype="float64",
             )
-            capped_targets = np.where(exempt[row, cells], before_capacity, capped_targets)
             cell_shares = np.where(tradable, capped_targets, 0.0)
             capped_delta = cell_shares - previous_held
             capacity_shortfall = np.where(
@@ -446,7 +433,6 @@ def allocate_shares(
             capacity_limited = (
                 active_delta
                 & (capacity_shortfall >= 0.5)
-                & ~exempt[row, cells]
             )
             capacity_limited &= ~capacity_unavailable
             capacity_requested_value = np.abs(delta) * tradable_price
