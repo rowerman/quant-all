@@ -14,9 +14,10 @@ from typing import Callable, Iterator
 
 from backtest.chunked import plan_chunks, run_chunked, run_loaded
 from backtest.config import MAX_PANEL_CELLS
+from backtest.coverage import validate_window
 from backtest.data import estimate_panel, load_market_data
 from backtest.engine import BacktestResult
-from backtest.errors import BacktestError, RunCancelled
+from backtest.errors import BacktestError, RunCancelled, SpecError
 from backtest.logging_conf import get_logger
 from backtest.specs import BacktestParams, BenchmarkSpec, StrategySpec
 from backtest.store import BacktestStore
@@ -38,6 +39,11 @@ class RunRequest:
     init_cash: float = 1_000_000.0
     universe: str | None = None
     benchmark: str | None = None
+    clear_benchmark: bool = False
+
+    def __post_init__(self) -> None:
+        if self.clear_benchmark and self.benchmark is not None:
+            raise SpecError("benchmark 与 clear_benchmark 不能同时指定")
 
     @property
     def params(self) -> BacktestParams:
@@ -58,7 +64,9 @@ def effective_spec(spec: StrategySpec, request: RunRequest) -> StrategySpec:
     if request.universe is not None:
         resolve_universe(request.universe)
         changes["universe"] = request.universe
-    if request.benchmark is not None:
+    if request.clear_benchmark:
+        changes["benchmark"] = BenchmarkSpec(index_code=None)
+    elif request.benchmark is not None:
         changes["benchmark"] = BenchmarkSpec(index_code=request.benchmark)
     return replace(spec, **changes) if changes else spec
 
@@ -94,6 +102,8 @@ def iter_run(
     """
     spec = effective_spec(store.get_version(request.strategy_id, request.version), request)
     params = request.params
+    # 覆盖检查放在运行记录和面板读取之前，避免可预期的缺日留下失败运行。
+    validate_window(spec.benchmark.index_code, params.start, params.end)
     run_id = store.start_run(
         request.strategy_id, spec.version, params,
         universe=spec.universe, benchmark=spec.benchmark.index_code,

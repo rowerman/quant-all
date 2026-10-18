@@ -15,6 +15,7 @@ from backtest.data import (
     load_benchmark,
     load_market_data,
 )
+from backtest.coverage import default_run_end, market_coverage
 from backtest.errors import DataAlignmentError, ResourceLimitError, SpecError
 
 
@@ -84,6 +85,12 @@ def test_load_market_data_reads_real_panel():
     assert set(data.board.unique()) <= {"主板", "创业板", "科创板", "北交所"}
     for name in PANEL_FIELDS:
         assert getattr(data, name).shape == data.open.shape
+
+
+def test_default_benchmark_covers_latest_market_day():
+    """默认基准必须覆盖行情最后一天，否则标准回测会在读取阶段失败。"""
+    market = market_coverage()
+    assert default_run_end("H00300.CSI") == market.end
 
 
 def test_market_data_rejects_unknown_board(make_data):

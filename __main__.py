@@ -30,7 +30,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", required=True, help="截止交易日 YYYY-MM-DD")
     parser.add_argument("--init-cash", type=float, default=1_000_000.0, help="初始资金")
     parser.add_argument("--universe", help="运行级股票池覆盖，如 index:000300.SH")
-    parser.add_argument("--benchmark", help="运行级基准覆盖，如 H00905.CSI（中证500全收益）")
+    benchmark_group = parser.add_mutually_exclusive_group()
+    benchmark_group.add_argument(
+        "--benchmark", help="运行级基准覆盖，如 H00905.CSI（中证500全收益）"
+    )
+    benchmark_group.add_argument(
+        "--no-benchmark", action="store_true", help="本次关闭基准，不计算超额收益"
+    )
     return parser
 
 
@@ -51,6 +57,7 @@ def main() -> None:
         init_cash=args.init_cash,
         universe=args.universe,
         benchmark=args.benchmark,
+        clear_benchmark=args.no_benchmark,
     )
     summary: dict = {}
     try:

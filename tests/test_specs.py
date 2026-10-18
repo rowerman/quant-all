@@ -139,3 +139,26 @@ def test_run_request_can_override_total_return_with_price_index():
     effective = effective_spec(original, request)
     assert original.benchmark.index_code == "H00300.CSI"
     assert effective.benchmark.index_code == "000300.SH"
+
+
+def test_run_request_can_explicitly_disable_benchmark():
+    """运行级关闭基准与不传覆盖要区分开。"""
+    original = StrategySpec()
+    keep = effective_spec(
+        original,
+        RunRequest(strategy_id="demo", start="2024-01-01", end="2024-01-31"),
+    )
+    cleared = effective_spec(
+        original,
+        RunRequest(
+            strategy_id="demo", start="2024-01-01", end="2024-01-31",
+            clear_benchmark=True,
+        ),
+    )
+    assert keep.benchmark.index_code == "H00300.CSI"
+    assert cleared.benchmark.index_code is None
+    with pytest.raises(SpecError, match="不能同时指定"):
+        RunRequest(
+            strategy_id="demo", start="2024-01-01", end="2024-01-31",
+            benchmark="000300.SH", clear_benchmark=True,
+        )
