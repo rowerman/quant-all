@@ -66,7 +66,7 @@ def options(store_path: str | None = None) -> dict:
         "factors": factors[["name", "family", "direction", "description"]].to_dict("records"),
         "defaults": {
             "start": "2024-01-01", "end": default_run_end("H00300.CSI"), "init_cash": 1_000_000.0,
-            "benchmark": "H00300.CSI",
+            "benchmark": "H00300.CSI", "risk_free_rate": 0.02,
         },
         "coverage": {
             "market_start": market.start,
@@ -89,7 +89,11 @@ def options(store_path: str | None = None) -> dict:
             "stamp_tax": "historical",
             "transfer_fee": "historical",
             "fee_rounding": "cent",
-            "schedule": cost_model_summary(CostSpec()),
+            "schedule": cost_model_summary(StrategySpec().costs),
+            "impact_model": StrategySpec().costs.impact_model,
+            "impact_coefficient": StrategySpec().costs.impact_coefficient,
+            "impact_volatility_window": StrategySpec().costs.impact_volatility_window,
+            "impact_max_rate": StrategySpec().costs.impact_max_rate,
         },
     }
 
@@ -98,7 +102,10 @@ def create_strategy(payload: dict, store_path: str | None = None) -> dict:
     """创建策略第一版。"""
     if not isinstance(payload, dict):
         raise BacktestError("策略请求必须是对象")
-    spec = StrategySpec.from_dict(payload.get("spec", payload))
+    raw = payload.get("spec", payload)
+    if isinstance(raw, dict) and "costs" not in raw:
+        raw = {**raw, "costs": StrategySpec().to_dict()["costs"]}
+    spec = StrategySpec.from_dict(raw)
     strategy_id, version = _store(store_path).create_strategy(spec, payload.get("description", ""))
     return {"strategy_id": strategy_id, "version": version, "config_hash": spec.config_hash}
 
@@ -236,6 +243,10 @@ def prepare(payload: dict, store_path: str | None = None) -> RunRequest:
     if version is not None and (not isinstance(version, int) or version <= 0):
         raise SpecError("version 必须是正整数")
     init_cash = payload.get("init_cash", 1_000_000.0)
+    try:
+        risk_free_rate = float(payload.get("risk_free_rate", 0.02))
+    except (TypeError, ValueError) as error:
+        raise SpecError("risk_free_rate 必须是数字") from error
     start, end = payload.get("start", ""), payload.get("end", "")
     universe = payload.get("universe")
     if universe is not None:
@@ -252,6 +263,7 @@ def prepare(payload: dict, store_path: str | None = None) -> RunRequest:
         end=end,
         version=version,
         init_cash=float(init_cash),
+        risk_free_rate=float(risk_free_rate),
         universe=universe,
         benchmark=benchmark,
         clear_benchmark=clear_benchmark,

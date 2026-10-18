@@ -93,6 +93,7 @@ def test_strategy_api_uses_ten_percent_participation_by_default(client):
     assert created.status_code == 200
     detail = client.get(f"/api/strategies/{created.json()['strategy_id']}").json()
     assert detail["spec"]["execution"]["max_participation_rate"] == pytest.approx(0.1)
+    assert detail["spec"]["costs"]["impact_model"] == "sqrt"
 
 
 def test_strategy_api_rejects_invalid_weights_and_costs(client):
@@ -119,6 +120,7 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
         row["code"] for row in payload["benchmarks"]
     }
     assert payload["defaults"]["benchmark"] == "H00300.CSI"
+    assert payload["defaults"]["risk_free_rate"] == pytest.approx(0.02)
     market = market_coverage()
     benchmark = benchmark_coverage("H00300.CSI")
     assert payload["defaults"]["end"] == min(str(market.end), str(benchmark.end))
@@ -133,6 +135,8 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
     assert payload["costs"]["stamp_tax"] == "historical"
     assert payload["costs"]["transfer_fee"] == "historical"
     assert payload["costs"]["fee_rounding"] == "cent"
+    assert payload["costs"]["impact_model"] == "sqrt"
+    assert payload["costs"]["impact_coefficient"] == pytest.approx(0.5)
     assert "stamp_tax_rate" not in payload["costs"]
 
 
@@ -336,6 +340,15 @@ def test_run_tables_and_metrics_are_readable(client, store):
         metrics={"total_return": 0.02},
         metadata={"strategy_hash": "hash", "universe": "all_a", "elapsed_seconds": 3.0},
         liquidations=liquidation,
+        industry_exposure=pd.DataFrame(
+            {
+                "trade_date": [pd.Timestamp("2024-01-02")],
+                "industry": ["SW2014 801010 农林牧渔"],
+                "market_value": [500_000.0],
+                "weight": [0.5],
+                "is_cash": [False],
+            }
+        ),
     )
     store.finish_run(run_id, result)
 
@@ -351,15 +364,31 @@ def test_run_tables_and_metrics_are_readable(client, store):
     metrics = client.get(f"/api/backtests/{run_id}/metrics").json()
     assert metrics["total_return"] == pytest.approx(0.02)
     assert metrics["trading_days"] == 2
-
     assert client.get(f"/api/backtests/{run_id}/holding").json()[0]["stock_code"] == "SH600000"
     assert len(client.get(f"/api/backtests/{run_id}/daily").json()) == 2
     forced = client.get(f"/api/backtests/{run_id}/liquidation").json()
     assert len(forced) == 1
     assert forced[0]["stock_code"] == "SZ000001"
     assert forced[0]["value"] == pytest.approx(48975.5)
+    industry = client.get(f"/api/backtests/{run_id}/industry_exposure").json()
+    assert industry[0]["industry"] == "SW2014 801010 农林牧渔"
     assert client.get(f"/api/backtests/{run_id}/unknown").status_code == 400
     assert client.get("/api/backtests/missing-run").status_code == 404
+
+
+def test_run_request_accepts_risk_free_rate(store):
+    strategy_id, _ = store.create_strategy(StrategySpec())
+    request = backtest_service.prepare(
+        {
+            "strategy_id": strategy_id,
+            "start": "2024-01-01",
+            "end": "2024-01-05",
+            "risk_free_rate": 0.031,
+        },
+        store_path=str(store.path),
+    )
+    assert request.risk_free_rate == pytest.approx(0.031)
+    assert request.params.risk_free_rate == pytest.approx(0.031)
 
 
 def _finish_run(store, strategy_id, version, start, dates, nav, excess):

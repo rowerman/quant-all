@@ -5,10 +5,10 @@ const app=document.querySelector('#app');let options,factors,controller=null;let
 const labels={start:'开始日期',end:'结束日期',universe:'股票池',horizon:'标签周期',price:'价格通道',quantiles:'分位数',mode:'分析模式'};
 // 回测页状态：可选参数只取一次；需要按百分比展示的绩效指标
 let backtestOptions=null,preferredStrategyId=null;const selectedRuns=new Set();
-const rateKeys=new Set(['total_return','annual_return','annual_volatility','max_drawdown','daily_win_rate','monthly_win_rate','benchmark_total_return','benchmark_annual_return','excess_annual_return','excess_win_rate']);
+const rateKeys=new Set(['total_return','annual_return','annual_volatility','max_drawdown','daily_win_rate','monthly_win_rate','benchmark_total_return','benchmark_annual_return','excess_annual_return','excess_win_rate','sortino','alpha_annual','risk_free_rate','turnover_one_way_annual','turnover_two_way_annual','annual_excess_return_over_rf']);
 // 规则拒单原因与执行校准字段的中文名
 const reasonLabels={suspended:'停牌不能交易',limit_up_or_not_buyable:'涨停或开盘不可买',limit_down_or_not_sellable:'跌停或开盘不可卖',liquidity_unavailable:'成交额缺失或为零',t_plus_1:'严格 T+1 拦截卖出'};
-const calibrationLabels={cash_buffer:'现金缓冲（执行层预留）',allocation_iterations:'单段最大迭代次数',allocation_segments:'调仓段数',allocation_iterations_total:'各段迭代次数合计',allocation_iterations_max:'单段最大迭代次数',nonconverged_segments:'未收敛调仓段数',allocation_converged:'资金分配是否收敛',carry_iterations:'现金补回的调整次数',carry_converged:'现金补回是否收敛',probe_orders:'探针成交笔数',probe_buys:'探针买入笔数',probe_sells:'探针卖出笔数',planned_orders:'计划下单格数',rebalance_orders:'其中再平衡格数',rejected_orders:'规则拒单笔数',forced_liquidations:'退市零价值核销笔数',forced_exit_orders:'退市整理期强制退出成交笔数',delisting_writeoff_shares:'退市核销股数',delisting_writeoff_value:'退市核销参考市值（元）',delisting_residual_shares_at_end:'区间末退市残留股数',delisting_buy_orders:'退市整理期买入成交笔数',delisting_capacity_shortfall_shares:'退市退出容量缺口股数',retry_attempts:'被拦交易的重试尝试次数',retried_filled_cells:'非调仓日补单成交格数',pending_at_end_cells:'区间末仍未解决的待重试格数',cash_shrunk_cells:'现金缩水行数',cash_limited_cells:'新补回事件数',cash_limited_value:'新补回事件缩水金额（元）',cash_retry_attempts:'现金补回的尝试格次',cash_retry_filled_cells:'现金补回补齐格数',cash_pending_at_end_cells:'区间末仍未补回的格数',liquidity_limited_cells:'成交额限制格数',liquidity_limited_value:'成交额限制缺口金额（元）',liquidity_unavailable_cells:'成交额不可用格数',liquidity_retry_filled_cells:'成交额限制补齐格数',liquidity_pending_at_end_cells:'区间末成交额未补齐格数',allocated_cells:'分配出目标股数的格数',bumped_one_lot_cells:'用取整余量补到一手的格数',unaffordable_lot_cells:'一手金额超出预算、未能建仓的格数',bumped_min_order_cells:'用取整余量补到最小申报量的格数',unaffordable_min_order_cells:'最小申报量超出预算、未能建仓的格数',below_min_order_cells:'差额不足最小申报量而未成交的格数',no_price_cells:'缺执行价、未下单的格数',final_orders:'最终成交笔数',final_buys:'最终买入笔数',final_sells:'最终卖出笔数',fallback_fee_orders:'没有成交估计、按意图方向计费笔数',fee_matrix_max_diff:'费用矩阵核对最大偏差（元）',cash_clipped_cells:'被现金裁剪的格数',allocation_gap_max_shares:'实际持股与目标股数的最大差额（股）',target_cells:'目标下单格数',weight_deviation_median:'权重偏差中位数',weight_deviation_p95:'权重偏差 95 分位',weight_deviation_max:'权重偏差最大值',weight_deviation_over_1pct:'权重偏差超 1% 的格数',t_plus_1_blocked_cells:'严格 T+1 拦截卖出格数',t_plus_1_blocked_shares:'严格 T+1 拦截卖出股数',t_plus_1_blocked_value:'严格 T+1 拦截卖出金额（元）',corporate_action_events:'公司行动事件数',dividend_income:'已到账税前分红（元）',dividend_tax:'已结算红利税（元）',dividend_receivable_at_end:'区间末应收分红（元）',dividend_tax_pending_at_end:'区间末未卖出批次红利税估计（元）',fractional_cash:'送转零头折现金额（元）'};
+const calibrationLabels={cash_buffer:'现金缓冲（执行层预留）',allocation_iterations:'单段最大迭代次数',allocation_segments:'调仓段数',allocation_iterations_total:'各段迭代次数合计',allocation_iterations_max:'单段最大迭代次数',nonconverged_segments:'未收敛调仓段数',allocation_converged:'资金分配是否收敛',carry_iterations:'现金补回的调整次数',carry_converged:'现金补回是否收敛',probe_orders:'探针成交笔数',probe_buys:'探针买入笔数',probe_sells:'探针卖出笔数',planned_orders:'计划下单格数',rebalance_orders:'其中再平衡格数',rejected_orders:'规则拒单笔数',forced_liquidations:'退市零价值核销笔数',forced_exit_orders:'退市整理期强制退出成交笔数',delisting_writeoff_shares:'退市核销股数',delisting_writeoff_value:'退市核销参考市值（元）',delisting_residual_shares_at_end:'区间末退市残留股数',delisting_buy_orders:'退市整理期买入成交笔数',delisting_capacity_shortfall_shares:'退市退出容量缺口股数',retry_attempts:'被拦交易的重试尝试次数',retried_filled_cells:'非调仓日补单成交格数',pending_at_end_cells:'区间末仍未解决的待重试格数',cash_shrunk_cells:'现金缩水行数',cash_limited_cells:'新补回事件数',cash_limited_value:'新补回事件缩水金额（元）',cash_retry_attempts:'现金补回的尝试格次',cash_retry_filled_cells:'现金补回补齐格数',cash_pending_at_end_cells:'区间末仍未补回的格数',liquidity_limited_cells:'成交额限制格数',liquidity_limited_value:'成交额限制缺口金额（元）',liquidity_unavailable_cells:'成交额不可用格数',liquidity_retry_filled_cells:'成交额限制补齐格数',liquidity_pending_at_end_cells:'区间末成交额未补齐格数',allocated_cells:'分配出目标股数的格数',bumped_one_lot_cells:'用取整余量补到一手的格数',unaffordable_lot_cells:'一手金额超出预算、未能建仓的格数',bumped_min_order_cells:'用取整余量补到最小申报量的格数',unaffordable_min_order_cells:'最小申报量超出预算、未能建仓的格数',below_min_order_cells:'差额不足最小申报量而未成交的格数',no_price_cells:'缺执行价、未下单的格数',final_orders:'最终成交笔数',final_buys:'最终买入笔数',final_sells:'最终卖出笔数',fallback_fee_orders:'没有成交估计、按意图方向计费笔数',fee_matrix_max_diff:'费用矩阵核对最大偏差（元）',impact_cost_total:'冲击成本合计（元）',impact_cost_max_diff:'冲击成本核对最大偏差（元）',cash_clipped_cells:'被现金裁剪的格数',allocation_gap_max_shares:'实际持股与目标股数的最大差额（股）',target_cells:'目标下单格数',weight_deviation_median:'权重偏差中位数',weight_deviation_p95:'权重偏差 95 分位',weight_deviation_max:'权重偏差最大值',weight_deviation_over_1pct:'权重偏差超 1% 的格数',t_plus_1_blocked_cells:'严格 T+1 拦截卖出格数',t_plus_1_blocked_shares:'严格 T+1 拦截卖出股数',t_plus_1_blocked_value:'严格 T+1 拦截卖出金额（元）',corporate_action_events:'公司行动事件数',dividend_income:'已到账税前分红（元）',dividend_tax:'已结算红利税（元）',dividend_receivable_at_end:'区间末应收分红（元）',dividend_tax_pending_at_end:'区间末未卖出批次红利税估计（元）',fractional_cash:'送转零头折现金额（元）'};
 Object.assign(calibrationLabels,{single_cap_days:'触发单股上限的调仓日数',single_cap_cells:'单股上限封顶格数',single_cap_excess_weight:'单股上限截下的权重',single_cap_residual_cash:'单股上限未再分配的现金权重',single_cap_max_weight:'单股封顶后的最大目标权重',industry_cap_days:'触发行业上限的调仓日数',industry_cap_groups:'触发上限的行业次数',industry_cap_cells:'行业上限影响的目标格数',industry_cap_excess_weight:'行业上限截下的权重',industry_cap_residual_cash:'行业上限未再分配的现金权重',industry_cap_target_max_weight:'约束后的最大目标行业权重',industry_post_turnover_max_weight:'换手约束后的最大行业权重',industry_inherited_over_cap_days:'换手后仍继承超限的日期数',industry_inherited_over_cap_groups:'换手后仍继承超限的行业次数',industry_inherited_excess_weight:'换手后继承的超限权重',industry_missing_cells:'缺失行业的目标格数',risk_residual_cash:'集中度约束留下的现金权重',turnover_limited_days:'触发换手上限的调仓日数',turnover_limited_cells:'换手约束缩放格数',turnover_before_max:'约束前最大计划单边换手',turnover_after_max:'约束后最大计划单边换手',turnover_limit_error_max:'计划换手超限最大误差'});
 // 需要按百分比展示的执行校准字段
 const calibrationRates=new Set(['cash_buffer','weight_deviation_median','weight_deviation_p95','weight_deviation_max','single_cap_excess_weight','single_cap_residual_cash','single_cap_max_weight','industry_cap_excess_weight','industry_cap_residual_cash','industry_cap_target_max_weight','industry_post_turnover_max_weight','industry_inherited_excess_weight','risk_residual_cash','turnover_before_max','turnover_after_max','turnover_limit_error_max']);
@@ -124,6 +124,7 @@ async function backtestPage(version){
     <label>开始日期<input type="date" name="start" value="${esc(d.start)}" min="${esc(opts.coverage.market_start)}" required></label>
     <label>结束日期<input type="date" name="end" value="${esc(d.end)}" max="${esc(opts.coverage.market_end)}" required></label>
     <label>初始资金<input type="number" name="init_cash" value="${d.init_cash}" min="10000" step="10000" required></label>
+    <label>无风险利率（年化）<input type="number" name="risk_free_rate" value="${d.risk_free_rate}" min="-0.99" max="1" step="0.001" required></label>
     <button type="submit">运行回测</button>
     <button type="button" id="backtest-cancel" class="secondary" disabled>取消</button>
   </form>
@@ -263,6 +264,8 @@ async function strategyPage(version){
       <label>佣金率<input name="commission_rate" type="number" min="0" step="0.0001" value="${opts.costs.commission_rate}" required></label>
       <label>最低佣金（元）<input name="minimum_commission" type="number" min="0" step="0.1" value="${opts.costs.minimum_commission}" required></label>
       <label>滑点<input name="slippage" type="number" min="0" step="0.0001" value="${opts.costs.slippage}" required></label>
+      <label>冲击模型<select name="impact_model"><option value="sqrt" selected>平方根（20日波动）</option><option value="none">关闭</option></select></label>
+      <label>冲击系数<input name="impact_coefficient" type="number" min="0" step="0.05" value="${opts.costs.impact_coefficient}" required></label>
       <label>红利税<select name="dividend_tax_mode"><option value="fifo_deferred" selected>递延 FIFO</option><option value="disabled">关闭</option></select></label>
       <label>印花税 / 过户费<input value="按历史分段自动计算" readonly></label>
     </div></section>
@@ -290,6 +293,8 @@ async function strategyPage(version){
     const maxOneWayTurnover=data.has('turnover_enabled')?Number(data.get('max_one_way_turnover'))/100:null;
     const maxParticipationRate=data.has('max_participation_enabled')?Number(data.get('max_participation_rate'))/100:null;
     const costs=['commission_rate','minimum_commission','slippage'].map(name=>Number(data.get(name)));
+    const impactModel=String(data.get('impact_model')||'sqrt');
+    const impactCoefficient=Number(data.get('impact_coefficient'));
     const dividendTaxMode=String(data.get('dividend_tax_mode')||'fifo_deferred');
     if(!String(data.get('name')).trim())return void(status.className='error',status.textContent='策略名称不能为空');
     if(!factorNames.length)return void(status.className='error',status.textContent='至少选择一个因子');
@@ -301,7 +306,8 @@ async function strategyPage(version){
     if(maxOneWayTurnover!==null&&(!Number.isFinite(maxOneWayTurnover)||maxOneWayTurnover<0||maxOneWayTurnover>1))return void(status.className='error',status.textContent='单边换手上限必须在 0 到 100% 之间');
     if(maxParticipationRate!==null&&(!Number.isFinite(maxParticipationRate)||maxParticipationRate<=0||maxParticipationRate>1))return void(status.className='error',status.textContent='成交额参与率必须在 0 到 100% 之间');
     if(costs.some(value=>!Number.isFinite(value)||value<0))return void(status.className='error',status.textContent='交易成本必须是非负数');
-    const payload={description:String(data.get('description')||''),spec:{name:String(data.get('name')).trim(),universe:data.get('universe'),signal:{factors:factorNames,weights:factorWeights,winsorize:data.has('winsorize'),standardize:data.has('standardize')},portfolio:{selection:'top_n',top_n:topN,weighting:data.get('weighting'),long_only:true},rebalance:{frequency:data.get('frequency'),signal_at:'close',execute_at:'next_open'},execution:{lot_size:100,cash_buffer:cashBuffer,max_participation_rate:maxParticipationRate,reject_suspended:data.has('reject_suspended'),reject_limit_up_buy:data.has('reject_limit_up_buy'),reject_limit_down_sell:data.has('reject_limit_down_sell'),enforce_t_plus_1:data.has('enforce_t_plus_1')},risk:{max_single_weight:maxSingleWeight,max_industry_weight:maxIndustryWeight,max_one_way_turnover:maxOneWayTurnover},costs:{commission_rate:costs[0],minimum_commission:costs[1],slippage:costs[2],dividend_tax_mode:dividendTaxMode},benchmark:{index_code:data.get('benchmark')}}};
+    if(!Number.isFinite(impactCoefficient)||impactCoefficient<0)return void(status.className='error',status.textContent='冲击系数必须是非负数');
+    const payload={description:String(data.get('description')||''),spec:{name:String(data.get('name')).trim(),universe:data.get('universe'),signal:{factors:factorNames,weights:factorWeights,winsorize:data.has('winsorize'),standardize:data.has('standardize')},portfolio:{selection:'top_n',top_n:topN,weighting:data.get('weighting'),long_only:true},rebalance:{frequency:data.get('frequency'),signal_at:'close',execute_at:'next_open'},execution:{lot_size:100,cash_buffer:cashBuffer,max_participation_rate:maxParticipationRate,reject_suspended:data.has('reject_suspended'),reject_limit_up_buy:data.has('reject_limit_up_buy'),reject_limit_down_sell:data.has('reject_limit_down_sell'),enforce_t_plus_1:data.has('enforce_t_plus_1')},risk:{max_single_weight:maxSingleWeight,max_industry_weight:maxIndustryWeight,max_one_way_turnover:maxOneWayTurnover},costs:{commission_rate:costs[0],minimum_commission:costs[1],slippage:costs[2],impact_model:impactModel,impact_coefficient:impactCoefficient,dividend_tax_mode:dividendTaxMode},benchmark:{index_code:data.get('benchmark')}}};
     const submit=form.querySelector('[type=submit]');submit.disabled=true;status.textContent='正在创建策略…';
     try{const created=await request('/api/strategies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});preferredStrategyId=created.strategy_id;backtestOptions=null;location.hash='#/backtest';}
     catch(error){status.className='error';status.textContent=error.message;submit.disabled=false;}
@@ -321,9 +327,9 @@ async function runPage(runId,version){
     <section class="card"><h2>运行未完成</h2><p role="alert">${esc(run.error_message||'运行尚未结束或已被取消，没有可展示的日结果。')}</p><a href="#/backtest">返回回测页</a></section>`;
     return;
   }
-  const [metrics,daily,holding,orders,rejections,liquidations]=await Promise.all([
+  const [metrics,daily,holding,orders,rejections,liquidations,industryExposure]=await Promise.all([
     get(base+'/metrics'),get(base+'/daily'),get(base+'/holding'),get(base+'/order'),get(base+'/rejection'),
-    get(base+'/liquidation')
+    get(base+'/liquidation'),get(base+'/industry_exposure')
   ]);
   if(version!==routeVersion)return;
   const metadata=run.metadata||{};const params=metadata.params||{};
@@ -340,6 +346,8 @@ async function runPage(runId,version){
   <section class="card"><h2>绩效汇总</h2><div class="cards" id="run-metrics"></div></section>
   <section class="card"><h2>净值与回撤</h2><div class="cards" id="run-curves"></div></section>
   <section class="card"><h2>换手与成本</h2><div class="cards" id="run-cost"></div></section>
+  <section class="card"><h2>成本归因</h2><div class="cards" id="run-cost-attribution"></div></section>
+  <section class="card"><h2>行业暴露</h2><div class="cards" id="run-industry"></div></section>
   <section class="card"><h2>规则拒单</h2><div class="cards" id="run-rejection"></div></section>
   <section class="card"><h2>退市处置（零价值核销）</h2><div class="cards" id="run-liquidation"></div></section>
   <section class="card"><h2>执行校准</h2><div class="cards" id="run-calibration"></div></section>
@@ -355,14 +363,33 @@ async function runPage(runId,version){
     股票数:metadata.panel?metadata.panel.stocks:null,
     订单数:orders.length,拒单数:rejections.length,耗时秒:metadata.elapsed_seconds
   }]);
-  const labels={total_return:'累计收益',annual_return:'年化收益',annual_volatility:'年化波动',sharpe:'夏普',max_drawdown:'最大回撤',calmar:'卡玛',daily_win_rate:'日胜率',monthly_win_rate:'月胜率',turnover_annual:'年化换手',cash_cost:'现金成本',total_cost:'累计成本（含滑点）',total_commission:'佣金',total_stamp_tax:'印花税',total_transfer_fee:'过户费',total_dividend_tax:'红利税',total_slippage_cost:'滑点成本',benchmark_total_return:'基准累计',benchmark_annual_return:'基准年化',excess_annual_return:'年化超额',tracking_error:'跟踪误差',information_ratio:'信息比率',excess_win_rate:'超额胜率',trading_days:'交易日',months:'月数'};
-  const shown=['total_return','annual_return','annual_volatility','sharpe','max_drawdown','calmar','daily_win_rate','monthly_win_rate','turnover_annual','cash_cost','total_cost','total_commission','total_stamp_tax','total_transfer_fee','total_dividend_tax','total_slippage_cost','benchmark_annual_return','excess_annual_return','information_ratio','excess_win_rate'];
+  const labels={total_return:'累计收益',annual_return:'年化收益',annual_volatility:'年化波动',sharpe:'夏普',sortino:'Sortino',max_drawdown:'最大回撤',calmar:'卡玛',daily_win_rate:'日胜率',monthly_win_rate:'月胜率',risk_free_rate:'无风险利率',annual_excess_return_over_rf:'相对无风险年化超额',turnover_annual:'年化换手（双边成交额）',turnover_two_way_annual:'年化双边换手',turnover_one_way_annual:'年化单边换手',cash_cost:'现金成本',total_cost:'累计成本（含滑点与冲击）',total_commission:'佣金',total_stamp_tax:'印花税',total_transfer_fee:'过户费',total_dividend_tax:'红利税',total_slippage_cost:'滑点成本',total_impact_cost:'冲击成本',benchmark_total_return:'基准累计',benchmark_annual_return:'基准年化',excess_annual_return:'年化超额',tracking_error:'跟踪误差',information_ratio:'信息比率',excess_win_rate:'超额胜率',beta:'Beta',alpha_annual:'Alpha（年化）',trading_days:'交易日',months:'月数'};
+  const shown=['total_return','annual_return','annual_volatility','sharpe','sortino','max_drawdown','calmar','daily_win_rate','monthly_win_rate','risk_free_rate','annual_excess_return_over_rf','turnover_one_way_annual','turnover_two_way_annual','cash_cost','total_cost','total_commission','total_stamp_tax','total_transfer_fee','total_dividend_tax','total_slippage_cost','total_impact_cost','benchmark_annual_return','excess_annual_return','beta','alpha_annual','information_ratio','excess_win_rate'];
   table(app.querySelector('#run-metrics'),shown.filter(key=>key in metrics).map(key=>({指标:labels[key],数值:rateKeys.has(key)?pct(metrics[key]):metrics[key]})));
   backtestChart(app.querySelector('#run-curves'),dates,series,'净值（起始 = 1）');
   backtestChart(app.querySelector('#run-curves'),dates,[{name:'回撤',data:column('drawdown'),area:true}],'回撤');
   if(daily.some(row=>row.excess_return!==null&&row.excess_return!==undefined))backtestChart(app.querySelector('#run-curves'),dates,[{name:'日超额收益',data:column('excess_return'),bar:true}],'日超额收益');
-  backtestChart(app.querySelector('#run-cost'),dates,[{name:'换手（占前一日组合价值）',data:column('turnover'),bar:true}],'日换手');
-  backtestChart(app.querySelector('#run-cost'),dates,[{name:'现金成本（元）',data:column('cost'),bar:true},{name:'滑点成本（元）',data:column('slippage_cost'),bar:true}],'交易成本与滑点');
+  backtestChart(app.querySelector('#run-cost'),dates,[{name:'双边成交额换手',data:column('turnover')},{name:'单边换手',data:column('turnover_one_way')}],'日换手');
+  backtestChart(app.querySelector('#run-cost'),dates,[{name:'现金费用（元）',data:column('cost'),bar:true},{name:'滑点成本（元）',data:column('slippage_cost'),bar:true},{name:'冲击成本（元）',data:column('impact_cost'),bar:true}],'交易成本、滑点与冲击');
+  const costAttribution=metrics.cost_attribution||{};
+  if(costAttribution.total){
+    const costLabels={commission:'佣金',stamp_tax:'印花税',transfer_fee:'过户费',dividend_tax:'红利税',slippage_cost:'滑点',impact_cost:'冲击'};
+    table(app.querySelector('#run-cost-attribution'),Object.entries(costLabels).map(([key,label])=>({成本项:label,金额:costAttribution.total[key],占净值bps:costAttribution.bps_of_nav[key],占成交额bps:costAttribution.bps_of_traded_value[key]})).concat([{成本项:'现金费用合计',金额:costAttribution.total.cash_cost,占净值bps:costAttribution.bps_of_nav.cash_cost,占成交额bps:costAttribution.bps_of_traded_value.cash_cost},{成本项:'经济成本合计',金额:costAttribution.total.total_cost,占净值bps:costAttribution.bps_of_nav.total_cost,占成交额bps:costAttribution.bps_of_traded_value.total_cost}]));
+    if(costAttribution.by_side)table(app.querySelector('#run-cost-attribution'),[{方向:'买入',...costAttribution.by_side.buy},{方向:'卖出',...costAttribution.by_side.sell}]);
+  }
+  const industrySummary=metrics.industry_exposure||{};
+  if(industrySummary.available){
+    const industryRows=(industrySummary.top||[]).map(row=>({行业:row.industry,平均权重:row.avg_weight,最大权重:row.max_weight,期末权重:row.end_weight}));
+    industryRows.push({行业:'现金',平均权重:industrySummary.cash_avg_weight,最大权重:industrySummary.cash_max_weight,期末权重:industrySummary.cash_end_weight});
+    if(industrySummary.unclassified_avg_weight>0)industryRows.push({行业:'未分类',平均权重:industrySummary.unclassified_avg_weight,最大权重:null,期末权重:null});
+    table(app.querySelector('#run-industry'),industryRows);
+    const names=[...(industrySummary.top||[]).slice(0,5).map(row=>row.industry),'现金'];
+    const weightLookup=new Map(industryExposure.map(row=>[`${String(row.trade_date).slice(0,10)}|${row.industry}`,Number(row.weight)]));
+    const series=names.map(name=>({name,data:dates.map(day=>weightLookup.get(`${day}|${name}`)||0)}));
+    backtestChart(app.querySelector('#run-industry'),dates,series,'行业权重（前 5 与现金）');
+  }else{
+    app.querySelector('#run-industry').innerHTML='<p class="muted">本次运行没有可用的申万一级行业数据</p>';
+  }
   const reasonRows=Object.entries(reasonCounts).map(([reason,count])=>({拒单原因:reasonLabels[reason]||reason,笔数:count}));
   if(reasonRows.length)table(app.querySelector('#run-rejection'),reasonRows);
   else app.querySelector('#run-rejection').innerHTML='<p class="muted">本次运行没有规则拒单</p>';
