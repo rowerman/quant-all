@@ -23,7 +23,10 @@ from backtest.errors import (
     SnapshotConflictError,
 )
 from backtest.metrics import summarize
-from backtest.providers import validate_strategy_provider
+from backtest.providers import (
+    provider_snapshot_metadata,
+    validate_strategy_provider,
+)
 from backtest.specs import BacktestParams, StrategySpec
 
 RESULT_TABLES = (
@@ -175,13 +178,63 @@ class BacktestStore:
         )
         return spec.version
 
+    @staticmethod
+    def _provider_revision(spec: StrategySpec) -> dict | None:
+        """返回策略需要绑定的提供者源码信息。"""
+        if spec.signal.provider is None:
+            return None
+        return provider_snapshot_metadata(spec.signal.provider)
+
+    @staticmethod
+    def _bind_provider_revision(conn, provider: dict | None) -> None:
+        """在给定连接中登记提供者源码修订。"""
+        if provider is None:
+            return
+        name = str(provider.get("name") or "")
+        version = str(provider.get("version") or "")
+        source_sha256 = str(provider.get("source_sha256") or "")
+        if not name or not version or not source_sha256:
+            raise SnapshotConflictError("提供者修订必须包含名称、版本和源码哈希")
+        revisions = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT source_sha256 FROM bt.provider_revision "
+                "WHERE provider_name = ? AND provider_version = ?",
+                [name, version],
+            ).fetchall()
+        }
+        if revisions and source_sha256 not in revisions:
+            raise SnapshotConflictError(
+                f"提供者 {name} v{version} 已记录不同源码；请提升 version"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO bt.provider_revision "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                name,
+                version,
+                source_sha256,
+                str(provider.get("module") or ""),
+                json.dumps(
+                    provider.get("required_factors") or [],
+                    ensure_ascii=False,
+                ),
+                BacktestStore._now(),
+            ],
+        )
+
     def create_strategy(self, spec: StrategySpec, description: str = "") -> tuple[str, int]:
         """创建策略并保存第一版配置。"""
         validate_strategy_provider(spec)
+        provider = self._provider_revision(spec)
         strategy_id = uuid.uuid4().hex
         now = self._now()
         with self._connect() as conn:
-            version = self._insert_version(conn, strategy_id, spec, description, now)
+            with self._transaction(conn):
+                version = self._insert_version(
+                    conn, strategy_id, spec, description, now
+                )
+                self._bind_provider_revision(conn, provider)
         return strategy_id, version
 
     def ensure_strategy(self, strategy_id: str, spec: StrategySpec, description: str = "") -> tuple[int, bool]:
@@ -196,6 +249,7 @@ class BacktestStore:
             ``(当前版本, 是否新建了版本)``。
         """
         validate_strategy_provider(spec)
+        provider = self._provider_revision(spec)
         now = self._now()
         with self._connect() as conn:
             row = conn.execute(
@@ -203,7 +257,12 @@ class BacktestStore:
                 [strategy_id],
             ).fetchone()
             if row is None:
-                return self._insert_version(conn, strategy_id, spec, description, now), True
+                with self._transaction(conn):
+                    version = self._insert_version(
+                        conn, strategy_id, spec, description, now
+                    )
+                    self._bind_provider_revision(conn, provider)
+                return version, True
             current = int(row[0])
             stored = conn.execute(
                 "SELECT config_json, config_hash FROM strategy.version WHERE strategy_id = ? AND version = ?",
@@ -211,23 +270,34 @@ class BacktestStore:
             ).fetchone()
         desired = replace(spec, version=current)
         if stored is not None and stored[1] == desired.config_hash:
+            with self._connect() as conn:
+                with self._transaction(conn):
+                    self._bind_provider_revision(conn, provider)
             return current, False
         if stored is not None:
             stored_spec = StrategySpec.from_dict(json.loads(stored[0]))
             if replace(stored_spec, version=current).to_json() == desired.to_json():
                 now = self._now()
                 with self._connect() as conn:
-                    conn.execute(
-                        "UPDATE strategy.version SET config_json = ?, config_hash = ? "
-                        "WHERE strategy_id = ? AND version = ?",
-                        [desired.to_json(), desired.config_hash, strategy_id, current],
-                    )
+                    with self._transaction(conn):
+                        conn.execute(
+                            "UPDATE strategy.version SET config_json = ?, config_hash = ? "
+                            "WHERE strategy_id = ? AND version = ?",
+                            [
+                                desired.to_json(),
+                                desired.config_hash,
+                                strategy_id,
+                                current,
+                            ],
+                        )
+                        self._bind_provider_revision(conn, provider)
                 return current, False
         return self.save_version(strategy_id, spec, description), True
 
     def save_version(self, strategy_id: str, spec: StrategySpec, description: str = "") -> int:
         """为已有策略追加不可变版本。"""
         validate_strategy_provider(spec)
+        provider = self._provider_revision(spec)
         now = self._now()
         with self._connect() as conn:
             current = conn.execute(
@@ -238,15 +308,23 @@ class BacktestStore:
                 raise BacktestError(f"策略不存在：{strategy_id}")
             version = int(current[0]) + 1
             versioned = replace(spec, version=version)
-            conn.execute(
-                "INSERT INTO strategy.version VALUES (?, ?, ?, ?, ?)",
-                [strategy_id, version, versioned.to_json(), versioned.config_hash, now],
-            )
-            conn.execute(
-                "UPDATE strategy.definition SET name = ?, current_version = ?, description = ?, updated_at = ? "
-                "WHERE strategy_id = ?",
-                [spec.name, version, description, now, strategy_id],
-            )
+            with self._transaction(conn):
+                conn.execute(
+                    "INSERT INTO strategy.version VALUES (?, ?, ?, ?, ?)",
+                    [
+                        strategy_id,
+                        version,
+                        versioned.to_json(),
+                        versioned.config_hash,
+                        now,
+                    ],
+                )
+                conn.execute(
+                    "UPDATE strategy.definition SET name = ?, current_version = ?, description = ?, updated_at = ? "
+                    "WHERE strategy_id = ?",
+                    [spec.name, version, description, now, strategy_id],
+                )
+                self._bind_provider_revision(conn, provider)
         return version
 
     def ensure_builtins(self) -> list[dict]:
@@ -421,75 +499,44 @@ class BacktestStore:
             .get("provider")
         )
         with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT payload_json FROM bt.input_snapshot WHERE snapshot_id = ?",
-                [snapshot_id],
-            ).fetchone()
-            if existing is not None:
-                stored_identity = json.loads(existing[0])
-                normalized = json.dumps(
-                    {
-                        "schema_version": stored_identity.get("schema_version"),
-                        "scope": stored_identity.get("scope"),
-                        "components": stored_identity.get("components"),
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    default=str,
-                )
-                if normalized != identity_payload:
-                    raise SnapshotConflictError(
-                        f"输入快照 {snapshot_id} 已存在但内容不同"
+            with self._transaction(conn):
+                existing = conn.execute(
+                    "SELECT payload_json FROM bt.input_snapshot WHERE snapshot_id = ?",
+                    [snapshot_id],
+                ).fetchone()
+                if existing is not None:
+                    stored_identity = json.loads(existing[0])
+                    normalized = json.dumps(
+                        {
+                            "schema_version": stored_identity.get("schema_version"),
+                            "scope": stored_identity.get("scope"),
+                            "components": stored_identity.get("components"),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
                     )
-            else:
-                conn.execute(
-                    "INSERT INTO bt.input_snapshot VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        snapshot_id,
-                        schema_version,
-                        snapshot.get("created_at") or self._now(),
-                        scope.get("start"),
-                        scope.get("end"),
-                        scope.get("universe"),
-                        scope.get("benchmark"),
-                        stored_payload,
-                    ],
-                )
-            if isinstance(provider, dict):
-                name = str(provider.get("name") or "")
-                version = str(provider.get("version") or "")
-                source_sha256 = str(provider.get("source_sha256") or "")
-                if not name or not version or not source_sha256:
-                    raise SnapshotConflictError(
-                        "提供者快照必须包含名称、版本和源码哈希"
+                    if normalized != identity_payload:
+                        raise SnapshotConflictError(
+                            f"输入快照 {snapshot_id} 已存在但内容不同"
+                        )
+                else:
+                    conn.execute(
+                        "INSERT INTO bt.input_snapshot VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        [
+                            snapshot_id,
+                            schema_version,
+                            snapshot.get("created_at") or self._now(),
+                            scope.get("start"),
+                            scope.get("end"),
+                            scope.get("universe"),
+                            scope.get("benchmark"),
+                            stored_payload,
+                        ],
                     )
-                revisions = {
-                    str(row[0])
-                    for row in conn.execute(
-                        "SELECT source_sha256 FROM bt.provider_revision "
-                        "WHERE provider_name = ? AND provider_version = ?",
-                        [name, version],
-                    ).fetchall()
-                }
-                if revisions and source_sha256 not in revisions:
-                    raise SnapshotConflictError(
-                        f"提供者 {name} v{version} 已记录不同源码；请提升 version"
-                    )
-                conn.execute(
-                    "INSERT OR IGNORE INTO bt.provider_revision "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    [
-                        name,
-                        version,
-                        source_sha256,
-                        str(provider.get("module") or ""),
-                        json.dumps(
-                            provider.get("required_factors") or [],
-                            ensure_ascii=False,
-                        ),
-                        self._now(),
-                    ],
+                self._bind_provider_revision(
+                    conn, provider if isinstance(provider, dict) else None
                 )
         return snapshot_id
 

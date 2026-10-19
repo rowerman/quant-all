@@ -104,13 +104,14 @@ run_backtest
 
 用矩阵表达 `NaN/0/正数` 三种状态，能够直接映射到 VectorBT 的“今天不下单/清仓/目标仓位”。如果把这三种状态压成一个布尔信号，清仓和不动作会无法区分。
 
-## `providers.py` 与 `strategies/`
+## `providers.py`、`provider_schema.py` 与 `strategies/`
 
 ### 职责边界
 
-负责提供者的注册、自动发现、版本/参数/必需因子校验和源码哈希；不负责信号计算之后的
+负责提供者的注册、自动发现、页面参数结构、版本/参数/必需因子校验和源码哈希；不负责信号计算之后的
 风险上限、订单状态机、资金分配和账本。`strategies/` 下的模块在导入时注册，文件名以下划线
-开头的不自动导入。
+开头的不自动导入。`provider_schema.py` 只校验 `strategies/_param_schema.py` 中的字段定义，
+不改写提供者源码。
 
 ### 调用链
 
@@ -130,6 +131,7 @@ build_signal_targets / store.create_strategy / backtest_service.prepare / option
 - `discover_providers()`：导入 `backtest.strategies` 下的模块，触发模块内注册。
 - `get_provider(spec)`：按名称取提供者并校验版本，未知名称列出可用提供者。
 - `validate_strategy_provider(spec)`：校验提供者版本、必需因子和 `validate_params`。
+- `provider_metadata(spec, include_param_schema=True)`：返回页面字段结构。
 - `provider_metadata(spec)` / `signal_metadata(signal)`：生成运行元数据，含模块和源码哈希。
 
 ### 设计取舍与注意事项

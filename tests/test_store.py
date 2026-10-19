@@ -16,7 +16,13 @@ from backtest.errors import (
     RunNotFoundError,
     SnapshotConflictError,
 )
-from backtest.specs import PortfolioSpec
+from backtest.providers import provider_metadata
+from backtest.specs import (
+    PortfolioSpec,
+    ProviderSpec,
+    RebalanceSpec,
+    SignalSpec,
+)
 from backtest.store import RESULT_TABLES, BacktestStore
 
 
@@ -54,6 +60,93 @@ def test_strategy_versions_are_immutable(store):
     assert current.name == second.name
     assert current.version == 2
     assert store.list_strategies()[0]["current_version"] == 2
+
+
+def _provider_strategy(name: str = "提供者绑定测试") -> StrategySpec:
+    return StrategySpec(
+        name=name,
+        signal=SignalSpec(
+            factors=("MOM_20",),
+            weights=(),
+            provider=ProviderSpec("momentum_timing"),
+        ),
+        portfolio=PortfolioSpec(selection="provider", top_n=30),
+        rebalance=RebalanceSpec(frequency="custom"),
+    )
+
+
+def test_create_provider_strategy_binds_source_revision(store):
+    spec = _provider_strategy()
+    strategy_id, version = store.create_strategy(spec)
+    metadata = provider_metadata(spec.signal.provider)
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT source_sha256, module FROM bt.provider_revision "
+            "WHERE provider_name = ? AND provider_version = ?",
+            [metadata["name"], metadata["version"]],
+        ).fetchone()
+    assert row == (metadata["code_sha256"], metadata["module"])
+    assert store.get_version(strategy_id, version) == spec
+
+
+def test_provider_revision_conflict_rolls_back_strategy(store):
+    spec = _provider_strategy("源码冲突策略")
+    metadata = provider_metadata(spec.signal.provider)
+    with store._connect() as conn:
+        conn.execute(
+            "INSERT INTO bt.provider_revision VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                metadata["name"],
+                metadata["version"],
+                "f" * 64,
+                metadata["module"],
+                '["MOM_20"]',
+                store._now(),
+            ],
+        )
+    with pytest.raises(SnapshotConflictError, match="提升 version"):
+        store.create_strategy(spec)
+    assert spec.name not in {row["name"] for row in store.list_strategies()}
+
+
+def test_record_snapshot_rolls_back_on_provider_conflict(store):
+    snapshot = {
+        "snapshot_id": "d" * 64,
+        "schema_version": "backtest_input_snapshot_v5",
+        "created_at": "2026-10-19T00:00:00+00:00",
+        "scope": {"start": "2024-01-01", "end": "2024-01-05", "universe": "all_a"},
+        "components": {
+            "rules": {
+                "provider": {
+                    "name": "momentum_timing",
+                    "version": "1",
+                    "source_sha256": "e" * 64,
+                    "module": "backtest.strategies.momentum_timing",
+                    "required_factors": ["MOM_20"],
+                }
+            }
+        },
+    }
+    with store._connect() as conn:
+        conn.execute(
+            "INSERT INTO bt.provider_revision VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                "momentum_timing",
+                "1",
+                "f" * 64,
+                "backtest.strategies.momentum_timing",
+                '["MOM_20"]',
+                store._now(),
+            ],
+        )
+    with pytest.raises(SnapshotConflictError, match="提升 version"):
+        store.record_snapshot(snapshot)
+    with store._connect() as conn:
+        count = conn.execute(
+            "SELECT count(*) FROM bt.input_snapshot WHERE snapshot_id = ?",
+            [snapshot["snapshot_id"]],
+        ).fetchone()[0]
+    assert count == 0
 
 
 def test_ensure_builtins_is_idempotent(store):

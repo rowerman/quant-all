@@ -9,15 +9,17 @@ from __future__ import annotations
 import hashlib
 import importlib
 import inspect
+import json
 import pkgutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, Sequence, runtime_checkable
 
 import pandas as pd
 
 from backtest.errors import SpecError
 from backtest.execution_state import ProviderState
 from backtest.logging_conf import get_logger
+from backtest.provider_schema import provider_param_schema
 from backtest.specs import ProviderSpec, SignalSpec, StrategySpec
 
 if TYPE_CHECKING:
@@ -187,9 +189,11 @@ def _code_sha256(provider: TargetWeightProvider) -> str:
     return _code_source(provider)[1]
 
 
-def _metadata(provider: TargetWeightProvider) -> dict[str, Any]:
+def _metadata(
+    provider: TargetWeightProvider, *, include_param_schema: bool = False
+) -> dict[str, Any]:
     """返回提供者的可审计元数据。"""
-    return {
+    payload = {
         "name": provider.name,
         "version": str(provider.version),
         "description": provider.description,
@@ -198,11 +202,18 @@ def _metadata(provider: TargetWeightProvider) -> dict[str, Any]:
         "module": type(provider).__module__,
         "code_sha256": _code_sha256(provider),
     }
+    if include_param_schema:
+        payload["param_schema"] = provider_param_schema(provider)
+    return payload
 
 
-def provider_metadata(spec: ProviderSpec) -> dict[str, Any]:
+def provider_metadata(
+    spec: ProviderSpec, *, include_param_schema: bool = False
+) -> dict[str, Any]:
     """返回当前注册提供者的元数据。"""
-    return _metadata(get_provider(spec))
+    return _metadata(
+        get_provider(spec), include_param_schema=include_param_schema
+    )
 
 
 def provider_snapshot_metadata(spec: ProviderSpec) -> dict[str, Any]:
@@ -226,23 +237,51 @@ def provider_snapshot_metadata(spec: ProviderSpec) -> dict[str, Any]:
 def list_providers() -> list[dict[str, Any]]:
     """列出当前可用的提供者。"""
     discover_providers()
-    return [_metadata(provider) for _, provider in sorted(_REGISTRY.items())]
+    return [
+        _metadata(provider, include_param_schema=True)
+        for _, provider in sorted(_REGISTRY.items())
+    ]
 
 
-def validate_strategy_provider(spec: StrategySpec) -> None:
-    """校验策略引用的提供者、版本、必需因子和参数。"""
-    if spec.signal.provider is None:
-        return
-    provider = get_provider(spec.signal.provider)
-    missing = sorted(set(provider.required_factors) - set(spec.signal.factors))
+def validate_provider_config(
+    spec: ProviderSpec, factors: Sequence[str]
+) -> dict[str, Any]:
+    """校验提供者参数和必需的输入因子，返回规范化参数。
+
+    参数:
+        spec: 提供者名称、版本和参数。
+        factors: 策略声明的输入因子。
+    """
+    provider = get_provider(spec)
+    factor_names = {str(item) for item in factors}
+    missing = sorted(set(provider.required_factors) - factor_names)
     if missing:
         raise SpecError(
             f"提供者 {provider.name} 需要因子 {missing}，"
-            f"但 signal.factors 只声明了 {list(spec.signal.factors)}"
+            f"但 signal.factors 只声明了 {list(factors)}"
         )
     validate = getattr(provider, "validate_params", None)
-    if callable(validate):
-        validate(dict(spec.signal.provider.params))
+    if not callable(validate):
+        return dict(spec.params)
+    normalized = validate(dict(spec.params))
+    if not isinstance(normalized, dict):
+        raise SpecError(f"提供者 {provider.name} 的 validate_params 必须返回对象")
+    try:
+        encoded = json.dumps(
+            normalized, ensure_ascii=False, sort_keys=True, allow_nan=False
+        )
+    except (TypeError, ValueError) as error:
+        raise SpecError(
+            f"提供者 {provider.name} 的规范化参数不能序列化：{error}"
+        ) from error
+    return json.loads(encoded)
+
+
+def validate_strategy_provider(spec: StrategySpec) -> dict[str, Any]:
+    """校验策略引用的提供者、版本、必需因子和参数。"""
+    if spec.signal.provider is None:
+        return {}
+    return validate_provider_config(spec.signal.provider, spec.signal.factors)
 
 
 def signal_metadata(signal: SignalSpec) -> dict[str, Any]:

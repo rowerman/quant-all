@@ -92,7 +92,7 @@
 - 核心逻辑位置：`providers.py:register_provider`、`providers.py:get_provider`、
   `providers.py:validate_strategy_provider`、
   `strategies/momentum_timing.py:MomentumTimingProvider.build`。
-- 下级模块：`providers.py`、`strategies/`。
+- 下级模块：`providers.py`、`provider_schema.py`、`strategies/`。
 
 注意事项：
 
@@ -102,6 +102,8 @@
   不能依赖块边界之前的原始价格。
 - 返回矩阵整行 `NaN` 表示不调仓，全 0 行表示清仓；非空行必须有限、非负、单行合计
   不超过 1，正权重只能落在 `eligible=True` 的股票上。
+- 页面参数结构在 `strategies/_param_schema.py`，字段和默认值由 `provider_schema.py`
+  校验；该目录不进入提供者源码哈希。
 - `signal.factors` 是提供者声明的输入因子，`signal.weights` 必须为空；
   提供者模式下必须使用 `portfolio.selection=provider` 和 `rebalance.frequency=custom`。
 - 提供者名称和版本必须与注册对象一致；代码改动要提升版本。本轮只记录源码 SHA-256，

@@ -11,12 +11,14 @@ import pytest
 import backtest.providers as providers
 from backtest.errors import DataAlignmentError, SpecError
 from backtest.engine import run_backtest
+from backtest.provider_schema import provider_param_schema
 from backtest.providers import (
     get_provider,
     list_providers,
     provider_metadata,
     register_provider,
     signal_metadata,
+    validate_provider_config,
     validate_strategy_provider,
 )
 from backtest.signals import (
@@ -187,6 +189,63 @@ def test_provider_registry_and_metadata():
     assert len(metadata["code_sha256"]) == 64
     assert signal_metadata(_provider_strategy().signal)["kind"] == "provider"
     assert signal_metadata(StrategySpec().signal)["kind"] == "factor"
+
+
+def test_sample_provider_exposes_param_schema_and_defaults():
+    listed = {
+        item["name"]: item for item in list_providers()
+    }
+    timing = listed["momentum_timing"]
+    assert [item["name"] for item in timing["param_schema"]] == [
+        "top_n",
+        "min_breadth",
+    ]
+    assert timing["param_schema"][1]["type"] == "percent"
+    assert timing["param_schema"][1]["default"] == pytest.approx(0.5)
+    params = validate_provider_config(
+        ProviderSpec("momentum_timing"), ("MOM_20",)
+    )
+    assert params == {"top_n": 30, "min_breadth": 0.5}
+
+    trailing = listed["momentum_trailing_stop"]
+    assert [item["name"] for item in trailing["param_schema"]] == [
+        "top_n",
+        "stop_loss",
+        "trailing_stop",
+        "cooldown_days",
+    ]
+    assert trailing["uses_position_state"] is True
+
+
+@pytest.mark.parametrize(
+    "schema,message",
+    [
+        ([{"name": "count", "label": "数量", "type": "unknown", "default": 1}], "类型非法"),
+        (
+            [
+                {"name": "count", "label": "数量", "type": "integer", "default": 1},
+                {"name": "count", "label": "重复", "type": "integer", "default": 2},
+            ],
+            "重复",
+        ),
+        (
+            [{"name": "ratio", "label": "比例", "type": "percent", "default": 1.5, "max": 1}],
+            "高于 max",
+        ),
+        (
+            [{"name": "mode", "label": "模式", "type": "enum", "default": "b", "options": ["a"]}],
+            "不在 options",
+        ),
+    ],
+)
+def test_param_schema_rejects_invalid_descriptors(schema, message):
+    provider = SimpleNamespace(
+        name="schema_test",
+        version="1",
+        param_schema=tuple(schema),
+    )
+    with pytest.raises(SpecError, match=message):
+        provider_param_schema(provider)
 
 
 def test_provider_duplicate_error_includes_both_modules_and_logs():
