@@ -167,6 +167,7 @@ async function backtestPage(version){
         if(stage==='orders')return void(status.textContent=`规则过滤完成：计划 ${payload.planned_orders} 笔，规则拒单 ${payload.rejected_orders} 笔`);
         if(stage==='baseline')return void(status.textContent=`基准遍完成：执行层预留 ${pct(payload.cash_buffer)} 现金，开始资金分配`);
         if(stage==='allocation')return void(status.textContent=`资金分配完成：建仓 ${payload.allocated_cells} 格，补最小申报量 ${payload.bumped_min_order_cells ?? payload.bumped_one_lot_cells} 格，未建仓 ${payload.unaffordable_min_order_cells ?? payload.unaffordable_lot_cells} 格，被现金缩小 ${payload.cash_shrunk_cells} 格（其中 ${payload.cash_limited_cells} 格待补回）`);
+        if(stage==='provider_state')return void(status.textContent=`提供者状态反馈第 ${payload.pass}/${payload.max_passes} 轮${payload.converged?'，目标已稳定':''}`);
         if(stage==='execute')return void(status.textContent=`最终运行完成：${payload.final_orders} 笔成交，费用矩阵偏差 ${fmt(payload.fee_matrix_max_diff)}`);
         if(stage==='done'){status.innerHTML=`回测完成，用时 ${fmt(payload.elapsed_seconds)} 秒，成交 ${payload.orders} 笔，规则拒单 ${payload.rejections} 笔。<a href="#/backtest/${encodeURIComponent(payload.run_id)}">查看结果</a>`;loadRuns();}
       });
