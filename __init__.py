@@ -1,7 +1,6 @@
-"""Alpha 模型层：研究契约、数据集、预处理、切分与线性模型训练。
+"""Alpha 模型层：研究契约、数据集、切分、线性和 LightGBM 模型。
 
-P2 已具备 Ridge/ElasticNet、样本外预测和模型评估；LightGBM、回测提供者
-和生命周期管理在后续批次加入。
+P3 已具备 LightGBM 六折训练；回测提供者和生命周期管理在后续批次加入。
 """
 
 from alpha.config import DEFAULT_CONTRACT, ResearchContract
@@ -22,8 +21,10 @@ from alpha.errors import (
     AlphaRegistryError,
     AlphaSplitError,
 )
+from alpha.gbdt import GbdtConfig
 from alpha.preprocess import PreprocessConfig, PreprocessedFrame, transform
 from alpha.split import Fold, SplitConfig, build_folds, fold_masks
+from alpha.train import TrainConfig, fit, fit_gbdt
 
 __all__ = [
     "DEFAULT_CONTRACT",
@@ -32,6 +33,7 @@ __all__ = [
     "DatasetSpec",
     "build_dataset",
     "load_dataset",
+    "GbdtConfig",
     "PreprocessConfig",
     "PreprocessedFrame",
     "transform",
@@ -39,6 +41,9 @@ __all__ = [
     "SplitConfig",
     "build_folds",
     "fold_masks",
+    "TrainConfig",
+    "fit",
+    "fit_gbdt",
     "AlphaArtifactError",
     "AlphaConfigError",
     "AlphaDataError",

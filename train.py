@@ -1,4 +1,4 @@
-"""P2 线性模型训练、折内选参和预测产物生成。"""
+"""线性模型与 LightGBM 的训练编排和预测产物生成。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import pandas as pd
 
 from alpha.artifacts import (
     MODEL_SCHEMA_VERSION,
+    file_sha256,
     model_dir,
     prediction_sha256,
     validate_dev_range,
@@ -24,6 +25,13 @@ from alpha.config import DEFAULT_CONTRACT, MODEL_DATA_DIR
 from alpha.dataset import load_dataset
 from alpha.errors import AlphaModelError
 from alpha.evaluate import rank_ic_series, rank_ic_summary, yearly_rank_ic
+from alpha.gbdt import (
+    GbdtConfig,
+    fit_gbdt_fold,
+    predict_gbdt,
+    refit_gbdt,
+    save_gbdt_model,
+)
 from alpha.linear import (
     LinearModel,
     MODEL_TYPES,
@@ -102,6 +110,7 @@ def _code_sha256() -> str:
         "config.py",
         "dataset.py",
         "evaluate.py",
+        "gbdt.py",
         "linear.py",
         "preprocess.py",
         "split.py",
@@ -135,6 +144,31 @@ def _model_id(
     )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
     return f"{config.model_type}_{config.target}_{digest}"
+
+
+def _gbdt_model_id(
+    dataset_id: str,
+    dataset_manifest: dict,
+    folds: Sequence[Fold],
+    config: GbdtConfig,
+    code_sha256: str,
+) -> str:
+    """由数据、折表和 LightGBM 配置生成确定性模型 ID。"""
+
+    payload = {
+        "schema_version": MODEL_SCHEMA_VERSION,
+        "dataset_id": dataset_id,
+        "dataset_versions": dataset_manifest.get("versions"),
+        "dataset_code_sha256": dataset_manifest.get("code_sha256"),
+        "folds": [fold.to_dict() for fold in folds],
+        "config": config.to_dict(),
+        "code_sha256": code_sha256,
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    return f"lightgbm_{config.target}_{digest}"
 
 
 def load_folds(path: Path | None = None) -> tuple[Fold, ...]:
@@ -285,19 +319,15 @@ def _best_single_factor(
     }
 
 
-def _prediction_frame(
+def _prediction_from_scores(
     rows: pd.DataFrame,
-    model: LinearModel,
-    features: tuple[str, ...],
+    scores: np.ndarray,
 ) -> pd.DataFrame:
-    """给一组样本生成标准预测表。"""
+    """把模型分数整理为标准预测表。"""
 
-    scores = predict_linear(
-        model, rows.loc[:, features].to_numpy(dtype="float32")
-    )
     result = rows.loc[:, ["trade_date", "stock_code"]].copy()
     result["trade_date"] = pd.to_datetime(result["trade_date"])
-    result["score"] = scores
+    result["score"] = np.asarray(scores, dtype="float64")
     result = result.sort_values(
         ["trade_date", "stock_code"], kind="mergesort"
     ).reset_index(drop=True)
@@ -306,6 +336,19 @@ def _prediction_frame(
     if not np.isfinite(result["score"].to_numpy(dtype="float64")).all():
         raise AlphaModelError("预测表包含非有限分数")
     return result
+
+
+def _prediction_frame(
+    rows: pd.DataFrame,
+    model: LinearModel,
+    features: tuple[str, ...],
+) -> pd.DataFrame:
+    """给一组样本生成标准线性模型预测表。"""
+
+    scores = predict_linear(
+        model, rows.loc[:, features].to_numpy(dtype="float32")
+    )
+    return _prediction_from_scores(rows, scores)
 
 
 def _fit_loaded(
@@ -511,7 +554,251 @@ def _fit_loaded(
     )
 
 
-def _append_experiment(manifest: dict, metrics: dict) -> None:
+def _fit_gbdt_loaded(
+    data: pd.DataFrame,
+    dataset_manifest: dict,
+    folds: Sequence[Fold],
+    config: GbdtConfig,
+    *,
+    dataset_id: str,
+    output_root: Path,
+    force: bool = False,
+) -> ModelArtifact:
+    """在已加载数据上完成 LightGBM 六折训练与产物写入。"""
+
+    code_sha256 = _code_sha256()
+    model_id = _gbdt_model_id(
+        dataset_id, dataset_manifest, folds, config, code_sha256
+    )
+    folder = model_dir(model_id, output_root)
+    manifest_path = folder / "manifest.json"
+    metrics_path = folder / "metrics.json"
+    if manifest_path.is_file() and metrics_path.is_file() and not force:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        return ModelArtifact(
+            model_id=model_id,
+            path=folder,
+            manifest=manifest,
+            metrics=metrics,
+            row_count=int(manifest["prediction_rows"]),
+            date_count=int(manifest["prediction_dates"]),
+            prediction_sha256=str(manifest["prediction_sha256"]),
+        )
+    raw_features = tuple(str(name) for name in dataset_manifest["features"])
+    context_features = tuple(
+        str(name) for name in dataset_manifest["context_features"]
+    )
+    preprocessed = transform(
+        data,
+        config.preprocess,
+        feature_columns=raw_features + context_features,
+    )
+    features = preprocessed.feature_names
+    if not features:
+        raise AlphaModelError("预处理后没有模型特征")
+    predictions: list[pd.DataFrame] = []
+    fold_records: list[dict] = []
+    fold_details: list[dict] = []
+    validation: dict[str, dict] = {}
+    single_factors: list[dict] = []
+    folder.mkdir(parents=True, exist_ok=True)
+    for fold in sorted(folds, key=lambda item: item.test_start):
+        masks = fold_masks(preprocessed.data, fold)
+        usable = (
+            preprocessed.data["sample_weight"].gt(0)
+            & preprocessed.data[config.target].notna()
+        )
+        train_mask = masks["train"] & usable
+        valid_mask = masks["valid"] & usable
+        if not train_mask.any() or not valid_mask.any():
+            raise AlphaModelError(f"{fold.fold_id} 训练或验证样本为空")
+        train_rows = preprocessed.data.loc[train_mask]
+        valid_rows = preprocessed.data.loc[valid_mask].sort_values(
+            ["trade_date", "stock_code"], kind="mergesort"
+        )
+        fitted = fit_gbdt_fold(
+            train_rows.loc[:, features].to_numpy(dtype="float32"),
+            train_rows[config.target].to_numpy(dtype="float32"),
+            train_rows["sample_weight"].to_numpy(dtype="float32"),
+            valid_rows.loc[:, features].to_numpy(dtype="float32"),
+            valid_rows[config.target].to_numpy(dtype="float32"),
+            valid_rows["sample_weight"].to_numpy(dtype="float32"),
+            pd.to_datetime(valid_rows["trade_date"]).to_numpy(),
+            features,
+            config,
+        )
+        refit_rows = preprocessed.data.loc[
+            (masks["train"] | masks["valid"]) & usable
+        ]
+        booster = refit_gbdt(
+            refit_rows.loc[:, features].to_numpy(dtype="float32"),
+            refit_rows[config.target].to_numpy(dtype="float32"),
+            refit_rows["sample_weight"].to_numpy(dtype="float32"),
+            features,
+            config,
+            fitted.best_iteration,
+        )
+        test_rows = preprocessed.data.loc[
+            masks["test"] & preprocessed.data["eligible"].astype(bool)
+        ]
+        if test_rows.empty:
+            raise AlphaModelError(f"{fold.fold_id} 测试样本为空")
+        scores = predict_gbdt(
+            booster,
+            test_rows.loc[:, features].to_numpy(dtype="float32"),
+        )
+        predictions.append(_prediction_from_scores(test_rows, scores))
+        model_relative = f"models/{fold.fold_id}.txt"
+        model_path = folder / model_relative
+        save_gbdt_model(booster, model_path)
+        model_hash = file_sha256(model_path)
+        fold_record = {
+            "fold_id": fold.fold_id,
+            "test_year": int(pd.Timestamp(fold.test_start).year),
+            "test_start": fold.test_start,
+            "test_end": fold.test_end,
+            "train_rows": int(len(train_rows)),
+            "valid_rows": int(len(valid_rows)),
+            "test_rows": int(len(test_rows)),
+            "best_iteration": int(fitted.best_iteration),
+            "validation_rank_ic": float(fitted.validation_rank_ic),
+            "model_file": model_relative,
+            "model_sha256": model_hash,
+        }
+        fold_records.append(fold_record)
+        best_single = _best_single_factor(data, fold, raw_features)
+        single_factors.append(best_single)
+        validation[fold.fold_id] = {
+            "best_iteration": int(fitted.best_iteration),
+            "validation_rank_ic": float(fitted.validation_rank_ic),
+            "train_rows": int(len(train_rows)),
+            "valid_rows": int(len(valid_rows)),
+            "refit_rows": int(len(refit_rows)),
+            "test_rows": int(len(test_rows)),
+        }
+        fold_details.append(
+            {
+                **fold.to_dict(),
+                **fold_record,
+                "best_single_factor": best_single,
+            }
+        )
+        logger.info(
+            "%s 完成：最佳轮=%d 验证 RankIC=%.4f 测试行=%d",
+            fold.fold_id,
+            fitted.best_iteration,
+            fitted.validation_rank_ic,
+            len(test_rows),
+        )
+    predictions_frame = pd.concat(predictions, ignore_index=True).sort_values(
+        ["trade_date", "stock_code"], kind="mergesort"
+    )
+    predictions_frame = predictions_frame.reset_index(drop=True)
+    prediction_hash = prediction_sha256(predictions_frame)
+    prediction_paths = _write_prediction_parts(
+        predictions_frame, folder / "predictions"
+    )
+    labeled = predictions_frame.merge(
+        data.loc[:, ["trade_date", "stock_code", "label_raw"]],
+        on=["trade_date", "stock_code"],
+        how="left",
+        validate="one_to_one",
+    ).rename(columns={"label_raw": "label"})
+    test_series = rank_ic_series(labeled)
+    test_summary = rank_ic_summary(test_series)
+    aggregate = hashlib.sha256()
+    for record in fold_records:
+        aggregate.update(str(record["fold_id"]).encode("utf-8"))
+        aggregate.update(str(record["model_sha256"]).encode("ascii"))
+    metrics = {
+        "model_id": model_id,
+        "dataset_id": dataset_id,
+        "evaluated": False,
+        "validation": validation,
+        "test_model": {
+            **test_summary,
+            "yearly": yearly_rank_ic(test_series),
+        },
+    }
+    manifest = {
+        "schema_version": MODEL_SCHEMA_VERSION,
+        "model_id": model_id,
+        "model_type": "lightgbm",
+        "target": config.target,
+        "dataset_id": dataset_id,
+        "label": DEFAULT_CONTRACT.label,
+        "universe": DEFAULT_CONTRACT.universe,
+        "benchmark": DEFAULT_CONTRACT.benchmark,
+        "top_n": config.top_n,
+        "quantiles": config.quantiles,
+        "model_params": config.to_dict(),
+        "preprocess": config.to_dict()["preprocess"],
+        "raw_features": list(raw_features),
+        "context_features": list(context_features),
+        "features": list(features),
+        "feature_count": len(features),
+        "folds": fold_details,
+        "fold_models": fold_records,
+        "best_single_factors": single_factors,
+        "data_versions": dataset_manifest.get("versions", {}),
+        "dataset_code_sha256": dataset_manifest.get("code_sha256"),
+        "code_sha256": code_sha256,
+        "model_sha256": aggregate.hexdigest(),
+        "prediction_sha256": prediction_hash,
+        "prediction_files": prediction_paths,
+        "prediction_rows": int(len(predictions_frame)),
+        "prediction_dates": int(predictions_frame["trade_date"].nunique()),
+        "prediction_start": str(predictions_frame["trade_date"].min().date()),
+        "prediction_end": str(predictions_frame["trade_date"].max().date()),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "trained",
+    }
+    fold_frame = pd.DataFrame(fold_records)
+    temporary = folder / "fold_models.csv.tmp"
+    fold_frame.to_csv(temporary, index=False)
+    os.replace(temporary, folder / "fold_models.csv")
+    write_json(folder / "config.json", config.to_dict())
+    write_json(
+        folder / "features.json",
+        {
+            "raw": list(raw_features),
+            "context": list(context_features),
+            "transformed": list(features),
+        },
+    )
+    write_json(metrics_path, metrics)
+    write_json(manifest_path, manifest)
+    _append_experiment(
+        manifest,
+        metrics,
+        batch="P3",
+        notes="P3 LightGBM; development years only",
+    )
+    logger.info(
+        "LightGBM 模型完成：%s 预测行=%d 日期=%d",
+        model_id,
+        len(predictions_frame),
+        predictions_frame["trade_date"].nunique(),
+    )
+    return ModelArtifact(
+        model_id=model_id,
+        path=folder,
+        manifest=manifest,
+        metrics=metrics,
+        row_count=len(predictions_frame),
+        date_count=int(predictions_frame["trade_date"].nunique()),
+        prediction_sha256=prediction_hash,
+    )
+
+
+def _append_experiment(
+    manifest: dict,
+    metrics: dict,
+    *,
+    batch: str = "P2",
+    notes: str = "P2 linear model; development years only",
+) -> None:
     """幂等追加模型实验记录。"""
 
     path = MODEL_DATA_DIR / "experiments.csv"
@@ -523,7 +810,7 @@ def _append_experiment(manifest: dict, metrics: dict) -> None:
     row = {
         "experiment_id": model_id,
         "created_at": manifest["created_at"],
-        "batch": "P2",
+        "batch": batch,
         "name": model_id,
         "kind": "model",
         "stage": "development",
@@ -542,7 +829,7 @@ def _append_experiment(manifest: dict, metrics: dict) -> None:
             ensure_ascii=False,
             sort_keys=True,
         ),
-        "notes": "P2 linear model; development years only",
+        "notes": notes,
     }
     pd.DataFrame([row]).to_csv(path, mode="a", header=not path.is_file(), index=False)
 
@@ -565,6 +852,34 @@ def fit(
     for fold in fold_list:
         validate_dev_range(fold.test_start, fold.test_end)
     return _fit_loaded(
+        data,
+        manifest,
+        fold_list,
+        settings,
+        dataset_id=dataset_id,
+        output_root=output_root or MODEL_DATA_DIR,
+        force=force,
+    )
+
+
+def fit_gbdt(
+    dataset_id: str,
+    config: GbdtConfig | None = None,
+    *,
+    folds: Sequence[Fold] | None = None,
+    output_root: Path | None = None,
+    force: bool = False,
+) -> ModelArtifact:
+    """训练 LightGBM 六折模型并返回可复现产物。"""
+
+    settings = config or GbdtConfig()
+    data, manifest = load_dataset(dataset_id)
+    fold_list = tuple(folds or load_folds())
+    if not fold_list:
+        raise AlphaModelError("没有可训练的折")
+    for fold in fold_list:
+        validate_dev_range(fold.test_start, fold.test_end)
+    return _fit_gbdt_loaded(
         data,
         manifest,
         fold_list,

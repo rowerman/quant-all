@@ -8,10 +8,16 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from alpha.artifacts import model_dir, prediction_sha256, validate_dev_range
+from alpha.artifacts import (
+    file_sha256,
+    model_dir,
+    prediction_sha256,
+    validate_dev_range,
+)
 from alpha.config import MODEL_DATA_DIR
 from alpha.dataset import load_dataset
 from alpha.errors import AlphaArtifactError
+from alpha.gbdt import load_gbdt_model, predict_gbdt
 from alpha.linear import load_model_bundle, predict_linear
 from alpha.preprocess import PreprocessConfig, transform
 
@@ -57,14 +63,37 @@ def _predict_loaded(
     features = tuple(manifest["features"])
     if preprocessed.feature_names != features:
         raise AlphaArtifactError("预处理特征与模型 manifest 不一致")
-    bundle = load_model_bundle(model_dir(manifest["model_id"], root) / "model.npz")
+    folder = model_dir(manifest["model_id"], root)
+    model_type = str(manifest.get("model_type"))
+    linear_bundle = None
+    gbdt_models = {}
+    if model_type == "lightgbm":
+        for fold in manifest["folds"]:
+            fold_id = str(fold["fold_id"])
+            relative = str(fold.get("model_file") or f"models/{fold_id}.txt")
+            path = folder / relative
+            expected = str(fold.get("model_sha256") or "")
+            if not path.is_file():
+                raise AlphaArtifactError(f"LightGBM 模型文件缺失：{path}")
+            if not expected or file_sha256(path) != expected:
+                raise AlphaArtifactError(f"LightGBM 模型文件哈希不一致：{path}")
+            try:
+                gbdt_models[fold_id] = load_gbdt_model(path)
+            except Exception as error:
+                raise AlphaArtifactError(f"无法读取 LightGBM 模型：{path}") from error
+    else:
+        linear_bundle = load_model_bundle(folder / "model.npz")
     start_stamp = pd.Timestamp(start)
     end_stamp = pd.Timestamp(end)
     parts: list[pd.DataFrame] = []
     dates = pd.to_datetime(preprocessed.data["trade_date"])
     for fold in manifest["folds"]:
         fold_id = str(fold["fold_id"])
-        if fold_id not in bundle:
+        if model_type == "lightgbm":
+            model = gbdt_models.get(fold_id)
+        else:
+            model = None if linear_bundle is None else linear_bundle.get(fold_id)
+        if model is None:
             raise AlphaArtifactError(f"模型文件缺少 {fold_id}")
         lo = max(start_stamp, pd.Timestamp(fold["test_start"]))
         hi = min(end_stamp, pd.Timestamp(fold["test_end"]))
@@ -78,9 +107,11 @@ def _predict_loaded(
         rows = preprocessed.data.loc[mask]
         if rows.empty:
             continue
-        scores = predict_linear(
-            bundle[fold_id],
-            rows.loc[:, features].to_numpy(dtype="float32"),
+        matrix = rows.loc[:, features].to_numpy(dtype="float32")
+        scores = (
+            predict_gbdt(model, matrix)
+            if model_type == "lightgbm"
+            else predict_linear(model, matrix)
         )
         part = rows.loc[:, ["trade_date", "stock_code"]].copy()
         part["trade_date"] = pd.to_datetime(part["trade_date"])
