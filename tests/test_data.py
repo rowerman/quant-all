@@ -270,6 +270,17 @@ def test_close_has_no_fake_gap_on_ex_dividend():
     assert float(actions.iloc[0]["cash_div_per_share"]) == pytest.approx(3.974)
 
 
+def test_corporate_action_loader_exposes_rights_terms():
+    """读取层返回配股比例与配股价。"""
+    actions = quant.load_corporate_actions(
+        start="2016-01-07", end="2016-01-07", stocks=["SH601377"]
+    )
+    row = actions.iloc[0]
+    assert row["source"] == "gbbq"
+    assert float(row["rights_ratio"]) == pytest.approx(0.3)
+    assert float(row["rights_price"]) == pytest.approx(8.19)
+
+
 def test_versions_are_read_from_manifests():
     """运行元数据里的数据版本与因子版本来自两个库的清单表。"""
     versions = _load_versions(None)

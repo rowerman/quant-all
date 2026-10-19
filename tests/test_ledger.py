@@ -87,6 +87,76 @@ def test_fractional_share_is_cashed_out():
     assert portfolio.fractional_cash().sum() == pytest.approx(5.0)
 
 
+def test_rights_subscription_uses_available_cash_and_adds_lot():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    close = _prices([10.0, 8.0], dates)
+    targets = _prices([100.0, 130.0], dates)
+    actions = _action(
+        dates,
+        rights_ratio=0.3,
+        rights_price=5.0,
+        action_type="rights",
+    )
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=close,
+        init_cash=2_000.0, corporate_actions=actions, boards=BOARDS,
+    )
+
+    assert portfolio.assets().iloc[-1, 0] == 130
+    assert portfolio.cash().iloc[-1] == pytest.approx(850.0)
+    assert portfolio.rights_subscription_cash().sum() == pytest.approx(150.0)
+    assert portfolio.rights_subscribed_shares().sum() == pytest.approx(30.0)
+    row = portfolio.corporate_action_records().iloc[-1]
+    assert row["kind"] == "rights_subscription"
+    assert row["rights_entitled_shares"] == pytest.approx(30.0)
+    assert row["rights_subscribed_shares"] == pytest.approx(30.0)
+    assert row["rights_price"] == pytest.approx(5.0)
+
+
+def test_rights_subscription_stops_at_cash_and_records_shortfall():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    close = _prices([10.0, 8.0], dates)
+    targets = _prices([100.0, 110.0], dates)
+    actions = _action(
+        dates,
+        rights_ratio=0.3,
+        rights_price=5.0,
+        action_type="rights",
+    )
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=close,
+        init_cash=1_050.0, corporate_actions=actions, boards=BOARDS,
+    )
+
+    assert portfolio.assets().iloc[-1, 0] == 110
+    assert portfolio.cash().iloc[-1] == pytest.approx(0.0)
+    assert portfolio.rights_subscribed_shares().sum() == pytest.approx(10.0)
+    assert portfolio.rights_unsubscribed_shares().sum() == pytest.approx(20.0)
+
+
+def test_rights_and_share_adjustment_use_same_pre_event_holding():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    close = _prices([10.0, 5.0], dates)
+    targets = _prices([100.0, 180.0], dates)
+    actions = _action(
+        dates,
+        share_multiplier=1.5,
+        rights_ratio=0.3,
+        rights_price=5.0,
+        action_type="rights_mixed",
+    )
+
+    portfolio = LedgerPortfolio.from_orders(
+        close, targets, size_type="targetamount", price=close,
+        init_cash=2_000.0, corporate_actions=actions, boards=BOARDS,
+    )
+
+    assert portfolio.assets().iloc[-1, 0] == 180
+    assert portfolio.rights_subscribed_shares().sum() == pytest.approx(30.0)
+
+
 @pytest.mark.parametrize(
     ("entry", "sell", "rate"),
     [

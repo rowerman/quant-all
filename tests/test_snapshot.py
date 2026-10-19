@@ -101,6 +101,8 @@ def test_snapshot_is_deterministic_and_ignores_out_of_window_rows(snapshot_db):
     assert set(execution["source_sha256"]) == set(EXECUTION_SOURCE_FILES)
     assert all(len(value) == 64 for value in execution["source_sha256"].values())
     assert len(execution["source_set_sha256"]) == 64
+    assert first.components["rules"]["corporate_action_model"] == "cn_a_corporate_action_v2"
+    assert first.components["rules"]["rights_issue_policy"] == "cash_limited"
 
     con = _mutable_connection(snapshot_db)
     con.execute(

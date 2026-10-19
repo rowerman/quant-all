@@ -251,6 +251,9 @@ def derive_daily(
     dividend_tax: pd.Series | None = None,
     dividend_receivable: pd.Series | None = None,
     fractional_cash: pd.Series | None = None,
+    rights_subscription_cash: pd.Series | None = None,
+    rights_subscribed_shares: pd.Series | None = None,
+    rights_unsubscribed_shares: pd.Series | None = None,
     writeoff_size: pd.Series | None = None,
     writeoff_value: pd.Series | None = None,
 ) -> pd.DataFrame:
@@ -293,6 +296,16 @@ def derive_daily(
         if fractional_cash is None
         else pd.Series(fractional_cash).reindex(daily.index).fillna(0.0)
     )
+    for name, values in (
+        ("rights_subscription_cash", rights_subscription_cash),
+        ("rights_subscribed_shares", rights_subscribed_shares),
+        ("rights_unsubscribed_shares", rights_unsubscribed_shares),
+    ):
+        daily[name] = (
+            pd.Series(0.0, index=daily.index)
+            if values is None
+            else pd.Series(values).reindex(daily.index).fillna(0.0)
+        )
     daily["writeoff_size"] = (
         pd.Series(0.0, index=daily.index)
         if writeoff_size is None
@@ -1154,6 +1167,15 @@ def run_backtest(
             portfolio.dividend_tax_pending().iloc[-1]
         ) if hasattr(portfolio, "dividend_tax_pending") and len(daily) else 0.0,
         "fractional_cash": float(daily.get("fractional_cash", pd.Series(dtype=float)).sum()),
+        "rights_subscription_cash": float(
+            daily.get("rights_subscription_cash", pd.Series(dtype=float)).sum()
+        ),
+        "rights_subscribed_shares": float(
+            daily.get("rights_subscribed_shares", pd.Series(dtype=float)).sum()
+        ),
+        "rights_unsubscribed_shares": float(
+            daily.get("rights_unsubscribed_shares", pd.Series(dtype=float)).sum()
+        ),
         "total_cost_total": float(daily.get("total_cost", pd.Series(dtype=float)).sum()),
         "forced_exit_orders": forced_exit_orders,
         "delisting_writeoff_shares": float(

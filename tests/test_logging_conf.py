@@ -37,11 +37,11 @@ def test_segment_name_tracks_last_message(tmp_path):
 
 def test_handler_is_lazy_and_rotates_before_limit(tmp_path, monkeypatch):
     """没有日志时不建空文件，达到上限前切换到新段。"""
+    monkeypatch.setattr(logging_conf, "MAX_BYTES", 8)
     handler = logging_conf.TimestampedFileHandler(tmp_path)
     handler.setFormatter(logging.Formatter("%(message)s"))
     assert not list(tmp_path.glob("*.log"))
 
-    monkeypatch.setattr(logging_conf, "MAX_BYTES", 8)
     times = [1_700_000_000.1, 1_700_000_001.2, 1_700_000_002.3]
     handler.handle(_record(times[0], "a"))
     handler.handle(_record(times[1], "bb"))

@@ -51,6 +51,10 @@ ACTION_COLUMNS = [
     "dividend_tax",
     "tax_rate",
     "fractional_cash",
+    "rights_price",
+    "rights_entitled_shares",
+    "rights_subscribed_shares",
+    "rights_unsubscribed_shares",
     "source",
     "source_event_key",
 ]
@@ -197,6 +201,9 @@ class LedgerPortfolio:
         dividend_tax: pd.Series,
         dividend_tax_pending: pd.Series,
         fractional_cash: pd.Series,
+        rights_cash: pd.Series,
+        rights_subscribed: pd.Series,
+        rights_unsubscribed: pd.Series,
         writeoff_size: pd.Series,
         writeoff_value: pd.Series,
         valuation: pd.DataFrame,
@@ -221,6 +228,9 @@ class LedgerPortfolio:
         self._dividend_tax = dividend_tax
         self._dividend_tax_pending = dividend_tax_pending
         self._fractional_cash = fractional_cash
+        self._rights_cash = rights_cash
+        self._rights_subscribed = rights_subscribed
+        self._rights_unsubscribed = rights_unsubscribed
         self._writeoff_size = writeoff_size
         self._writeoff_value = writeoff_value
         self._valuation = valuation
@@ -346,6 +356,9 @@ class LedgerPortfolio:
         dividend_tax = np.zeros(len(index), dtype="float64")
         dividend_pending = np.zeros(len(index), dtype="float64")
         fractional_cash = np.zeros(len(index), dtype="float64")
+        rights_cash = np.zeros(len(index), dtype="float64")
+        rights_subscribed = np.zeros(len(index), dtype="float64")
+        rights_unsubscribed = np.zeros(len(index), dtype="float64")
         writeoff_size = np.zeros(len(index), dtype="float64")
         writeoff_value = np.zeros(len(index), dtype="float64")
         assets = np.zeros((len(index), len(columns)), dtype="float64")
@@ -412,6 +425,10 @@ class LedgerPortfolio:
             tax: float = 0.0,
             tax_rate: float = 0.0,
             fractional: float = 0.0,
+            rights_price: float = 0.0,
+            rights_entitled: float = 0.0,
+            rights_subscribed_shares: float = 0.0,
+            rights_unsubscribed_shares: float = 0.0,
             source: str = "",
             event_key: str = "",
         ) -> None:
@@ -426,6 +443,10 @@ class LedgerPortfolio:
                     "dividend_tax": float(tax),
                     "tax_rate": float(tax_rate),
                     "fractional_cash": float(fractional),
+                    "rights_price": float(rights_price),
+                    "rights_entitled_shares": float(rights_entitled),
+                    "rights_subscribed_shares": float(rights_subscribed_shares),
+                    "rights_unsubscribed_shares": float(rights_unsubscribed_shares),
                     "source": source,
                     "source_event_key": event_key,
                 }
@@ -498,6 +519,57 @@ class LedgerPortfolio:
                 share_delta=delta,
                 cash_delta=cash_in_lieu,
                 fractional=fractional,
+                source=str(event.get("source", "")),
+                event_key=str(event.get("source_event_key", "")),
+            )
+
+        def apply_rights_action(
+            day: pd.Timestamp,
+            event: dict,
+            base_shares: float,
+        ) -> None:
+            """按可用现金认购老股东配股，不足部分不融资。"""
+            nonlocal cash, shares
+            key = str(event["stock_code"])
+            if key not in col_lookup:
+                return
+            ratio = float(event.get("rights_ratio", 0.0) or 0.0)
+            if ratio <= 0 or base_shares <= 0:
+                return
+            price = float(event.get("rights_price", np.nan))
+            if not np.isfinite(price) or price <= 0:
+                raise ValueError(f"{key} 配股条款缺少正数配股价")
+            entitled = float(np.floor(base_shares * ratio + 1e-9))
+            affordable = float(np.floor(max(cash, 0.0) / price + 1e-9))
+            subscribed = min(entitled, affordable)
+            unsubscribed = max(entitled - subscribed, 0.0)
+            if subscribed > 0:
+                amount = subscribed * price
+                cash -= amount
+                position = col_lookup[key]
+                shares[position] += subscribed
+                lots.setdefault(key, []).append(
+                    TaxLot(
+                        stock_code=key,
+                        shares=subscribed,
+                        entry_date=day,
+                        entry_price=price,
+                        entry_fees=0.0,
+                    )
+                )
+                rights_cash[index.get_loc(day)] += amount
+                rights_subscribed[index.get_loc(day)] += subscribed
+            rights_unsubscribed[index.get_loc(day)] += unsubscribed
+            add_action(
+                day,
+                key,
+                "rights_subscription",
+                share_delta=subscribed,
+                cash_delta=-subscribed * price,
+                rights_price=price,
+                rights_entitled=entitled,
+                rights_subscribed_shares=subscribed,
+                rights_unsubscribed_shares=unsubscribed,
                 source=str(event.get("source", "")),
                 event_key=str(event.get("source_event_key", "")),
             )
@@ -658,12 +730,14 @@ class LedgerPortfolio:
                     event_position = col_lookup.get(event_code)
                     if event_position is None:
                         continue
+                    base_shares = float(shares[event_position])
                     event_price = order_price.iloc[row, event_position]
                     apply_share_action(
                         day,
                         event,
                         float(event_price) if pd.notna(event_price) else day_price,
                     )
+                    apply_rights_action(day, event, base_shares)
                 receive_due(day)
             opening_cash[row] = cash
             opening_assets[row] = shares
@@ -932,6 +1006,9 @@ class LedgerPortfolio:
         dividend_tax_series = pd.Series(dividend_tax, index=index)
         pending_series = pd.Series(dividend_pending, index=index)
         fractional_series = pd.Series(fractional_cash, index=index)
+        rights_cash_series = pd.Series(rights_cash, index=index)
+        rights_subscribed_series = pd.Series(rights_subscribed, index=index)
+        rights_unsubscribed_series = pd.Series(rights_unsubscribed, index=index)
         writeoff_size_series = pd.Series(writeoff_size, index=index)
         writeoff_value_series = pd.Series(writeoff_value, index=index)
         assets_frame = pd.DataFrame(assets, index=index, columns=columns)
@@ -955,6 +1032,9 @@ class LedgerPortfolio:
             dividend_tax=dividend_tax_series,
             dividend_tax_pending=pending_series,
             fractional_cash=fractional_series,
+            rights_cash=rights_cash_series,
+            rights_subscribed=rights_subscribed_series,
+            rights_unsubscribed=rights_unsubscribed_series,
             writeoff_size=writeoff_size_series,
             writeoff_value=writeoff_value_series,
             valuation=valuation,
@@ -1006,6 +1086,18 @@ class LedgerPortfolio:
         """逐日零头折现金额。"""
         return self._fractional_cash.copy()
 
+    def rights_subscription_cash(self) -> pd.Series:
+        """逐日配股认购现金。"""
+        return self._rights_cash.copy()
+
+    def rights_subscribed_shares(self) -> pd.Series:
+        """逐日实际认购股数。"""
+        return self._rights_subscribed.copy()
+
+    def rights_unsubscribed_shares(self) -> pd.Series:
+        """逐日因现金不足放弃的配股股数。"""
+        return self._rights_unsubscribed.copy()
+
     def writeoff_records(self) -> pd.DataFrame:
         """返回逐笔退市零价值核销明细。"""
         return pd.DataFrame(self._writeoff_rows, columns=WRITEOFF_COLUMNS)
@@ -1039,6 +1131,9 @@ class LedgerPortfolio:
                 "dividend_tax": self._dividend_tax,
                 "dividend_receivable": self._receivables,
                 "fractional_cash": self._fractional_cash,
+                "rights_subscription_cash": self._rights_cash,
+                "rights_subscribed_shares": self._rights_subscribed,
+                "rights_unsubscribed_shares": self._rights_unsubscribed,
                 "writeoff_size": self._writeoff_size,
                 "writeoff_value": self._writeoff_value,
             },

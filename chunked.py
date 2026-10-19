@@ -122,6 +122,9 @@ SUM_KEYS = (
     "dividend_income",
     "dividend_tax",
     "fractional_cash",
+    "rights_subscription_cash",
+    "rights_subscribed_shares",
+    "rights_unsubscribed_shares",
     "commission_total",
     "stamp_tax_total",
     "transfer_fee_total",
@@ -788,6 +791,9 @@ def _stitch(
     dividend_tax_parts: list[pd.Series] = []
     dividend_receivable_parts: list[pd.Series] = []
     fractional_cash_parts: list[pd.Series] = []
+    rights_cash_parts: list[pd.Series] = []
+    rights_subscribed_parts: list[pd.Series] = []
+    rights_unsubscribed_parts: list[pd.Series] = []
     writeoff_size_parts: list[pd.Series] = []
     writeoff_value_parts: list[pd.Series] = []
     position_parts: list[pd.DataFrame] = []
@@ -833,6 +839,15 @@ def _stitch(
         )
         fractional_cash_parts.append(
             daily.get("fractional_cash", pd.Series(0.0, index=daily.index))
+        )
+        rights_cash_parts.append(
+            daily.get("rights_subscription_cash", pd.Series(0.0, index=daily.index))
+        )
+        rights_subscribed_parts.append(
+            daily.get("rights_subscribed_shares", pd.Series(0.0, index=daily.index))
+        )
+        rights_unsubscribed_parts.append(
+            daily.get("rights_unsubscribed_shares", pd.Series(0.0, index=daily.index))
         )
         writeoff_size_parts.append(
             daily.get("writeoff_size", pd.Series(0.0, index=daily.index))
@@ -901,6 +916,9 @@ def _stitch(
         pd.concat(dividend_tax_parts).sort_index(),
         pd.concat(dividend_receivable_parts).sort_index(),
         pd.concat(fractional_cash_parts).sort_index(),
+        pd.concat(rights_cash_parts).sort_index(),
+        pd.concat(rights_subscribed_parts).sort_index(),
+        pd.concat(rights_unsubscribed_parts).sort_index(),
         pd.concat(writeoff_size_parts).sort_index(),
         pd.concat(writeoff_value_parts).sort_index(),
     )

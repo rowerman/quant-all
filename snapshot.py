@@ -32,12 +32,13 @@ from backtest.trading_rules import ORDER_RULE_VERSION, RULE_VERSION, rule_summar
 from backtest.universe import membership_rows, resolve_universe, universe_stocks
 
 
-SNAPSHOT_SCHEMA_VERSION = "backtest_input_snapshot_v3"
-DATA_SNAPSHOT_SCHEMA_VERSION = "backtest_data_snapshot_v2"
+SNAPSHOT_SCHEMA_VERSION = "backtest_input_snapshot_v4"
+DATA_SNAPSHOT_SCHEMA_VERSION = "backtest_data_snapshot_v3"
 DB_HASH_ALGORITHM = "duckdb_hash_v1"
 PANDAS_HASH_ALGORITHM = "pandas_hash_v1"
 DELISTING_RULE_VERSION = "cn_a_delisting_v1"
-EXECUTION_MODEL_VERSION = "causal_segmented_ledger_v1"
+EXECUTION_MODEL_VERSION = "causal_segmented_ledger_v2"
+CORPORATE_ACTION_MODEL_VERSION = "cn_a_corporate_action_v2"
 EXECUTION_SOURCE_FILES = (
     "engine.py",
     "chunked.py",
@@ -262,6 +263,8 @@ def _corporate_action_columns() -> tuple[tuple[str, str, str], ...]:
         ("pay_date", 'CAST("pay_date" AS DATE)', "DATE"),
         ("share_multiplier", 'CAST("share_multiplier" AS DOUBLE)', "DOUBLE"),
         ("cash_div_per_share", 'CAST("cash_div_per_share" AS DOUBLE)', "DOUBLE"),
+        ("rights_ratio", 'CAST("rights_ratio" AS DOUBLE)', "DOUBLE"),
+        ("rights_price", 'CAST("rights_price" AS DOUBLE)', "DOUBLE"),
         ("action_type", '"action_type"', "VARCHAR"),
         ("source", '"source"', "VARCHAR"),
         ("source_event_key", '"source_event_key"', "VARCHAR"),
@@ -704,6 +707,8 @@ def _rules_component(strategy: StrategySpec) -> dict[str, Any]:
         "board_rules": rule_summary(),
         "cost_model": cost_model_summary(strategy.costs),
         "delisting_rule_version": DELISTING_RULE_VERSION,
+        "corporate_action_model": CORPORATE_ACTION_MODEL_VERSION,
+        "rights_issue_policy": "cash_limited",
         "execution_model": _execution_model_component(),
         "provider": provider,
     }
