@@ -12,6 +12,7 @@ from backtest.errors import (
     SnapshotConflictError,
     SpecError,
 )
+from backtest.execution_state import PositionSnapshot, ProviderState
 from backtest.metrics import summarize
 from backtest.orders import (
     OrderPlan,
@@ -69,6 +70,8 @@ __all__ = [
     "MarketData",
     "OrderPlan",
     "PortfolioSpec",
+    "PositionSnapshot",
+    "ProviderState",
     "ProviderSpec",
     "RebalanceSpec",
     "RiskSpec",

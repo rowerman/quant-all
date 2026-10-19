@@ -7,21 +7,31 @@ VectorBT 的执行放在一个工作线程里，生成器本身负责分阶段�
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
 from queue import Empty, Queue
 from threading import Thread
 from typing import Callable, Iterator
 
+import numpy as np
+import pandas as pd
+
 from backtest.chunked import plan_chunks, run_chunked, run_loaded
-from backtest.config import MAX_PANEL_CELLS
+from backtest.config import MAX_PANEL_CELLS, MAX_PROVIDER_STATE_PASSES
 from backtest.coverage import validate_window
 from backtest.data import estimate_panel, load_market_data
 from backtest.engine import BacktestResult
-from backtest.errors import BacktestError, RunCancelled, SpecError
+from backtest.errors import BacktestError, ExecutionError, RunCancelled, SpecError
+from backtest.execution_state import ProviderState
 from backtest.logging_conf import get_logger
-from backtest.providers import signal_metadata, validate_strategy_provider
-from backtest.snapshot import build_data_snapshot, build_input_snapshot
+from backtest.providers import (
+    get_provider,
+    provider_uses_position_state,
+    signal_metadata,
+    validate_strategy_provider,
+)
 from backtest.specs import BacktestParams, BenchmarkSpec, StrategySpec
+from backtest.snapshot import build_data_snapshot, build_input_snapshot
 from backtest.store import BacktestStore
 from backtest.universe import resolve_universe
 
@@ -91,6 +101,80 @@ def _run_in_thread(runner: Callable[[Callable[[str, dict], None]], BacktestResul
         events.put(None)
 
 
+def _matrix_changes(previous: pd.DataFrame, current: pd.DataFrame) -> int:
+    """返回两个目标权重矩阵的不同格数；形状不同返回 -1。"""
+    if not previous.index.equals(current.index) or not previous.columns.equals(
+        current.columns
+    ):
+        return -1
+    first = previous.to_numpy(dtype="float64")
+    second = current.to_numpy(dtype="float64")
+    first_nan = np.isnan(first)
+    second_nan = np.isnan(second)
+    different = first_nan != second_nan
+    both = ~first_nan & ~second_nan
+    different |= both & (first != second)
+    return int(different.sum())
+
+
+def _stateful_runner(
+    base_runner: Callable[
+        [Callable[[str, dict], None], ProviderState | None], BacktestResult
+    ],
+    report: Callable[[str, dict], None],
+    should_cancel: Cancelled | None,
+) -> BacktestResult:
+    """按固定点重复执行，直到提供者目标不再变化。"""
+    state: ProviderState | None = None
+    previous: pd.DataFrame | None = None
+    changed: int | None = None
+    started = time.perf_counter()
+    for index in range(1, MAX_PROVIDER_STATE_PASSES + 1):
+        _check_cancelled(should_cancel)
+        result = base_runner(report, state)
+        if previous is not None:
+            changed = _matrix_changes(previous, result.target_weights)
+            converged = changed == 0
+        else:
+            converged = False
+        report(
+            "provider_state",
+            {
+                "pass": index,
+                "max_passes": MAX_PROVIDER_STATE_PASSES,
+                "changed_cells": changed,
+                "converged": converged,
+            },
+        )
+        if converged:
+            metadata = dict(result.metadata)
+            execution = dict(metadata.get("execution") or {})
+            execution["provider_state_passes"] = index
+            execution["provider_state_converged"] = True
+            execution["provider_state_seconds"] = round(
+                time.perf_counter() - started, 3
+            )
+            metadata["execution"] = execution
+            calibration = dict(metadata.get("calibration") or {})
+            calibration["provider_state_passes"] = index
+            calibration["provider_state_converged"] = True
+            calibration["provider_state_seconds"] = round(
+                time.perf_counter() - started, 3
+            )
+            metadata["calibration"] = calibration
+            metadata["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+            return replace(result, metadata=metadata)
+        if result.provider_state is None:
+            raise ExecutionError("状态提供者运行没有返回执行状态")
+        previous = result.target_weights
+        state = result.provider_state
+    detail = "目标矩阵形状变化" if changed == -1 else f"{changed} 格目标变化"
+    raise ExecutionError(
+        f"提供者状态反馈 {MAX_PROVIDER_STATE_PASSES} 轮仍未收敛（{detail}）；"
+        "请降低止损或重入规则的切换频率"
+    )
+
+
 def iter_run(
     store: BacktestStore,
     request: RunRequest,
@@ -105,6 +189,10 @@ def iter_run(
     """
     spec = effective_spec(store.get_version(request.strategy_id, request.version), request)
     validate_strategy_provider(spec)
+    provider = (
+        None if spec.signal.provider is None else get_provider(spec.signal.provider)
+    )
+    stateful = provider is not None and provider_uses_position_state(provider)
     params = request.params
     # 覆盖检查放在运行记录和面板读取之前，避免可预期的缺日留下失败运行。
     validate_window(spec.benchmark.index_code, params.start, params.end)
@@ -190,8 +278,13 @@ def iter_run(
                     "snapshot_id": snapshot.snapshot_id,
                 },
             )
-            runner = lambda report: run_loaded(  # noqa: E731
-                data, spec, params, progress=report, should_cancel=should_cancel
+            runner = lambda report, provider_state=None: run_loaded(  # noqa: E731
+                data,
+                spec,
+                params,
+                progress=report,
+                should_cancel=should_cancel,
+                provider_state=provider_state,
             )
         else:
             logger.info("面板 %d×%d 超过单块上限，改为 %d 块分块回测", days, stocks, len(windows))
@@ -207,15 +300,22 @@ def iter_run(
                     "snapshot_id": snapshot.snapshot_id,
                 },
             )
-            runner = lambda report: run_chunked(  # noqa: E731
+            runner = lambda report, provider_state=None: run_chunked(  # noqa: E731
                 spec,
                 params,
                 progress=report,
                 should_cancel=should_cancel,
                 windows=windows,
                 data_snapshot=data_snapshot,
+                provider_state=provider_state,
             )
-        worker = Thread(target=_run_in_thread, args=(runner, events), daemon=True)
+
+        def worker_runner(report: Callable[[str, dict], None]) -> BacktestResult:
+            if stateful:
+                return _stateful_runner(runner, report, should_cancel)
+            return runner(report, None)
+
+        worker = Thread(target=_run_in_thread, args=(worker_runner, events), daemon=True)
         worker.start()
         while True:
             try:

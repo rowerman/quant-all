@@ -7,8 +7,9 @@ import pandas as pd
 
 from backtest.data import MarketData
 from backtest.errors import DataAlignmentError, SpecError
+from backtest.execution_state import ProviderState
 from backtest.logging_conf import get_logger
-from backtest.providers import get_provider
+from backtest.providers import get_provider, provider_uses_position_state
 from backtest.specs import PortfolioSpec, RebalanceSpec, SignalSpec, StrategySpec
 from backtest.universe import MIN_LISTED_DAYS
 
@@ -206,11 +207,16 @@ def build_signal_targets(
     data: MarketData,
     strategy: StrategySpec,
     rebalance_days: pd.Series | None = None,
+    provider_state: ProviderState | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """按策略类型生成信号日目标权重和排名。
 
     因子策略沿用原有 Top-N 逻辑；提供者策略由注册对象返回权重，拒绝外部再传
     调仓日掩码，避免两套调仓口径同时生效。
+
+    参数:
+        provider_state: 上一遍执行账本给出的逐日持仓状态，仅状态提供者使用；
+            None 表示首次运行，提供者只能给基准目标。
     """
     if strategy.signal.provider is None:
         return build_target_weights(
@@ -224,7 +230,13 @@ def build_signal_targets(
         raise SpecError("目标权重提供者自行决定调仓日，不能同时传 rebalance_days")
     provider = get_provider(strategy.signal.provider)
     pool = eligible_mask(data)
-    raw = provider.build(data, pool, dict(strategy.signal.provider.params))
+    params = dict(strategy.signal.provider.params)
+    if provider_uses_position_state(provider):
+        if provider_state is not None:
+            provider_state = provider_state.slice(data.index)
+        raw = provider.build(data, pool, params, state=provider_state)
+    else:
+        raw = provider.build(data, pool, params)
     weights = validate_provider_weights(raw, data, pool)
     return weights, rank_provider_weights(weights)
 

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import pandas as pd
 
 from backtest.errors import SpecError
+from backtest.execution_state import ProviderState
 from backtest.logging_conf import get_logger
 from backtest.specs import ProviderSpec, SignalSpec, StrategySpec
 
@@ -29,6 +30,9 @@ class TargetWeightProvider(Protocol):
 
     ``eligible`` 是引擎按统一股票池口径算好的布尔矩阵；提供者只能给 True 的格子
     正权重。``build`` 必须返回与行情面板同形的权重矩阵。
+
+    需要真实持仓的提供者额外声明 ``uses_position_state = True``，此时 ``build``
+    接收第四个关键字参数 ``state``；状态由执行层账本生成，提供者不得自行模拟持仓。
     """
 
     name: str
@@ -41,6 +45,7 @@ class TargetWeightProvider(Protocol):
         data: "MarketData",
         eligible: pd.DataFrame,
         params: dict[str, Any],
+        state: ProviderState | None = None,
     ) -> pd.DataFrame:
         """返回信号日目标权重。"""
 
@@ -63,7 +68,28 @@ def _validate_provider(provider: TargetWeightProvider) -> None:
     ):
         raise SpecError("目标权重提供者 required_factors 必须是字符串序列")
     if not callable(getattr(provider, "build", None)):
-        raise SpecError("目标权重提供者必须实现 build(data, eligible, params)")
+        raise SpecError(
+            "目标权重提供者必须实现 build(data, eligible, params[, state])"
+        )
+    uses_state = getattr(provider, "uses_position_state", False)
+    if not isinstance(uses_state, bool):
+        raise SpecError("目标权重提供者 uses_position_state 必须是布尔值")
+    if uses_state:
+        try:
+            signature = inspect.signature(provider.build)
+        except (TypeError, ValueError) as error:
+            raise SpecError(
+                f"目标权重提供者 {provider.name} 的 build 签名无法检查"
+            ) from error
+        accepts_state = "state" in signature.parameters or any(
+            item.kind is inspect.Parameter.VAR_KEYWORD
+            for item in signature.parameters.values()
+        )
+        if not accepts_state:
+            raise SpecError(
+                f"目标权重提供者 {provider.name} 声明 uses_position_state，"
+                "但 build 没有 state 参数"
+            )
 
 
 def register_provider(provider: TargetWeightProvider | type[TargetWeightProvider]) -> TargetWeightProvider:
@@ -138,6 +164,11 @@ def get_provider(spec: ProviderSpec | str) -> TargetWeightProvider:
     return provider
 
 
+def provider_uses_position_state(provider: TargetWeightProvider) -> bool:
+    """返回提供者是否读取执行层持仓状态。"""
+    return bool(getattr(provider, "uses_position_state", False))
+
+
 def _code_source(provider: TargetWeightProvider) -> tuple[str, str]:
     """读取提供者模块源码并返回源码文本和 SHA-256。"""
     source = inspect.getsourcefile(type(provider))
@@ -163,6 +194,7 @@ def _metadata(provider: TargetWeightProvider) -> dict[str, Any]:
         "version": str(provider.version),
         "description": provider.description,
         "required_factors": list(provider.required_factors),
+        "uses_position_state": provider_uses_position_state(provider),
         "module": type(provider).__module__,
         "code_sha256": _code_sha256(provider),
     }

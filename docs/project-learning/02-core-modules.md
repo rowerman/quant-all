@@ -138,8 +138,8 @@ build_signal_targets / store.create_strategy / backtest_service.prepare / option
   引入任意代码导入；新增提供者必须把模块放进 `backtest/strategies/`。
 - `params` 必须是可 JSON 序列化对象，不能含 `NaN`；版本和参数进入策略配置哈希，
   源码哈希只进入运行元数据。代码改动必须提升提供者版本，不能只改源码。
-- 提供者只能依赖行情、因子和 eligible 矩阵；真实持仓止损、动态订单需要执行层状态钩子，
-  不应在提供者里模拟。
+- 普通提供者只能依赖行情、因子和 eligible 矩阵；需要止损或动态加减仓时声明
+  `uses_position_state=True`，读取执行层状态，不应在提供者里模拟持仓。
 - `providers` 不保证跨资源块的历史行情；提供者应使用已落盘因子做滚动计算。
 
 ## `orders.py`

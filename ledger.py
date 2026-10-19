@@ -15,6 +15,11 @@ import numpy as np
 import pandas as pd
 
 from backtest.costs import CostSpec, FeeCharge, order_cost_frame, round_cent
+from backtest.execution_state import (
+    EXIT_STATE_COLUMNS,
+    POSITION_STATE_COLUMNS,
+    ProviderState,
+)
 from backtest.logging_conf import get_logger
 from backtest.trading_rules import rule_for
 
@@ -91,6 +96,7 @@ class LedgerSnapshot:
     lots: pd.DataFrame
     receivables: pd.DataFrame
     last_prices: pd.Series
+    high_water: pd.Series | None = None
 
     def to_frames(self) -> tuple[pd.Series, pd.DataFrame]:
         """返回可直接交给下一块的持股与批次表。"""
@@ -170,6 +176,17 @@ def _load_lots(frame: pd.DataFrame | None) -> dict[str, list[TaxLot]]:
     return result
 
 
+def _lot_cost(items: list[TaxLot]) -> tuple[float, float | None, pd.Timestamp | None]:
+    """返回有效批次的总股数、加权平均成本和最早建仓日。"""
+    active = [item for item in items if item.shares > 1e-9]
+    total = sum(item.shares for item in active)
+    if total <= 1e-9:
+        return 0.0, None, None
+    cost = sum(item.shares * item.entry_price for item in active) / total
+    since = min(item.entry_date for item in active)
+    return float(total), float(cost), pd.Timestamp(since)
+
+
 def _receivable_frame(rows: list[dict]) -> pd.DataFrame:
     """整理待收分红。"""
     return pd.DataFrame(
@@ -209,6 +226,9 @@ class LedgerPortfolio:
         valuation: pd.DataFrame,
         sizes: pd.DataFrame,
         writeoff_rows: list[dict],
+        state_rows: list[dict],
+        exit_rows: list[dict],
+        high_water: pd.Series,
     ) -> None:
         self.index = pd.DatetimeIndex(index)
         self.columns = columns
@@ -236,6 +256,9 @@ class LedgerPortfolio:
         self._valuation = valuation
         self._sizes = sizes
         self._writeoff_rows = writeoff_rows
+        self._state_rows = state_rows
+        self._exit_rows = exit_rows
+        self._high_water = high_water
         self.orders = SimpleNamespace(records_readable=orders)
         self.positions = SimpleNamespace(records_readable=positions)
 
@@ -339,12 +362,19 @@ class LedgerPortfolio:
         cash = float(init_cash if initial_state is None else initial_state.cash)
         shares = np.zeros(len(columns), dtype="float64")
         lots: dict[str, list[TaxLot]] = {}
+        peak_prices: dict[str, float] = {}
         receivable_rows: list[dict] = []
         if initial_state is not None:
             shares = (
                 initial_state.shares.reindex(columns).fillna(0.0).to_numpy(dtype="float64")
             )
             lots = _load_lots(initial_state.lots)
+            if initial_state.high_water is not None:
+                peak_prices = {
+                    str(key): float(value)
+                    for key, value in initial_state.high_water.items()
+                    if pd.notna(value) and np.isfinite(float(value))
+                }
             if not initial_state.receivables.empty:
                 receivable_rows = initial_state.receivables.to_dict("records")
 
@@ -367,6 +397,8 @@ class LedgerPortfolio:
         position_rows: list[dict] = []
         action_rows: list[dict] = []
         writeoff_rows: list[dict] = []
+        state_rows: list[dict] = []
+        exit_rows: list[dict] = []
         order_id = 0
         last_prices = pd.Series(np.nan, index=columns, dtype="float64")
         col_lookup = {str(code): position for position, code in enumerate(columns)}
@@ -378,6 +410,45 @@ class LedgerPortfolio:
         writeoffs_by_day: dict[pd.Timestamp, list[pd.Series]] = {}
         for item in writeoff_frame.to_dict("records") if not writeoff_frame.empty else []:
             writeoffs_by_day.setdefault(pd.Timestamp(item["trade_date"]), []).append(item)
+
+        def record_state(row: int, day: pd.Timestamp) -> None:
+            """记录收盘持仓状态，并推进建仓以来最高收盘价。"""
+            portfolio_value = float(values[row])
+            held = np.flatnonzero(shares > 1e-9)
+            held_codes = {str(columns[position]) for position in held}
+            for code in [item for item in peak_prices if item not in held_codes]:
+                peak_prices.pop(code, None)
+            for position in held:
+                key = columns[position]
+                code = str(key)
+                quantity = float(shares[position])
+                price = float(last_prices.get(key, np.nan))
+                if not np.isfinite(price):
+                    continue
+                peak = max(float(peak_prices.get(code, price)), price)
+                peak_prices[code] = peak
+                total_shares, avg_cost, holding_since = _lot_cost(lots.get(code, []))
+                if total_shares <= 1e-9 or avg_cost is None or holding_since is None:
+                    continue
+                market_value = quantity * price
+                state_rows.append(
+                    {
+                        "trade_date": day,
+                        "stock_code": code,
+                        "shares": quantity,
+                        "avg_cost": avg_cost,
+                        "price": price,
+                        "market_value": market_value,
+                        "weight": market_value / portfolio_value
+                        if portfolio_value > 0
+                        else 0.0,
+                        "unrealized_return": price / avg_cost - 1.0
+                        if avg_cost > 0
+                        else np.nan,
+                        "high_water_price": peak,
+                        "holding_since": holding_since,
+                    }
+                )
 
         def apply_writeoffs(row: int, day: pd.Timestamp) -> None:
             """在当日订单执行后清理退市残仓。"""
@@ -399,6 +470,9 @@ class LedgerPortfolio:
                     reference = 0.0
                 remove_lots_writeoff(day, key, quantity)
                 shares[position] = 0.0
+                exit_rows.append(
+                    {"trade_date": day, "stock_code": key, "price": 0.0}
+                )
                 writeoff_size[row] += quantity
                 writeoff_value[row] += quantity * reference
                 writeoff_rows.append(
@@ -488,6 +562,8 @@ class LedgerPortfolio:
             if old <= 0:
                 return
             multiplier = float(event["share_multiplier"])
+            if not np.isfinite(multiplier) or multiplier <= 0:
+                raise ValueError(f"{key} 送转/拆并倍数必须为正数")
             exact = old * multiplier
             new = float(np.floor(exact + 1e-9))
             delta = new - old
@@ -497,6 +573,12 @@ class LedgerPortfolio:
                 cash += cash_in_lieu
                 fractional_cash[index.get_loc(day)] += cash_in_lieu
             shares[position] = new
+            if abs(multiplier - 1.0) > 1e-12:
+                # 送转和拆并只改变每股口径，不改变总成本；批次成本价反向缩放。
+                for item in lots.get(key, []):
+                    item.entry_price /= multiplier
+                if key in peak_prices:
+                    peak_prices[key] /= multiplier
             if abs(delta) >= 1e-9:
                 items = lots.get(key, [])
                 old_total = sum(item.shares for item in items)
@@ -753,6 +835,7 @@ class LedgerPortfolio:
                     np.where(np.isfinite(mark_row), mark_row, last_prices.to_numpy()),
                     index=columns,
                 )
+                record_state(row, day)
                 continue
 
             open_row = order_price.iloc[row].to_numpy(dtype="float64")
@@ -771,6 +854,7 @@ class LedgerPortfolio:
                     np.where(np.isfinite(mark_row), mark_row, last_prices.to_numpy()),
                     index=columns,
                 )
+                record_state(row, day)
                 continue
 
             market_value = float(np.nansum(shares * open_row))
@@ -830,6 +914,14 @@ class LedgerPortfolio:
                     fill_price = charge.fill_price
                     cash += charge.fill_amount - charge.fees
                     shares[position] -= sell_quantity
+                    if shares[position] <= 1e-9:
+                        exit_rows.append(
+                            {
+                                "trade_date": day,
+                                "stock_code": key,
+                                "price": fill_price,
+                            }
+                        )
                     raw_tax, gross_dividend = consume_lots(
                         day, key, sell_quantity, fill_price, charge.fees
                     )
@@ -962,6 +1054,7 @@ class LedgerPortfolio:
                 np.where(np.isfinite(mark_row), mark_row, last_prices.to_numpy()),
                 index=columns,
             )
+            record_state(row, day)
 
         # 区间末仍未卖出的批次保留为 Open 持仓。
         for key, items in lots.items():
@@ -1040,6 +1133,9 @@ class LedgerPortfolio:
             valuation=valuation,
             sizes=targets,
             writeoff_rows=writeoff_rows,
+            state_rows=state_rows,
+            exit_rows=exit_rows,
+            high_water=pd.Series(peak_prices, dtype="float64"),
         )
 
     def value(self) -> pd.Series:
@@ -1117,6 +1213,16 @@ class LedgerPortfolio:
             lots=_lot_frame(self._lots),
             receivables=_receivable_frame(self._receivable_rows),
             last_prices=self._last_prices.astype("float64"),
+            high_water=self._high_water.astype("float64").copy(),
+        )
+
+    def provider_state(self) -> ProviderState:
+        """返回逐日执行状态，供目标权重提供者读取。"""
+        return ProviderState(
+            cash=self._cash,
+            portfolio_value=self._values,
+            positions=pd.DataFrame(self._state_rows, columns=POSITION_STATE_COLUMNS),
+            exits=pd.DataFrame(self._exit_rows, columns=EXIT_STATE_COLUMNS),
         )
 
     def daily(self) -> pd.DataFrame:

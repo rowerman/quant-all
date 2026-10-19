@@ -46,6 +46,7 @@ from backtest.config import MAX_ALLOCATION_ITERATIONS
 from backtest.costs import cost_model_summary, order_cost_frame
 from backtest.data import PRICE_ADJUST, MarketData
 from backtest.errors import ExecutionError
+from backtest.execution_state import STATE_MODEL_VERSION, ProviderState
 from backtest.logging_conf import get_logger
 from backtest.ledger import LedgerPortfolio, LedgerSnapshot
 from backtest.orders import (
@@ -120,6 +121,7 @@ class BacktestResult:
     corporate_actions: pd.DataFrame = field(default_factory=pd.DataFrame)
     industry_exposure: pd.DataFrame = field(default_factory=pd.DataFrame)
     final_state: "ChunkState | None" = None
+    provider_state: ProviderState | None = None
 
 
 def _notify(progress: Progress | None, stage: str, **payload) -> None:
@@ -787,6 +789,8 @@ def run_backtest(
     liquidations: pd.DataFrame | None = None,
     chunk_boundary: bool = False,
     target_override: tuple[pd.DataFrame, pd.DataFrame] | None = None,
+    provider_state: ProviderState | None = None,
+    shift_targets: bool = True,
 ) -> BacktestResult:
     """执行一次 VectorBT 回测。
 
@@ -803,6 +807,9 @@ def run_backtest(
             不算未收敛。
         target_override: 分块回测准备好的 ``(目标权重, 排名)``；None 表示按当前面板
             现场生成信号。提供者策略必须由分块准备阶段传入，避免在段内重复调用。
+        provider_state: 上一遍账本给出的执行状态；仅状态提供者在现场生成信号时使用。
+        shift_targets: 目标矩阵是否还需要平移一个交易日。逐日事件驱动模式传入已经
+            对齐到执行日的目标时设为 False。
     """
     if not data.index.size:
         raise ExecutionError("回测数据为空")
@@ -822,7 +829,9 @@ def run_backtest(
     started = time.perf_counter()
     valuation = data.close.ffill(axis=0)
     if target_override is None:
-        target_weights, ranks = build_signal_targets(data, strategy, rebalance_days)
+        target_weights, ranks = build_signal_targets(
+            data, strategy, rebalance_days, provider_state=provider_state
+        )
     else:
         prepared_weights, prepared_ranks = target_override
         missing_days = data.index.difference(prepared_weights.index)
@@ -851,7 +860,7 @@ def run_backtest(
         **concentration_stats,
     )
 
-    targets = execution_targets(target_weights)
+    targets = execution_targets(target_weights) if shift_targets else target_weights
     execution_industries = (
         None if data.industry_l1 is None else data.industry_l1.shift(1, fill_value=0)
     )
@@ -1217,6 +1226,10 @@ def run_backtest(
     }
     if strategy.execution.max_participation_rate is not None:
         execution_metadata["max_participation_rate"] = strategy.execution.max_participation_rate
+    signal_info = signal_metadata(strategy.signal)
+    uses_position_state = bool(signal_info.get("uses_position_state", False))
+    if uses_position_state:
+        execution_metadata["provider_state_model"] = STATE_MODEL_VERSION
     snapshot = build_input_snapshot(
         strategy,
         data.data_snapshot
@@ -1237,7 +1250,7 @@ def run_backtest(
         "price_adjust": PRICE_ADJUST,
         "cash_retry_policy": "all_cash_shortfall_event",
         "risk": strategy.risk.to_dict(),
-        "signal": signal_metadata(strategy.signal),
+        "signal": signal_info,
         "execution": execution_metadata,
         "versions": data.versions,
         "snapshot": snapshot.to_dict(),
@@ -1297,6 +1310,11 @@ def run_backtest(
             rule_state=plan.rule_state,
             carry=final_carry,
             ledger_state=portfolio.snapshot() if hasattr(portfolio, "snapshot") else None,
+        ),
+        provider_state=(
+            portfolio.provider_state()
+            if uses_position_state and hasattr(portfolio, "provider_state")
+            else None
         ),
     )
 

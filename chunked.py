@@ -40,6 +40,7 @@ from backtest.engine import (
 )
 import backtest.engine as engine
 from backtest.errors import ResourceLimitError, RunCancelled
+from backtest.execution_state import ProviderState
 from backtest.logging_conf import get_logger
 from backtest.attribution import build_report
 from backtest.orders import (
@@ -391,6 +392,7 @@ def _prepare_chunks(
     loader: Callable[[ChunkWindow, ChunkState | None], MarketData],
     progress: Progress | None,
     should_cancel: Cancelled | None,
+    provider_state: "ProviderState | None" = None,
 ) -> list[_PreparedChunk]:
     """逐块计算一次信号目标，后续固定点轮次复用。"""
     mask = (
@@ -405,7 +407,9 @@ def _prepare_chunks(
         _check_cancelled(should_cancel)
         _report_chunk(progress, "prepare", position, len(windows), window)
         data = loader(window, None)
-        target_weights, ranks = build_signal_targets(data, strategy, mask)
+        target_weights, ranks = build_signal_targets(
+            data, strategy, mask, provider_state=provider_state
+        )
         if strategy.signal.provider is None:
             target_weights, risk_stats = cap_target_weights(
                 target_weights,
@@ -453,11 +457,20 @@ def run_windows(
     data_snapshot: dict | None = None,
     progress: Progress | None = None,
     should_cancel: Cancelled | None = None,
+    provider_state: ProviderState | None = None,
 ) -> BacktestResult:
     """按给定资源窗口准备信号，再按调仓执行段因果求解并拼接结果。"""
     started = time.perf_counter()
     logger.info("因果分段回测：区间=%s~%s 共 %d 个资源块", params.start, params.end, len(windows))
-    prepared = _prepare_chunks(windows, strategy, days, loader, progress, should_cancel)
+    prepared = _prepare_chunks(
+        windows,
+        strategy,
+        days,
+        loader,
+        progress,
+        should_cancel,
+        provider_state=provider_state,
+    )
     segments = _segment_windows(days, prepared)
     mask = (
         None
@@ -570,6 +583,7 @@ def run_loaded(
     *,
     progress: Progress | None = None,
     should_cancel: Cancelled | None = None,
+    provider_state: ProviderState | None = None,
 ) -> BacktestResult:
     """对已经加载到内存的面板执行因果分段回测。
 
@@ -599,6 +613,7 @@ def run_loaded(
         data_snapshot=data.data_snapshot,
         progress=progress,
         should_cancel=should_cancel,
+        provider_state=provider_state,
     )
 
 
@@ -633,6 +648,7 @@ def run_chunked(
     factor_dir=None,
     windows: list[ChunkWindow] | None = None,
     data_snapshot: dict | None = None,
+    provider_state: ProviderState | None = None,
 ) -> BacktestResult:
     """分块执行一次回测，返回拼接后的整段结果。
 
@@ -646,6 +662,7 @@ def run_chunked(
         factor_dir: 因子数据根目录。
         windows: 直接指定分块窗口；None 表示按预算自动切块。
         data_snapshot: 整段数据快照；None 表示现算。
+        provider_state: 上一遍账本给出的执行状态，仅状态提供者使用。
     """
     windows = windows or plan_chunks(
         params.start, params.end, strategy.universe, db_path=db_path, cell_budget=cell_budget
@@ -693,6 +710,7 @@ def run_chunked(
         data_snapshot=data_snapshot,
         progress=progress,
         should_cancel=should_cancel,
+        provider_state=provider_state,
     )
 
 
@@ -784,6 +802,7 @@ def _stitch(
     liquidation_parts: list[pd.DataFrame] = []
     allocation_parts: list[pd.DataFrame] = []
     corporate_action_parts: list[pd.DataFrame] = []
+    provider_state_parts: list[ProviderState] = []
     target_parts: list[pd.DataFrame] = []
     value_parts: list[pd.Series] = []
     cash_parts: list[pd.Series] = []
@@ -859,6 +878,11 @@ def _stitch(
         if warmup is not None and "Status" in positions:
             positions = positions.loc[positions["Status"].astype(str) != "Open"]
         position_parts.append(positions)
+        if result.provider_state is not None:
+            state = result.provider_state
+            if warmup is not None:
+                state = state.slice(state.dates[state.dates >= start])
+            provider_state_parts.append(state)
 
     nonempty_orders = [frame for frame in orders_parts if not frame.empty]
     orders = pd.concat(nonempty_orders, ignore_index=True) if nonempty_orders else pd.DataFrame()
@@ -1032,4 +1056,5 @@ def _stitch(
         corporate_actions=corporate_actions,
         industry_exposure=report.industry_exposure,
         final_state=results[-1][1].final_state,
+        provider_state=ProviderState.merge(provider_state_parts),
     )

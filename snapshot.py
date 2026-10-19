@@ -26,18 +26,19 @@ from quant.db import get_conn
 from backtest.config import FACTOR_DB, FACTOR_DIR
 from backtest.costs import cost_model_summary
 from backtest.errors import DataAlignmentError, SpecError
+from backtest.execution_state import STATE_MODEL_VERSION
 from backtest.providers import provider_snapshot_metadata
 from backtest.specs import StrategySpec, TOTAL_RETURN_BENCHMARKS
 from backtest.trading_rules import ORDER_RULE_VERSION, RULE_VERSION, rule_summary
 from backtest.universe import membership_rows, resolve_universe, universe_stocks
 
 
-SNAPSHOT_SCHEMA_VERSION = "backtest_input_snapshot_v4"
+SNAPSHOT_SCHEMA_VERSION = "backtest_input_snapshot_v5"
 DATA_SNAPSHOT_SCHEMA_VERSION = "backtest_data_snapshot_v3"
 DB_HASH_ALGORITHM = "duckdb_hash_v1"
 PANDAS_HASH_ALGORITHM = "pandas_hash_v1"
 DELISTING_RULE_VERSION = "cn_a_delisting_v1"
-EXECUTION_MODEL_VERSION = "causal_segmented_ledger_v2"
+EXECUTION_MODEL_VERSION = "causal_segmented_ledger_v3"
 CORPORATE_ACTION_MODEL_VERSION = "cn_a_corporate_action_v2"
 EXECUTION_SOURCE_FILES = (
     "engine.py",
@@ -50,6 +51,7 @@ EXECUTION_SOURCE_FILES = (
     "trading_rules.py",
     "data.py",
     "signals.py",
+    "execution_state.py",
     "universe.py",
     "specs.py",
     "config.py",
@@ -709,6 +711,7 @@ def _rules_component(strategy: StrategySpec) -> dict[str, Any]:
         "delisting_rule_version": DELISTING_RULE_VERSION,
         "corporate_action_model": CORPORATE_ACTION_MODEL_VERSION,
         "rights_issue_policy": "cash_limited",
+        "provider_state_model": STATE_MODEL_VERSION,
         "execution_model": _execution_model_component(),
         "provider": provider,
     }
