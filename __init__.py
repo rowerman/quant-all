@@ -1,7 +1,7 @@
-"""Alpha 模型层：研究契约、数据集、预处理、切分与后续模型训练。
+"""Alpha 模型层：研究契约、数据集、预处理、切分与线性模型训练。
 
-第一批只实现 P0/P1 所需能力；Ridge、LightGBM、回测提供者和生命周期管理
-在后续批次加入。
+P2 已具备 Ridge/ElasticNet、样本外预测和模型评估；LightGBM、回测提供者
+和生命周期管理在后续批次加入。
 """
 
 from alpha.config import DEFAULT_CONTRACT, ResearchContract
