@@ -3,7 +3,8 @@
 快照只记录本次运行实际使用到的数据范围与规则内容，不复制行情和因子原始数据。
 行情、交易日历、股票基础表、公司行动、行业和基准通过 DuckDB 对精确行集做
 顺序无关的哈希；因子直接读取落盘 Parquet。相同内容重复构建会得到相同
-``snapshot_id``，区间外数据刷新不会改变摘要。
+``snapshot_id``，区间外数据刷新不会改变摘要。执行模型版本和核心模块源码摘要
+也会进入快照，执行代码变化会生成新的 ``snapshot_id``。
 """
 
 from __future__ import annotations
@@ -31,11 +32,27 @@ from backtest.trading_rules import ORDER_RULE_VERSION, RULE_VERSION, rule_summar
 from backtest.universe import membership_rows, resolve_universe, universe_stocks
 
 
-SNAPSHOT_SCHEMA_VERSION = "backtest_input_snapshot_v2"
+SNAPSHOT_SCHEMA_VERSION = "backtest_input_snapshot_v3"
 DATA_SNAPSHOT_SCHEMA_VERSION = "backtest_data_snapshot_v2"
 DB_HASH_ALGORITHM = "duckdb_hash_v1"
 PANDAS_HASH_ALGORITHM = "pandas_hash_v1"
 DELISTING_RULE_VERSION = "cn_a_delisting_v1"
+EXECUTION_MODEL_VERSION = "causal_segmented_ledger_v1"
+EXECUTION_SOURCE_FILES = (
+    "engine.py",
+    "chunked.py",
+    "ledger.py",
+    "allocation.py",
+    "orders.py",
+    "risk.py",
+    "costs.py",
+    "trading_rules.py",
+    "data.py",
+    "signals.py",
+    "universe.py",
+    "specs.py",
+    "config.py",
+)
 
 
 @dataclass(frozen=True)
@@ -654,6 +671,24 @@ def build_data_snapshot(
     }
 
 
+def _execution_model_component(root: Path | None = None) -> dict[str, Any]:
+    """汇总执行模型版本和核心模块源码摘要。"""
+    base = Path(__file__).resolve().parent if root is None else Path(root)
+    sources: dict[str, str] = {}
+    for name in EXECUTION_SOURCE_FILES:
+        path = base / name
+        if not path.is_file():
+            raise SpecError(f"生成执行模型快照失败，缺少源码文件：{path}")
+        sources[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    payload = {
+        "version": EXECUTION_MODEL_VERSION,
+        "backend": "ledger",
+        "mode": "causal_segmented",
+        "source_sha256": sources,
+    }
+    return {**payload, "source_set_sha256": _sha256_payload(payload)}
+
+
 def _rules_component(strategy: StrategySpec) -> dict[str, Any]:
     """返回策略配置、交易规则和提供者源码的摘要内容。"""
     provider = (
@@ -669,6 +704,7 @@ def _rules_component(strategy: StrategySpec) -> dict[str, Any]:
         "board_rules": rule_summary(),
         "cost_model": cost_model_summary(strategy.costs),
         "delisting_rule_version": DELISTING_RULE_VERSION,
+        "execution_model": _execution_model_component(),
         "provider": provider,
     }
 

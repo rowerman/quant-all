@@ -1,6 +1,8 @@
 """策略版本与回测结果的落库行为。"""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+import threading
 
 import duckdb
 import pandas as pd
@@ -96,6 +98,62 @@ def test_finish_run_rejects_missing_and_finished_runs(store):
     store.finish_run(run_id, _result())
     with pytest.raises(RunConflictError, match="不能重复写入"):
         store.finish_run(run_id, _result())
+    assert len(store.get_result_table(run_id, "daily")) == 2
+
+
+def test_terminal_status_is_not_rewritten_by_late_cleanup(store):
+    """成功、失败和取消都是终态，迟到的清理不能覆盖已有状态。"""
+    strategy_id, version = store.create_strategy(StrategySpec())
+
+    success = store.start_run(
+        strategy_id, version, BacktestParams("2024-01-01", "2024-01-05")
+    )
+    store.finish_run(success, _result())
+    store.fail_run(success, BacktestError("迟到的失败"))
+    store.cancel_run(success)
+    record = store.get_run(success)
+    assert record["status"] == "success"
+    assert record["error_message"] is None
+    assert record["metadata_json"] is not None
+
+    failed = store.start_run(
+        strategy_id, version, BacktestParams("2024-01-01", "2024-01-05")
+    )
+    store.fail_run(failed, BacktestError("原始失败"))
+    store.cancel_run(failed)
+    assert store.get_run(failed)["status"] == "failed"
+    with pytest.raises(RunConflictError, match="当前状态为 failed"):
+        store.finish_run(failed, _result())
+
+    cancelled = store.start_run(
+        strategy_id, version, BacktestParams("2024-01-01", "2024-01-05")
+    )
+    store.cancel_run(cancelled)
+    store.fail_run(cancelled, BacktestError("迟到的失败"))
+    assert store.get_run(cancelled)["status"] == "cancelled"
+
+
+def test_concurrent_finish_writes_results_once(store):
+    """两个线程同时完成同一运行时，只有一个能提交结果。"""
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(
+        strategy_id, version, BacktestParams("2024-01-01", "2024-01-05")
+    )
+    barrier = threading.Barrier(2)
+
+    def finish():
+        barrier.wait()
+        try:
+            store.finish_run(run_id, _result())
+            return "success"
+        except RunConflictError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: finish(), range(2)))
+
+    assert sorted(outcomes) == ["conflict", "success"]
+    assert store.get_run(run_id)["status"] == "success"
     assert len(store.get_result_table(run_id, "daily")) == 2
 
 

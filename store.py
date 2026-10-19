@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from dataclasses import replace
+import fcntl
 import json
 from pathlib import Path
 import uuid
@@ -57,6 +58,17 @@ class BacktestStore:
 
     def _connect(self):
         return duckdb.connect(str(self.path))
+
+    @contextmanager
+    def _run_state_lock(self):
+        """串行化同一回测库的运行状态迁移，避免并发写同一行。"""
+        lock_path = self.path.with_name(f"{self.path.name}.state.lock")
+        with lock_path.open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def _ensure_schema(conn) -> None:
@@ -577,60 +589,82 @@ class BacktestStore:
             payload = frame.copy()
             payload.insert(0, "run_id", run_id)
             frames.append((table, payload))
-        metadata = dict(result.metadata)
-        metadata["metrics"] = result.metrics
-        snapshot = metadata.get("snapshot")
-        snapshot_id = metadata.get("snapshot_id")
-        if isinstance(snapshot, dict):
-            snapshot_id = self.record_snapshot(snapshot)
-            metadata["snapshot_id"] = snapshot_id
-        with self._connect() as conn:
-            current = conn.execute(
-                "SELECT status, snapshot_id FROM bt.run WHERE run_id = ?", [run_id]
-            ).fetchone()
-            if current is None:
-                raise RunNotFoundError(f"回测运行不存在：{run_id}")
-            if str(current[0]) != "running":
-                raise RunConflictError(
-                    f"回测运行 {run_id} 当前状态为 {current[0]}，不能重复写入结果"
-                )
-            if (
-                current[1]
-                and snapshot_id
-                and str(current[1]) != str(snapshot_id)
-            ):
-                raise SnapshotConflictError(
-                    f"运行 {run_id} 起始快照与结果快照不一致"
-                )
-            with self._transaction(conn):
-                for table, payload in frames:
-                    self._write_frame(conn, table, payload)
-                conn.execute(
-                    "UPDATE bt.run SET status = ?, metadata_json = ?, "
-                    "snapshot_id = coalesce(?, snapshot_id), "
-                    "finished_at = ? WHERE run_id = ? AND status = 'running'",
-                    [
-                        "success",
-                        json.dumps(metadata, ensure_ascii=False, default=str),
-                        snapshot_id,
-                        self._now(),
-                        run_id,
-                    ],
-                )
+        with self._run_state_lock():
+            metadata = dict(result.metadata)
+            metadata["metrics"] = result.metrics
+            snapshot = metadata.get("snapshot")
+            snapshot_id = metadata.get("snapshot_id")
+            if isinstance(snapshot, dict):
+                snapshot_id = self.record_snapshot(snapshot)
+                metadata["snapshot_id"] = snapshot_id
+            try:
+                with self._connect() as conn:
+                    with self._transaction(conn):
+                        current = conn.execute(
+                            "SELECT status, snapshot_id FROM bt.run WHERE run_id = ?", [run_id]
+                        ).fetchone()
+                        if current is None:
+                            raise RunNotFoundError(f"回测运行不存在：{run_id}")
+                        if str(current[0]) != "running":
+                            raise RunConflictError(
+                                f"回测运行 {run_id} 当前状态为 {current[0]}，不能重复写入结果"
+                            )
+                        if (
+                            current[1]
+                            and snapshot_id
+                            and str(current[1]) != str(snapshot_id)
+                        ):
+                            raise SnapshotConflictError(
+                                f"运行 {run_id} 起始快照与结果快照不一致"
+                            )
+                        updated = conn.execute(
+                            "UPDATE bt.run SET status = ?, metadata_json = ?, "
+                            "snapshot_id = coalesce(?, snapshot_id), "
+                            "finished_at = ? WHERE run_id = ? AND status = 'running' "
+                            "RETURNING run_id",
+                            [
+                                "success",
+                                json.dumps(metadata, ensure_ascii=False, default=str),
+                                snapshot_id,
+                                self._now(),
+                                run_id,
+                            ],
+                        ).fetchall()
+                        if not updated:
+                            raise RunConflictError(
+                                f"回测运行 {run_id} 已结束，不能重复写入结果"
+                            )
+                        for table, payload in frames:
+                            self._write_frame(conn, table, payload)
+            except duckdb.TransactionException as error:
+                # 文件锁负责正常并发；这里兜住绕过锁的外部写入竞争。
+                try:
+                    status = str(self.get_run(run_id)["status"])
+                except RunNotFoundError:
+                    raise error
+                if status != "running":
+                    raise RunConflictError(
+                        f"回测运行 {run_id} 当前状态为 {status}，不能重复写入结果"
+                    ) from error
+                raise
 
     def fail_run(self, run_id: str, error: Exception) -> None:
-        """保存失败状态和错误摘要。"""
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE bt.run SET status = ?, error_message = ?, finished_at = ? WHERE run_id = ?",
-                ["failed", str(error), self._now(), run_id],
-            )
+        """把运行标记为失败；已结束的运行保持原状态。"""
+        with self._run_state_lock():
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE bt.run SET status = ?, error_message = ?, finished_at = ? "
+                    "WHERE run_id = ? AND status = 'running'",
+                    ["failed", str(error), self._now(), run_id],
+                )
 
     def cancel_run(self, run_id: str) -> None:
-        """把运行标记为已取消。"""
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE bt.run SET status = ?, finished_at = ? WHERE run_id = ?",
-                ["cancelled", self._now(), run_id],
-            )
+        """把运行标记为已取消；已结束的运行保持原状态。"""
+        with self._run_state_lock():
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE bt.run SET status = ?, finished_at = ? "
+                    "WHERE run_id = ? AND status = 'running'",
+                    ["cancelled", self._now(), run_id],
+                )
 

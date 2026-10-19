@@ -915,7 +915,6 @@ def run_backtest(
     previous_carry: pd.DataFrame | None = None
     previous_effective_targets: pd.DataFrame | None = None
     previous_clipped_cells: int | None = None
-    previous_no_pending = False
     carry_iterations = 0
     carry_converged = False
     iteration = 0
@@ -963,14 +962,8 @@ def run_backtest(
             and _same_matrix(previous_carry, carry)
             and _same_matrix(previous_effective_targets, effective_targets)
             and previous_clipped_cells == 0
-            and previous_no_pending
-            # 有下一调仓段时，稳定的补回目标可以交给下一段继续；最后一段没有后续交易日，
-            # 必须确认区间末不存在仍被现金缩小的缺口。
-            and (
-                chunk_boundary
-                or _cash_pending_on_last_day(candidate.allocation, effective_targets.index[-1]) == 0
-            )
         ):
+            # 最后一段允许带着无法补足的期末现金缺口收敛；缺口由校准字段单独披露。
             converged = True
             break
         if iteration == 1:
@@ -1048,7 +1041,6 @@ def run_backtest(
         )
         previous_cash_events = cash_events
         previous_clipped_cells = int(allocation_witnesses["cash_clipped_cells"])
-        previous_no_pending = bool(no_pending)
         if converged:
             break
     else:

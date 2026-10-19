@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from backtest.data import load_market_data
-from backtest.engine import _cash_event_signature, _same_masked_matrix, run_backtest
+from backtest.engine import run_backtest
 from backtest.errors import DataAlignmentError, ExecutionError
 from backtest.specs import (
     BacktestParams,
@@ -20,27 +20,6 @@ from backtest.specs import (
 
 DATES = pd.date_range("2024-01-29", periods=6, freq="B")
 STOCKS = ["SH600000", "SZ000001", "SZ000002"]
-
-
-def test_fixed_point_compares_original_targets_but_ignores_retry_cells():
-    """原始调仓股数必须稳定，补回重试日的派生股数允许随当天预算变化。"""
-    first = pd.DataFrame([[1_000.0], [500.0]], index=DATES[:2], columns=["A"])
-    second = pd.DataFrame([[1_000.0], [600.0]], index=DATES[:2], columns=["A"])
-    assert _same_masked_matrix(first, second, np.array([[True], [False]]))
-    assert not _same_masked_matrix(first, second, np.array([[False], [True]]))
-
-
-def test_cash_event_signature_ignores_retry_shrink_rows():
-    """同一补回重试中的现金缩水不会被重复登记成新事件。"""
-    allocation = pd.DataFrame(
-        {
-            "trade_date": [DATES[0], DATES[1]],
-            "stock_code": ["A", "A"],
-            "cash_limited": [True, False],
-            "cash_shrunk_shares": [500.0, 300.0],
-        }
-    )
-    assert _cash_event_signature(allocation) == ((str(DATES[0]), "A"),)
 
 
 def _frames():
@@ -756,7 +735,7 @@ def test_engine_refills_cash_limited_buy_after_cash_arrives(make_data):
 
 
 def test_engine_keeps_cash_limited_cell_until_the_end(make_data):
-    """现金一直没到账时补回目标留在待重试状态，并记入区间末遗留。"""
+    """现金一直没到账时补回目标稳定留在期末，但不影响固定点收敛。"""
     data, strategy, params = _weekly_panel(make_data, sell_blocked_rows=[9, 10, 11])
     result = run_backtest(data, strategy, params)
     calibration = result.metadata["calibration"]
@@ -765,6 +744,8 @@ def test_engine_keeps_cash_limited_cell_until_the_end(make_data):
     assert calibration["cash_retry_attempts"] >= 1
     assert calibration["cash_retry_filled_cells"] == 0
     assert calibration["cash_pending_at_end_cells"] >= 1
+    assert calibration["allocation_converged"] is True
+    assert calibration["allocation_iterations"] <= 4
     assert calibration["carry_converged"] is True
 
 

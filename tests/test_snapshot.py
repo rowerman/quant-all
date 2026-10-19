@@ -7,10 +7,15 @@ import pandas as pd
 import pytest
 
 import backtest.providers as providers
+import backtest.snapshot as snapshot_module
 from backtest.config import PROJECT_ROOT
 from backtest.errors import DataAlignmentError, SnapshotConflictError
 from backtest.pipeline import RunRequest, run
 from backtest.snapshot import (
+    EXECUTION_MODEL_VERSION,
+    EXECUTION_SOURCE_FILES,
+    SNAPSHOT_SCHEMA_VERSION,
+    _execution_model_component,
     build_data_snapshot,
     build_input_snapshot,
     data_snapshot_from_market_data,
@@ -85,8 +90,17 @@ def _mutable_connection(db_path: Path):
 def test_snapshot_is_deterministic_and_ignores_out_of_window_rows(snapshot_db):
     first = _snapshot(snapshot_db)
     second = _snapshot(snapshot_db)
+    assert first.schema_version == SNAPSHOT_SCHEMA_VERSION
     assert first.snapshot_id == second.snapshot_id
     assert first.components == second.components
+
+    execution = first.components["rules"]["execution_model"]
+    assert execution["version"] == EXECUTION_MODEL_VERSION
+    assert execution["backend"] == "ledger"
+    assert execution["mode"] == "causal_segmented"
+    assert set(execution["source_sha256"]) == set(EXECUTION_SOURCE_FILES)
+    assert all(len(value) == 64 for value in execution["source_sha256"].values())
+    assert len(execution["source_set_sha256"]) == 64
 
     con = _mutable_connection(snapshot_db)
     con.execute(
@@ -108,6 +122,41 @@ def test_snapshot_is_deterministic_and_ignores_out_of_window_rows(snapshot_db):
 
     third = _snapshot(snapshot_db)
     assert third.snapshot_id == first.snapshot_id
+
+
+def test_execution_source_change_changes_digest(tmp_path):
+    """核心执行模块源码变化必须改变执行模型摘要。"""
+    for name in EXECUTION_SOURCE_FILES:
+        (tmp_path / name).write_text(f"# {name}\n", encoding="utf-8")
+    first = _execution_model_component(tmp_path)
+
+    engine = tmp_path / "engine.py"
+    engine.write_text("# engine changed\n", encoding="utf-8")
+    second = _execution_model_component(tmp_path)
+
+    assert (
+        second["source_sha256"]["engine.py"]
+        != first["source_sha256"]["engine.py"]
+    )
+    assert second["source_set_sha256"] != first["source_set_sha256"]
+
+
+def test_execution_model_enters_input_snapshot_id(snapshot_db, monkeypatch):
+    """执行模型摘要必须参与规则分项和最终 snapshot_id。"""
+    first = _snapshot(snapshot_db)
+    original = snapshot_module._execution_model_component
+
+    def changed():
+        item = original()
+        item["version"] = "changed"
+        item["source_set_sha256"] = "f" * 64
+        return item
+
+    monkeypatch.setattr(snapshot_module, "_execution_model_component", changed)
+    second = _snapshot(snapshot_db)
+
+    assert second.snapshot_id != first.snapshot_id
+    assert second.components["rules"]["execution_model"]["version"] == "changed"
 
 
 def test_in_window_market_change_changes_only_market_component(snapshot_db):
