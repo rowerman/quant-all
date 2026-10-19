@@ -233,20 +233,27 @@ async function compareRunsPage(hash,version){
   backtestChart(app.querySelector('#compare-curves'),result.dates,result.runs.map(row=>({name:named(row),data:row.cumulative_excess})),'累计超额（共同首日 = 0）');
 }
 
-// 新建策略页：把当前 StrategySpec 支持的配置保存为不可变第一版。
+// 新建策略页：因子 Top-N 与目标权重提供者共用同一套不可变策略版本。
 async function strategyPage(version){
   const opts=await loadBacktestOptions();if(version!==routeVersion)return;
   const factorRows=opts.factors.map(item=>`<tr><td><input class="factor-enabled" type="checkbox" value="${esc(item.name)}" ${item.name==='MOM_20'?'checked':''} aria-label="选择因子 ${esc(item.name)}"></td><td>${esc(item.name)}</td><td>${item.direction>0?'越大越看多':'越大越看空'}</td><td>${esc(item.description||'')}</td><td><input class="factor-weight" type="number" value="${item.name==='MOM_20'?'1':'0'}" step="0.1" ${item.name==='MOM_20'?'':'disabled'} aria-label="${esc(item.name)} 权重"></td></tr>`).join('');
-  app.innerHTML=`<div class="page-heading"><div><h1>新建策略</h1><p class="intro muted">保存后生成不可变的策略第一版，并与内置策略共用同一条回测路径。</p></div><a class="button-link secondary-link" href="#/backtest">返回回测</a></div>
+  const providers=opts.providers||[];
+  const providerOptions=providers.map(item=>`<option value="${esc(item.name)}">${esc(item.name)} · v${esc(item.version)}</option>`).join('');
+  app.innerHTML=`<div class="page-heading"><div><h1>新建策略</h1><p class="intro muted">保存后生成不可变的策略第一版；提供者策略在源码与参数绑定成功后才会进入回测列表。</p></div><a class="button-link secondary-link" href="#/backtest">返回回测</a></div>
   <form id="strategy-form">
     <section class="card"><h2>基本信息</h2><div class="form-grid">
       <label>策略名称<input name="name" required maxlength="80" value="自定义多因子策略"></label>
       <label>说明<textarea name="description" rows="3" maxlength="500"></textarea></label>
       <label>股票池<select name="universe">${opts.universes.map(item=>`<option value="${esc(item.key)}">${esc(item.label)}</option>`).join('')}</select></label>
       <label>基准<select name="benchmark">${opts.benchmarks.map(item=>`<option value="${esc(item.code)}" ${item.code===opts.defaults.benchmark?'selected':''}>${esc(item.label)}</option>`).join('')}</select></label>
+      <label>信号来源<select name="signal_mode"><option value="factor">因子 Top-N</option><option value="provider" ${providers.length?'':'disabled'}>目标权重提供者</option></select></label>
     </div></section>
-    <section class="card"><h2>因子信号</h2><div class="table-wrap"><table class="factor-table"><thead><tr><th>选择</th><th>因子</th><th>方向</th><th>说明</th><th>权重</th></tr></thead><tbody>${factorRows}</tbody></table></div><div class="toggle-row"><label><input type="checkbox" name="standardize" checked>截面标准化</label><label><input type="checkbox" name="winsorize">3×MAD 去极值</label></div></section>
-    <section class="card"><h2>组合与调仓</h2><div class="form-grid">
+    <section id="factor-config" class="card"><h2>因子信号</h2><div class="table-wrap"><table class="factor-table"><thead><tr><th>选择</th><th>因子</th><th>方向</th><th>说明</th><th>权重</th></tr></thead><tbody>${factorRows}</tbody></table></div><div class="toggle-row"><label><input type="checkbox" name="standardize" checked>截面标准化</label><label><input type="checkbox" name="winsorize">3×MAD 去极值</label></div></section>
+    <section id="provider-config" class="card" hidden><h2>提供者参数</h2><div class="form-grid">
+      <label>提供者<select name="provider_name">${providerOptions}</select></label>
+      <label>版本<input name="provider_version" readonly></label>
+    </div><p id="provider-description" class="mini muted"></p><p id="provider-factors" class="mini"></p><div id="provider-fields" class="form-grid"></div><p id="provider-source" class="mini muted"></p><div class="form-actions"><button type="button" id="validate-provider" class="secondary">校验参数</button></div></section>
+    <section id="portfolio-config" class="card"><h2>组合与调仓</h2><div class="form-grid">
       <label>持仓只数<input name="top_n" type="number" min="1" step="1" value="30" required></label>
       <label>权重方式<select name="weighting"><option value="equal">等权</option><option value="market_cap">市值加权</option></select></label>
       <label>调仓频率<select name="frequency"><option value="daily">日频</option><option value="weekly">周频</option><option value="monthly" selected>月频</option></select></label>
@@ -274,6 +281,9 @@ async function strategyPage(version){
     <div class="form-actions"><button type="submit">创建策略</button><a class="button-link secondary-link" href="#/backtest">取消</a></div>
   </form>`;
   const form=app.querySelector('#strategy-form'),status=app.querySelector('#strategy-status');
+  const factorConfig=form.querySelector('#factor-config'),portfolioConfig=form.querySelector('#portfolio-config'),providerConfig=form.querySelector('#provider-config');
+  const providerFields=form.querySelector('#provider-fields'),providerSelect=form.querySelector('[name=provider_name]');
+  let validatedKey='';
   const toggleRiskInput=(checkbox,input)=>{input.disabled=!checkbox.checked;input.required=checkbox.checked;};
   toggleRiskInput(form.querySelector('[name=max_single_enabled]'),form.querySelector('[name=max_single_weight]'));
   toggleRiskInput(form.querySelector('[name=max_industry_enabled]'),form.querySelector('[name=max_industry_weight]'));
@@ -284,23 +294,74 @@ async function strategyPage(version){
   form.querySelector('[name=turnover_enabled]').addEventListener('change',event=>toggleRiskInput(event.target,form.querySelector('[name=max_one_way_turnover]')));
   form.querySelector('[name=max_participation_enabled]').addEventListener('change',event=>toggleRiskInput(event.target,form.querySelector('[name=max_participation_rate]')));
   form.querySelectorAll('.factor-enabled').forEach(input=>input.addEventListener('change',()=>{const weight=input.closest('tr').querySelector('.factor-weight');weight.disabled=!input.checked;if(input.checked&&Number(weight.value)===0)weight.value='1';}));
+  const selectedProvider=()=>providers.find(item=>item.name===providerSelect.value);
+  const fieldValue=field=>field.type==='percent'?Number(field.default)*100:field.default;
+  const fieldHtml=field=>{
+    const value=fieldValue(field),min=field.min==null?'':field.type==='percent'?Number(field.min)*100:field.min,max=field.max==null?'':field.type==='percent'?Number(field.max)*100:field.max,step=field.step==null?'':field.type==='percent'?Number(field.step)*100:field.step;
+    if(field.type==='boolean')return `<label><span><input type="checkbox" data-param="${esc(field.name)}" ${field.default?'checked':''}>${esc(field.label)}</span>${field.description?`<span class="mini muted">${esc(field.description)}</span>`:''}</label>`;
+    if(field.type==='enum')return `<label>${esc(field.label)}<select data-param="${esc(field.name)}" required>${field.options.map(option=>`<option value="${esc(String(option))}" ${option===field.default?'selected':''}>${esc(String(option))}</option>`).join('')}</select>${field.description?`<span class="mini muted">${esc(field.description)}</span>`:''}</label>`;
+    const type=field.type==='string'?'text':'number';
+    return `<label>${esc(field.label)}<input data-param="${esc(field.name)}" data-type="${esc(field.type)}" type="${type}" value="${esc(String(value))}" ${min!==''?`min="${esc(String(min))}"`:''} ${max!==''?`max="${esc(String(max))}"`:''} ${step!==''?`step="${esc(String(step))}"`:''} required>${field.description?`<span class="mini muted">${esc(field.description)}</span>`:''}</label>`;
+  };
+  const renderProvider=()=>{
+    const item=selectedProvider();if(!item)return;
+    form.querySelector('[name=provider_version]').value=item.version;
+    form.querySelector('#provider-description').textContent=item.description||'';
+    form.querySelector('#provider-factors').innerHTML=`必需因子：${item.required_factors.length?item.required_factors.map(name=>`<span class="tag">${esc(name)}</span>`).join(' '):'无'} · ${item.uses_position_state?'读取真实持仓状态':'只读取行情与因子'}`;
+    form.querySelector('#provider-source').textContent=`模块 ${item.module} · 源码摘要 ${String(item.code_sha256).slice(0,16)}…`;
+    providerFields.innerHTML=item.param_schema.length?item.param_schema.map(fieldHtml).join(''):'<p class="mini muted">该提供者没有可编辑参数。</p>';
+    validatedKey='';
+    providerFields.querySelectorAll('[data-param]').forEach(input=>input.addEventListener('input',()=>{validatedKey='';status.className='muted';status.textContent='参数已修改，请重新校验。';}));
+  };
+  const providerParams=()=>{
+    const params={};for(const input of providerFields.querySelectorAll('[data-param]')){
+      const field=selectedProvider().param_schema.find(item=>item.name===input.dataset.param);
+      if(!field)continue;
+      if(field.type==='boolean')params[field.name]=input.checked;
+      else if(field.type==='string')params[field.name]=input.value;
+      else if(field.type==='enum')params[field.name]=input.value;
+      else if(field.type==='integer')params[field.name]=Number.parseInt(input.value,10);
+      else params[field.name]=Number(input.value)/(field.type==='percent'?100:1);
+    }return params;
+  };
+  const providerKey=()=>JSON.stringify([selectedProvider()?.name,selectedProvider()?.version,providerParams()]);
+  const setSectionDisabled=(section,disabled)=>{section.querySelectorAll('input,select,textarea,button').forEach(element=>{element.disabled=disabled;});};
+  const validateProvider=async()=>{
+    const item=selectedProvider();
+    if(!item)throw new Error('没有可用的目标权重提供者');
+    const result=await request('/api/providers/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:{name:item.name,version:item.version,params:providerParams()},factors:item.required_factors})});
+    validatedKey=providerKey();status.className='';status.textContent=`参数校验通过 · ${result.provider.version} · 源码摘要 ${String(result.provider.code_sha256).slice(0,16)}…`;
+    return result;
+  };
+  const syncMode=()=>{
+    const provider=form.querySelector('[name=signal_mode]').value==='provider';
+    factorConfig.hidden=provider;portfolioConfig.hidden=provider;providerConfig.hidden=!provider;
+    setSectionDisabled(factorConfig,provider);setSectionDisabled(portfolioConfig,provider);setSectionDisabled(providerConfig,!provider);
+    if(!provider)factorConfig.querySelectorAll('.factor-enabled').forEach(input=>{input.closest('tr').querySelector('.factor-weight').disabled=!input.checked;});
+    if(provider){renderProvider();status.className='muted';status.textContent='请校验提供者参数；创建成功后策略才会进入回测列表。';}
+    else{validatedKey='';status.className='muted';status.textContent='至少选择一个因子，权重不能全部为 0。';}
+  };
+  form.querySelector('[name=signal_mode]').addEventListener('change',syncMode);
+  providerSelect.addEventListener('change',()=>{renderProvider();status.className='muted';status.textContent='提供者已切换，请重新校验参数。';});
+  form.querySelector('#validate-provider').addEventListener('click',async()=>{
+    const button=form.querySelector('#validate-provider');button.disabled=true;
+    try{await validateProvider();}catch(error){status.className='error';status.textContent=error.message;}finally{button.disabled=false;}
+  });
   form.addEventListener('submit',async event=>{
     event.preventDefault();status.className='muted';
-    const data=new FormData(form);const chosen=[...form.querySelectorAll('.factor-enabled:checked')];
-    const factorNames=chosen.map(input=>input.value);const factorWeights=chosen.map(input=>Number(input.closest('tr').querySelector('.factor-weight').value));
+    const data=new FormData(form),mode=data.get('signal_mode'),chosen=[...form.querySelectorAll('.factor-enabled:checked')];
+    const factorNames=chosen.map(input=>input.value),factorWeights=chosen.map(input=>Number(input.closest('tr').querySelector('.factor-weight').value));
     const topN=Number(data.get('top_n')),cashBuffer=Number(data.get('cash_buffer'));
     const maxSingleWeight=data.has('max_single_enabled')?Number(data.get('max_single_weight'))/100:null;
     const maxIndustryWeight=data.has('max_industry_enabled')?Number(data.get('max_industry_weight'))/100:null;
     const maxOneWayTurnover=data.has('turnover_enabled')?Number(data.get('max_one_way_turnover'))/100:null;
     const maxParticipationRate=data.has('max_participation_enabled')?Number(data.get('max_participation_rate'))/100:null;
     const costs=['commission_rate','minimum_commission','slippage'].map(name=>Number(data.get(name)));
-    const impactModel=String(data.get('impact_model')||'sqrt');
-    const impactCoefficient=Number(data.get('impact_coefficient'));
-    const dividendTaxMode=String(data.get('dividend_tax_mode')||'fifo_deferred');
+    const impactModel=String(data.get('impact_model')||'sqrt'),impactCoefficient=Number(data.get('impact_coefficient')),dividendTaxMode=String(data.get('dividend_tax_mode')||'fifo_deferred');
     if(!String(data.get('name')).trim())return void(status.className='error',status.textContent='策略名称不能为空');
-    if(!factorNames.length)return void(status.className='error',status.textContent='至少选择一个因子');
-    if(factorWeights.some(value=>!Number.isFinite(value))||factorWeights.every(value=>value===0))return void(status.className='error',status.textContent='因子权重必须是数字且不能全部为 0');
-    if(!Number.isInteger(topN)||topN<=0)return void(status.className='error',status.textContent='持仓只数必须是正整数');
+    if(mode==='factor'&&!factorNames.length)return void(status.className='error',status.textContent='至少选择一个因子');
+    if(mode==='factor'&&(factorWeights.some(value=>!Number.isFinite(value))||factorWeights.every(value=>value===0)))return void(status.className='error',status.textContent='因子权重必须是数字且不能全部为 0');
+    if(mode==='factor'&&(!Number.isInteger(topN)||topN<=0))return void(status.className='error',status.textContent='持仓只数必须是正整数');
     if(!Number.isFinite(cashBuffer)||cashBuffer<0||cashBuffer>=0.5)return void(status.className='error',status.textContent='现金缓冲必须在 0 到 0.5 之间');
     if(maxSingleWeight!==null&&(!Number.isFinite(maxSingleWeight)||maxSingleWeight<=0||maxSingleWeight>1))return void(status.className='error',status.textContent='单股上限必须在 0 到 100% 之间');
     if(maxIndustryWeight!==null&&(!Number.isFinite(maxIndustryWeight)||maxIndustryWeight<=0||maxIndustryWeight>1))return void(status.className='error',status.textContent='行业上限必须在 0 到 100% 之间');
@@ -308,11 +369,27 @@ async function strategyPage(version){
     if(maxParticipationRate!==null&&(!Number.isFinite(maxParticipationRate)||maxParticipationRate<=0||maxParticipationRate>1))return void(status.className='error',status.textContent='成交额参与率必须在 0 到 100% 之间');
     if(costs.some(value=>!Number.isFinite(value)||value<0))return void(status.className='error',status.textContent='交易成本必须是非负数');
     if(!Number.isFinite(impactCoefficient)||impactCoefficient<0)return void(status.className='error',status.textContent='冲击系数必须是非负数');
-    const payload={description:String(data.get('description')||''),spec:{name:String(data.get('name')).trim(),universe:data.get('universe'),signal:{factors:factorNames,weights:factorWeights,winsorize:data.has('winsorize'),standardize:data.has('standardize')},portfolio:{selection:'top_n',top_n:topN,weighting:data.get('weighting'),long_only:true},rebalance:{frequency:data.get('frequency'),signal_at:'close',execute_at:'next_open'},execution:{lot_size:100,cash_buffer:cashBuffer,max_participation_rate:maxParticipationRate,reject_suspended:data.has('reject_suspended'),reject_limit_up_buy:data.has('reject_limit_up_buy'),reject_limit_down_sell:data.has('reject_limit_down_sell'),enforce_t_plus_1:data.has('enforce_t_plus_1')},risk:{max_single_weight:maxSingleWeight,max_industry_weight:maxIndustryWeight,max_one_way_turnover:maxOneWayTurnover},costs:{commission_rate:costs[0],minimum_commission:costs[1],slippage:costs[2],impact_model:impactModel,impact_coefficient:impactCoefficient,dividend_tax_mode:dividendTaxMode},benchmark:{index_code:data.get('benchmark')}}};
-    const submit=form.querySelector('[type=submit]');submit.disabled=true;status.textContent='正在创建策略…';
-    try{const created=await request('/api/strategies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});preferredStrategyId=created.strategy_id;backtestOptions=null;location.hash='#/backtest';}
-    catch(error){status.className='error';status.textContent=error.message;submit.disabled=false;}
+    const submit=form.querySelector('[type=submit]');submit.disabled=true;
+    try{
+      let signal,portfolio,rebalance;
+      if(mode==='provider'){
+        status.textContent='正在校验提供者参数…';
+        const checked=validatedKey===providerKey()?null:await validateProvider(),item=selectedProvider(),params=checked?checked.params:providerParams();
+        signal={provider:{name:item.name,version:item.version,params},factors:[...item.required_factors],weights:[]};
+        portfolio={selection:'provider',top_n:Number.isInteger(params.top_n)?params.top_n:1,weighting:'equal',long_only:true};
+        rebalance={frequency:'custom',signal_at:'close',execute_at:'next_open'};
+      }else{
+        signal={factors:factorNames,weights:factorWeights,winsorize:data.has('winsorize'),standardize:data.has('standardize')};
+        portfolio={selection:'top_n',top_n:topN,weighting:data.get('weighting'),long_only:true};
+        rebalance={frequency:data.get('frequency'),signal_at:'close',execute_at:'next_open'};
+      }
+      const payload={description:String(data.get('description')||''),spec:{name:String(data.get('name')).trim(),universe:data.get('universe'),signal,portfolio,rebalance,execution:{lot_size:100,cash_buffer:cashBuffer,max_participation_rate:maxParticipationRate,reject_suspended:data.has('reject_suspended'),reject_limit_up_buy:data.has('reject_limit_up_buy'),reject_limit_down_sell:data.has('reject_limit_down_sell'),enforce_t_plus_1:data.has('enforce_t_plus_1')},risk:{max_single_weight:maxSingleWeight,max_industry_weight:maxIndustryWeight,max_one_way_turnover:maxOneWayTurnover},costs:{commission_rate:costs[0],minimum_commission:costs[1],slippage:costs[2],impact_model:impactModel,impact_coefficient:impactCoefficient,dividend_tax_mode:dividendTaxMode},benchmark:{index_code:data.get('benchmark')}}};
+      status.textContent='正在绑定策略与提供者版本…';
+      const created=await request('/api/strategies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      preferredStrategyId=created.strategy_id;backtestOptions=null;location.hash='#/backtest';
+    }catch(error){status.className='error';status.textContent=error.message;submit.disabled=false;}
   });
+  syncMode();
 }
 
 // 百分比展示，无效值显示破折号。

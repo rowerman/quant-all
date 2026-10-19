@@ -76,6 +76,11 @@ def create_app():
         """创建策略第一版配置。"""
         return json_safe(await asyncio.to_thread(backtest_service.create_strategy, payload))
 
+    @app.post('/api/providers/validate')
+    async def validate_provider(payload: dict):
+        """校验目标权重提供者的参数和必需因子。"""
+        return json_safe(await asyncio.to_thread(backtest_service.validate_provider, payload))
+
     @app.get('/api/strategies')
     async def list_strategies():
         """列出策略版本。"""

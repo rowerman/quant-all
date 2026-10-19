@@ -21,8 +21,13 @@ from backtest.coverage import benchmark_coverages, default_run_end, market_cover
 from backtest.costs import CostSpec, cost_model_summary
 from backtest.errors import BacktestError
 from backtest.pipeline import effective_spec
-from backtest.providers import list_providers, validate_strategy_provider
-from backtest.specs import BENCHMARK_OPTIONS, SpecError
+from backtest.providers import (
+    list_providers,
+    provider_metadata,
+    validate_provider_config,
+    validate_strategy_provider,
+)
+from backtest.specs import BENCHMARK_OPTIONS, ProviderSpec, SpecError
 from backtest.universe import list_universes, resolve_universe
 
 
@@ -107,7 +112,35 @@ def create_strategy(payload: dict, store_path: str | None = None) -> dict:
         raw = {**raw, "costs": StrategySpec().to_dict()["costs"]}
     spec = StrategySpec.from_dict(raw)
     strategy_id, version = _store(store_path).create_strategy(spec, payload.get("description", ""))
-    return {"strategy_id": strategy_id, "version": version, "config_hash": spec.config_hash}
+    provider = (
+        None
+        if spec.signal.provider is None
+        else provider_metadata(spec.signal.provider, include_param_schema=True)
+    )
+    return {
+        "strategy_id": strategy_id,
+        "version": version,
+        "config_hash": spec.config_hash,
+        "provider": provider,
+    }
+
+
+def validate_provider(payload: dict) -> dict:
+    """校验提供者参数和必需因子，返回规范化结果。"""
+    if not isinstance(payload, dict):
+        raise SpecError("提供者校验请求必须是对象")
+    raw = payload.get("provider")
+    spec = ProviderSpec.from_dict(raw)
+    factors = payload.get("factors")
+    if not isinstance(factors, (list, tuple)) or any(
+        not isinstance(item, str) or not item for item in factors
+    ):
+        raise SpecError("factors 必须是因子名序列")
+    params = validate_provider_config(spec, factors)
+    return {
+        "provider": provider_metadata(spec, include_param_schema=True),
+        "params": params,
+    }
 
 
 def list_strategies(store_path: str | None = None) -> list[dict]:

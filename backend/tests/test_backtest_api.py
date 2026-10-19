@@ -114,7 +114,12 @@ def test_strategy_api_rejects_invalid_weights_and_costs(client):
 def test_backtest_options_expose_strategies_universes_and_limits(client):
     payload = client.get("/api/backtest/options").json()
     assert {row["strategy_id"] for row in payload["strategies"]} >= {MOM20_ID}
-    assert "momentum_timing" in {row["name"] for row in payload["providers"]}
+    providers = {row["name"]: row for row in payload["providers"]}
+    assert "momentum_timing" in providers
+    assert [item["name"] for item in providers["momentum_timing"]["param_schema"]] == [
+        "top_n",
+        "min_breadth",
+    ]
     assert {"all_a", "index:000300.SH"} <= {row["key"] for row in payload["universes"]}
     assert {"H00300.CSI", "H00905.CSI", "000300.SH", "000905.SH"} == {
         row["code"] for row in payload["benchmarks"]
@@ -138,6 +143,50 @@ def test_backtest_options_expose_strategies_universes_and_limits(client):
     assert payload["costs"]["impact_model"] == "sqrt"
     assert payload["costs"]["impact_coefficient"] == pytest.approx(0.5)
     assert "stamp_tax_rate" not in payload["costs"]
+
+
+def test_provider_validation_returns_normalized_defaults(client):
+    response = client.post(
+        "/api/providers/validate",
+        json={
+            "provider": {"name": "momentum_timing", "version": "1", "params": {}},
+            "factors": ["MOM_20"],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["params"] == {"top_n": 30, "min_breadth": 0.5}
+    assert payload["provider"]["code_sha256"]
+    assert payload["provider"]["param_schema"][0]["name"] == "top_n"
+
+
+@pytest.mark.parametrize(
+    "provider,factors,message",
+    [
+        (
+            {"name": "momentum_timing", "version": "1", "params": {"top_n": 0}},
+            ["MOM_20"],
+            "top_n",
+        ),
+        (
+            {"name": "momentum_timing", "version": "1", "params": {"unknown": 1}},
+            ["MOM_20"],
+            "未知字段",
+        ),
+        (
+            {"name": "momentum_timing", "version": "1", "params": {}},
+            [],
+            "需要因子",
+        ),
+    ],
+)
+def test_provider_validation_rejects_invalid_input(client, provider, factors, message):
+    response = client.post(
+        "/api/providers/validate",
+        json={"provider": provider, "factors": factors},
+    )
+    assert response.status_code == 400
+    assert message in response.json()["message"]
 
 
 def test_backtest_detail_exposes_input_snapshot(client, store):
@@ -222,6 +271,8 @@ def test_strategy_api_creates_provider_strategy(client):
     }
     created = client.post("/api/strategies", json=payload)
     assert created.status_code == 200
+    assert created.json()["provider"]["code_sha256"]
+    assert created.json()["provider"]["param_schema"]
     detail = client.get(f"/api/strategies/{created.json()['strategy_id']}").json()
     assert detail["spec"]["signal"]["provider"]["name"] == "momentum_timing"
     assert detail["spec"]["rebalance"]["frequency"] == "custom"
