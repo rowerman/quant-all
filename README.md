@@ -158,7 +158,7 @@ total_front_back/frontend/   前端：纯 HTML/JS + ECharts
 |---|---|---|---|---|
 | `config.py` | 数据路径与常量（库、因子产物、本包日志目录） | 全部模块 | — | 只认目录结构，不引用数据项目的 `scripts`；换数据位置改这里 |
 | `errors.py` | `CalculateError` 基类与 `EVAL-1xx/2xx/3xx` 错误码 | 全部模块 | — | 后端 `MONITOR-1xx` 在 backend 里定义，别混进来 |
-| `logging_conf.py` | 按模块分目录、128MB 轮转、起始-结束命名的日志 | 全部模块 | `config` | 日志写 `calculate/logs/`，与数据项目的 `logs/` 分开 |
+| `logging_conf.py` | 绑定本包日志目录，处理器复用 `common.logging_conf` | 全部模块 | `config`、`common` | 日志写 `calculate/logs/`，与数据项目的 `logs/` 分开 |
 | `params.py` | `EvalParams` 定义与校验 | `panel`、指标、接口层 | `errors` | 加字段要同步 `describe()`，meta 事件靠它回显参数 |
 | `universe.py` | 股票池定义与指数成分 CTE | `panel`、接口层 | `errors` | 全 A 池口径必须与数据项目的 `scripts/build_factors/validate.py` 的 `POOL_FILTER` 一字不差；指数池用**上一个已结束月份**的月末快照，别改成当月（会前视） |
 | `panel.py` | 评估面板、连接、默认参数、`EvalContext` | `evaluate`、各指标、后续拆分阶段 | `factors` 注册表、`universe`、DuckDB、`config` | 面板列是公共契约，后续阶段只加不删；行数/交易日上限也在这里；**不要给面板加 ORDER BY**（几百万行排序要多花 2 秒以上，下游都按交易日分组） |
@@ -1462,7 +1462,8 @@ FACTOR_DB_FILE 是数据侧目录库；LOG_DIR 是本包日志目录。入口提
 EVAL-101 参数/日期/阶段，102 面板，103 股票池，104 因子，201 指标参数/注册，
 301 拆分，302 风格，303 行业。异常不会当作正常结果吞掉；调用方负责显示或记录错误。
 
-`calculate.logging_conf.get_logger(module_name)` 返回按模块分目录的 logger；日志用于阶段耗时
+`calculate.logging_conf.get_logger(module_name)` 返回按模块分目录的 logger；处理器由根目录
+`common.logging_conf` 统一实现。日志用于阶段耗时
 与样本规模核查，不代替数值正确性验证。不要在日志里记录完整原始面板。
 
 ### 验证命令
