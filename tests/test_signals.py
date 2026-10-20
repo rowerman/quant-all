@@ -5,6 +5,7 @@ import pandas as pd
 
 from backtest.signals import build_scores, build_target_weights, eligible_mask, rebalance_mask
 from backtest.specs import PortfolioSpec, RebalanceSpec, SignalSpec
+from backtest.trading_rules import BSE_TRADING_START
 
 INDEX = pd.date_range("2024-01-29", periods=4, freq="B")
 COLUMNS = pd.Index(["SH600000", "SZ000001", "SZ000002"], name="stock_code")
@@ -125,4 +126,20 @@ def test_newly_listed_stock_is_excluded(make_data):
     mask = eligible_mask(data)
     assert not mask.any(axis=None)
     assert pd.Timestamp("2024-01-29") + pd.Timedelta(days=60) > data.index[-1]
+
+
+def test_bse_is_not_eligible_before_trading_start(make_data):
+    """北交所代码在 2021-11-15 前不进入可买股票池。"""
+
+    dates = pd.DatetimeIndex(["2021-11-12", "2021-11-15"])
+    stocks = ["BJ920000", "SH600000"]
+    data = make_data(
+        dates=dates,
+        stocks=stocks,
+        list_date=pd.Series(pd.Timestamp("2020-01-01"), index=stocks),
+    )
+    mask = eligible_mask(data)
+    assert not mask.loc[pd.Timestamp("2021-11-12"), "BJ920000"]
+    assert mask.loc[pd.Timestamp(BSE_TRADING_START), "BJ920000"]
+    assert mask.loc[pd.Timestamp("2021-11-12"), "SH600000"]
 

@@ -56,7 +56,9 @@ class TargetWeightProvider(Protocol):
 
 
 _REGISTRY: dict[str, TargetWeightProvider] = {}
+_VERSIONS: dict[tuple[str, str], TargetWeightProvider] = {}
 _ORIGINS: dict[str, str] = {}
+_VERSION_ORIGINS: dict[tuple[str, str], str] = {}
 _DISCOVERED = False
 logger = get_logger("backtest.providers")
 
@@ -98,25 +100,40 @@ def _validate_provider(provider: TargetWeightProvider) -> None:
 
 
 def register_provider(provider: TargetWeightProvider | type[TargetWeightProvider]) -> TargetWeightProvider:
-    """注册一个提供者；重复名称直接报错。"""
+    """注册一个提供者版本；同名的不同版本可以并存。"""
     if isinstance(provider, type):
         provider = provider()
     _validate_provider(provider)
     name = str(provider.name).strip()
+    version = str(provider.version).strip()
+    key = (name, version)
     origin = type(provider).__module__
-    existing = _REGISTRY.get(name)
+    existing = _VERSIONS.get(key)
     if existing is not None:
         if existing is provider:
             return existing
-        existing_origin = _ORIGINS.get(name, type(existing).__module__)
+        existing_origin = _VERSION_ORIGINS.get(key, type(existing).__module__)
         raise SpecError(
-            f"目标权重提供者名称重复：{name}；已由 {existing_origin} 注册，"
+            f"目标权重提供者版本重复：{name} v{version}；已由 {existing_origin} 注册，"
             f"当前来自 {origin}"
         )
-    _REGISTRY[name] = provider
-    _ORIGINS[name] = origin
-    logger.info("注册提供者 %s v%s（%s）", name, provider.version, origin)
+    _VERSIONS[key] = provider
+    _VERSION_ORIGINS[key] = origin
+    current = _REGISTRY.get(name)
+    if current is None or _version_is_newer(version, str(current.version)):
+        _REGISTRY[name] = provider
+        _ORIGINS[name] = origin
+    logger.info("注册提供者 %s v%s（%s）", name, version, origin)
     return provider
+
+
+def _version_is_newer(candidate: str, current: str) -> bool:
+    """数字版本按数值比较；非数字版本按注册顺序以后者为主。"""
+
+    try:
+        return float(candidate) > float(current)
+    except ValueError:
+        return True
 
 
 def discover_providers() -> None:
@@ -141,7 +158,11 @@ def discover_providers() -> None:
                 f"提供者模块 {module_name} 导入失败：{type(error).__name__}: {error}"
             ) from error
     _DISCOVERED = True
-    logger.info("发现 %d 个目标权重提供者：%s", len(_REGISTRY), sorted(_REGISTRY))
+    logger.info(
+        "发现 %d 个目标权重提供者版本：%s",
+        len(_VERSIONS),
+        sorted(f"{name} v{version}" for name, version in _VERSIONS),
+    )
 
 
 def get_provider(spec: ProviderSpec | str) -> TargetWeightProvider:
@@ -151,12 +172,31 @@ def get_provider(spec: ProviderSpec | str) -> TargetWeightProvider:
         name, version = spec.name, spec.version
     else:
         name, version = str(spec), None
-    provider = _REGISTRY.get(name)
+    provider = (
+        _VERSIONS.get((name, str(version)))
+        if version is not None
+        else _REGISTRY.get(name)
+    )
     if provider is None:
-        available = ", ".join(sorted(_REGISTRY)) or "无"
+        if version is not None and name in _REGISTRY:
+            current = _REGISTRY[name]
+            origin = _ORIGINS.get(name, type(current).__module__)
+            versions = sorted(
+                item_version
+                for item_name, item_version in _VERSIONS
+                if item_name == name
+            )
+            raise SpecError(
+                f"目标权重提供者 {name} 的版本不匹配：配置为 {version}，"
+                f"已注册版本为 {versions}（模块 {origin}）；请升级策略版本"
+            )
+        available = ", ".join(
+            sorted(f"{item_name} v{item_version}" for item_name, item_version in _VERSIONS)
+        ) or "无"
         logger.warning("未注册的目标权重提供者：%s；可选：%s", name, available)
-        raise SpecError(f"未注册的目标权重提供者：{name}；可选：{available}")
-    if version is not None and str(provider.version) != version:
+        requested = name if version is None else f"{name} v{version}"
+        raise SpecError(f"未注册的目标权重提供者：{requested}；可选：{available}")
+    if version is not None and str(provider.version) != str(version):
         origin = _ORIGINS.get(name, type(provider).__module__)
         logger.warning(
             "提供者 %s 版本不匹配：配置=%s 当前=%s 模块=%s",

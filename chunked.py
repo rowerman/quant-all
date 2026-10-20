@@ -482,10 +482,18 @@ def run_windows(
         provider_targets = _concat_prepared(
             [item.target_weights for item in prepared], prepared
         )
+        signal_days = int(provider_targets.notna().any(axis=1).sum())
         rank_frames = [item.ranks for item in prepared]
         if any(frame is None for frame in rank_frames):
             raise ResourceLimitError("提供者策略缺少分块排名结果")
         provider_ranks = _concat_prepared(rank_frames, prepared)
+    else:
+        signal_days = int(
+            _concat_logical(
+                [item.target_weights for item in prepared],
+                prepared,
+            ).notna().any(axis=1).sum()
+        )
     results: list[tuple[ChunkWindow, BacktestResult]] = []
     state: ChunkState | None = None
     for position, window in enumerate(segments, start=1):
@@ -528,7 +536,7 @@ def run_windows(
         del data, result, valuation
         gc.collect()
 
-    return _stitch(
+    result = _stitch(
         results,
         days,
         benchmark,
@@ -539,6 +547,11 @@ def run_windows(
         data_snapshot=data_snapshot,
         resource_windows=windows,
     )
+    metadata = dict(result.metadata)
+    signal = dict(metadata.get("signal") or {})
+    signal["rebalance_days"] = signal_days
+    metadata["signal"] = signal
+    return replace(result, metadata=metadata)
 
 
 def _load_window(

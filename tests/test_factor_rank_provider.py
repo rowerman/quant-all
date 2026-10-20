@@ -11,6 +11,7 @@ from backtest.strategies._factor_rank import (
     rank_composite,
     weekly_last_dates,
 )
+from backtest.strategies._factor_rank_v2 import ensure_registered as ensure_v2_registered
 from backtest.trading_rules import board_from_stock_code
 
 
@@ -110,3 +111,35 @@ def test_provider_builds_weekly_top_n_equal_weights():
     assert len(positive) == 2
     assert np.allclose(positive.to_numpy(), 0.5)
     assert weights.loc[pd.Timestamp("2024-01-03")].isna().all()
+
+
+def test_v2_provider_uses_explicit_rebalance_dates():
+    """v2 只在显式日期生成目标，v1 仍可通过注册表取得。"""
+
+    ensure_v2_registered()
+    assert get_provider(ProviderSpec("factor_rank", "1")).version == "1"
+    provider = get_provider(
+        ProviderSpec(
+            "factor_rank",
+            "2",
+            {
+                "top_n": 2,
+                "factor_names": ["MOM_20", "VOL_20"],
+                "rebalance_dates": ["2024-01-03", "2024-01-04"],
+            },
+        )
+    )
+    data = _data()
+    eligible = pd.DataFrame(True, index=data.index, columns=data.columns)
+    weights = provider.build(
+        data,
+        eligible,
+        {
+            "top_n": 2,
+            "factor_names": ["MOM_20", "VOL_20"],
+            "rebalance_dates": ["2024-01-03", "2024-01-04"],
+        },
+    )
+    assert weights.loc["2024-01-03"].notna().all()
+    assert weights.loc["2024-01-04"].notna().all()
+    assert weights.loc["2024-01-05"].isna().all()

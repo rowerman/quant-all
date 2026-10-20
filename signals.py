@@ -11,6 +11,7 @@ from backtest.execution_state import ProviderState
 from backtest.logging_conf import get_logger
 from backtest.providers import get_provider, provider_uses_position_state
 from backtest.specs import PortfolioSpec, RebalanceSpec, SignalSpec, StrategySpec
+from backtest.trading_rules import BOARD_BSE, BSE_TRADING_START
 from backtest.universe import MIN_LISTED_DAYS
 
 logger = get_logger("backtest.signals")
@@ -80,6 +81,10 @@ def eligible_mask(data: MarketData) -> pd.DataFrame:
         & ~data.is_delisting.to_numpy()
         & (days >= threshold[None, :])
     )
+    bse = data.board.reindex(data.columns).eq(BOARD_BSE).to_numpy(dtype=bool)
+    if bse.any():
+        before_bse = days < pd.Timestamp(BSE_TRADING_START).to_datetime64()
+        mask &= ~(before_bse & bse[None, :])
     if data.membership is not None:
         mask &= data.membership.to_numpy()
     return pd.DataFrame(mask, index=data.index, columns=data.columns)

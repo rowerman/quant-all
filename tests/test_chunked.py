@@ -243,6 +243,11 @@ def test_chunked_matches_single_block(make_data):
     assert chunked.metadata["execution"]["chunk_count"] == 3
     assert len(chunked.metadata["chunks"]) == 3
     assert chunked.metadata["chunks"][1]["warmup"] == str(DATES[23].date())
+    assert chunked.metadata["signal"]["rebalance_days"] > 0
+    assert (
+        chunked.metadata["signal"]["rebalance_days"]
+        == single.metadata["signal"]["rebalance_days"]
+    )
     _assert_same(single, chunked)
 
 
@@ -257,6 +262,11 @@ def test_chunked_matches_single_block_with_provider(make_data):
 
     assert chunked.metadata["signal"]["kind"] == "provider"
     assert chunked.metadata["signal"]["name"] == "test_chunk_weekly_top2"
+    assert chunked.metadata["signal"]["rebalance_days"] > 0
+    assert (
+        chunked.metadata["signal"]["rebalance_days"]
+        == single.metadata["signal"]["rebalance_days"]
+    )
     _assert_same(single, chunked)
 
 

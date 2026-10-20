@@ -12,6 +12,7 @@ from alpha.errors import AlphaArtifactError
 from alpha.portfolio import smooth_rank_scores
 from backtest.errors import DataAlignmentError, SpecError
 from backtest.provider_schema import provider_param_schema
+from backtest.providers import get_provider
 from backtest.signals import build_signal_targets
 from backtest.snapshot import build_input_snapshot, data_snapshot_from_market_data
 from backtest.specs import (
@@ -22,8 +23,10 @@ from backtest.specs import (
     StrategySpec,
 )
 from backtest.strategies import ml_rank
+from backtest.strategies import ml_rank_v2
 from backtest.strategies._factor_rank import weekly_last_dates
 from backtest.strategies.ml_rank import MlRankProvider
+from backtest.strategies.ml_rank_v2 import MlRankV2Provider
 from backtest.store import BacktestStore
 
 MODEL_ID = "test_ml_model"
@@ -111,6 +114,43 @@ def test_params_and_schema():
     assert [item["name"] for item in schema] == ["model_id", "top_n"]
     assert schema[0]["default"] == "lightgbm_ensemble_label_rank_6aea5c9299d5"
     assert schema[1]["default"] == 30
+
+
+def test_v1_and_v2_registration_and_explicit_dates(monkeypatch):
+    """v1 保持严格周历，v2 可按显式日期避开无预测的自然周。"""
+
+    assert get_provider(ProviderSpec("ml_rank", "1")).version == "1"
+    assert get_provider(ProviderSpec("ml_rank", "2")).version == "2"
+    provider = MlRankV2Provider()
+    assert provider.validate_params(
+        {
+            "model_id": MODEL_ID,
+            "top_n": 2,
+            "rebalance_dates": ["2023-01-13", "2023-01-06", "2023-01-13"],
+        }
+    )["rebalance_dates"] == ["2023-01-06", "2023-01-13"]
+
+    missing = _predictions().loc[
+        pd.to_datetime(_predictions()["trade_date"]) != pd.Timestamp("2023-01-20")
+    ]
+    def loader(model_id):
+        assert model_id == MODEL_ID
+        return Path("/tmp") / model_id, _manifest(), missing
+
+    monkeypatch.setattr(ml_rank_v2, "load_predictions", loader)
+    index = pd.bdate_range("2023-01-02", "2023-01-27")
+    weights = provider.build(
+        _data(index),
+        pd.DataFrame(True, index=index, columns=STOCKS),
+        {
+            "model_id": MODEL_ID,
+            "top_n": 2,
+            "rebalance_dates": ["2023-01-06", "2023-01-13"],
+        },
+    )
+    assert weights.loc["2023-01-06"].notna().all()
+    assert weights.loc["2023-01-13"].notna().all()
+    assert weights.loc["2023-01-20"].isna().all()
 
 
 def test_artifact_snapshot_extracts_model_and_errors(monkeypatch):
