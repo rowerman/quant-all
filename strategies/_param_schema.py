@@ -5,6 +5,24 @@
 """
 
 PARAM_SCHEMAS = {
+    ("ml_rank", "1"): (
+        {
+            "name": "model_id",
+            "label": "模型 ID",
+            "type": "string",
+            "default": "lightgbm_ensemble_label_rank_6aea5c9299d5",
+            "description": "使用哪个已登记模型的样本外预测。",
+        },
+        {
+            "name": "top_n",
+            "label": "持仓只数",
+            "type": "integer",
+            "default": 30,
+            "min": 1,
+            "step": 1,
+            "description": "4 周平滑后每周等权持有的股票数。",
+        },
+    ),
     ("momentum_timing", "1"): (
         {
             "name": "top_n",
