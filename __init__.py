@@ -35,6 +35,7 @@ from alpha.feature_groups import FeatureGroup, FeatureGroups, build_feature_grou
 from alpha.gbdt import GbdtConfig, GbdtEnsembleConfig
 from alpha.preprocess import PreprocessConfig, PreprocessedFrame, transform
 from alpha.portfolio import HoldingPolicy, select_holdings, smooth_rank_scores
+from alpha.predict import load_model_manifest, load_prediction_parts, load_predictions
 from alpha.split import Fold, SplitConfig, build_folds, fold_masks
 from alpha.train import TrainConfig, fit, fit_gbdt, fit_gbdt_ensemble
 
@@ -66,6 +67,9 @@ __all__ = [
     "HoldingPolicy",
     "select_holdings",
     "smooth_rank_scores",
+    "load_model_manifest",
+    "load_prediction_parts",
+    "load_predictions",
     "Fold",
     "SplitConfig",
     "build_folds",
