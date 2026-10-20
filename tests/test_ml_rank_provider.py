@@ -13,6 +13,7 @@ from alpha.portfolio import smooth_rank_scores
 from backtest.errors import DataAlignmentError, SpecError
 from backtest.provider_schema import provider_param_schema
 from backtest.signals import build_signal_targets
+from backtest.snapshot import build_input_snapshot, data_snapshot_from_market_data
 from backtest.specs import (
     PortfolioSpec,
     ProviderSpec,
@@ -23,6 +24,7 @@ from backtest.specs import (
 from backtest.strategies import ml_rank
 from backtest.strategies._factor_rank import weekly_last_dates
 from backtest.strategies.ml_rank import MlRankProvider
+from backtest.store import BacktestStore
 
 MODEL_ID = "test_ml_model"
 STOCKS = ["SH600000", "SZ000001", "SZ000002", "SZ000003"]
@@ -109,6 +111,77 @@ def test_params_and_schema():
     assert [item["name"] for item in schema] == ["model_id", "top_n"]
     assert schema[0]["default"] == "lightgbm_ensemble_label_rank_6aea5c9299d5"
     assert schema[1]["default"] == 30
+
+
+def test_artifact_snapshot_extracts_model_and_errors(monkeypatch):
+    """产物快照使用规范化参数，失败转换为回测数据错误。"""
+
+    captured = {}
+
+    def snapshot(model_id):
+        captured["model_id"] = model_id
+        return {"artifact_sha256": "a" * 64, "model_id": model_id}
+
+    monkeypatch.setattr(ml_rank, "model_artifact_snapshot", snapshot)
+    payload = MlRankProvider().artifact_snapshot({"model_id": MODEL_ID})
+    assert payload["model_id"] == MODEL_ID
+    assert captured["model_id"] == MODEL_ID
+
+    def broken(model_id):
+        raise AlphaArtifactError(f"broken {model_id}")
+
+    monkeypatch.setattr(ml_rank, "model_artifact_snapshot", broken)
+    with pytest.raises(DataAlignmentError, match="无法读取模型产物"):
+        MlRankProvider().artifact_snapshot({"model_id": MODEL_ID})
+
+
+def test_artifacts_enter_snapshot_and_change_snapshot_id(
+    monkeypatch,
+    make_data,
+    tmp_path,
+):
+    """产物摘要进入 rules.provider，并参与最终快照 ID。"""
+
+    monkeypatch.setattr(
+        ml_rank,
+        "model_artifact_snapshot",
+        lambda model_id: {"artifact_sha256": "a" * 64, "model_id": model_id},
+    )
+    data = make_data()
+    strategy = StrategySpec(
+        name="ML artifact snapshot",
+        signal=SignalSpec(
+            factors=(),
+            weights=(),
+            provider=ProviderSpec(
+                "ml_rank",
+                "1",
+                {"model_id": MODEL_ID, "top_n": 2},
+            ),
+        ),
+        portfolio=PortfolioSpec(selection="provider", top_n=2),
+        rebalance=RebalanceSpec(frequency="custom"),
+    )
+    first = build_input_snapshot(
+        strategy,
+        data_snapshot_from_market_data(data),
+    )
+    assert first.components["rules"]["provider"]["artifacts"]["model_id"] == MODEL_ID
+    store = BacktestStore(tmp_path / "backtest.duckdb")
+    assert store.record_snapshot(first.to_dict()) == first.snapshot_id
+    restored = store.get_snapshot(first.snapshot_id)
+    assert restored["components"]["rules"]["provider"]["artifacts"]["model_id"] == MODEL_ID
+
+    monkeypatch.setattr(
+        ml_rank,
+        "model_artifact_snapshot",
+        lambda model_id: {"artifact_sha256": "b" * 64, "model_id": model_id},
+    )
+    second = build_input_snapshot(
+        strategy,
+        data_snapshot_from_market_data(data),
+    )
+    assert second.snapshot_id != first.snapshot_id
 
 
 def test_build_matches_four_week_causal_smoothing(monkeypatch):

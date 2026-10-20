@@ -16,6 +16,7 @@ from backtest.providers import (
     get_provider,
     list_providers,
     provider_metadata,
+    provider_snapshot_metadata,
     register_provider,
     signal_metadata,
     validate_provider_config,
@@ -93,6 +94,21 @@ class CashNanProvider:
 
 
 register_provider(CashNanProvider())
+
+
+class ArtifactProvider(TopTwoProvider):
+    """测试外部产物快照扩展。"""
+
+    name = "test_artifact_provider"
+    version = "1"
+    description = "测试产物快照"
+    required_factors = ()
+
+    def artifact_snapshot(self, params):
+        return {"artifact_sha256": "a" * 64, "params": dict(params)}
+
+
+register_provider(ArtifactProvider())
 
 
 def _provider_class(module: str, name: str):
@@ -189,6 +205,24 @@ def test_provider_registry_and_metadata():
     assert len(metadata["code_sha256"]) == 64
     assert signal_metadata(_provider_strategy().signal)["kind"] == "provider"
     assert signal_metadata(StrategySpec().signal)["kind"] == "factor"
+
+
+def test_provider_artifact_snapshot_is_optional_and_backward_compatible():
+    """只有显式开启且实现钩子的提供者才增加产物字段。"""
+
+    legacy = ProviderSpec("test_top_two")
+    assert "artifacts" not in provider_snapshot_metadata(legacy)
+    assert "artifacts" not in provider_snapshot_metadata(
+        legacy, include_artifacts=True
+    )
+
+    artifact = ProviderSpec("test_artifact_provider", "1", {"top_n": 2})
+    assert "artifacts" not in provider_snapshot_metadata(artifact)
+    payload = provider_snapshot_metadata(artifact, include_artifacts=True)
+    assert payload["artifacts"] == {
+        "artifact_sha256": "a" * 64,
+        "params": {"top_n": 2},
+    }
 
 
 def test_sample_provider_exposes_param_schema_and_defaults():

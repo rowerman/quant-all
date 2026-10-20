@@ -697,7 +697,10 @@ def _execution_model_component(root: Path | None = None) -> dict[str, Any]:
 def _rules_component(strategy: StrategySpec) -> dict[str, Any]:
     """返回策略配置、交易规则和提供者源码的摘要内容。"""
     provider = (
-        provider_snapshot_metadata(strategy.signal.provider)
+        provider_snapshot_metadata(
+            strategy.signal.provider,
+            include_artifacts=True,
+        )
         if strategy.signal.provider is not None
         else None
     )

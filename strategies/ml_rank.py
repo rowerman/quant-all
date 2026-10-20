@@ -7,7 +7,7 @@ import pandas as pd
 
 from alpha.errors import AlphaError
 from alpha.portfolio import smooth_rank_scores
-from alpha.predict import load_predictions
+from alpha.predict import load_predictions, model_artifact_snapshot
 from backtest.data import MarketData
 from backtest.errors import DataAlignmentError, SpecError
 from backtest.providers import register_provider
@@ -110,6 +110,17 @@ class MlRankProvider:
             if len(chosen):
                 weights.loc[day, chosen] = 1.0 / len(chosen)
         return weights
+
+    def artifact_snapshot(self, params: dict) -> dict:
+        """返回模型、预测和训练数据集的可复现摘要。"""
+
+        settings = self.validate_params(params)
+        try:
+            return model_artifact_snapshot(settings["model_id"])
+        except AlphaError as error:
+            raise DataAlignmentError(
+                f"ml_rank 无法读取模型产物 {settings['model_id']}：{error}"
+            ) from error
 
 
 register_provider(MlRankProvider())

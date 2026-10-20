@@ -35,6 +35,9 @@ class TargetWeightProvider(Protocol):
 
     需要真实持仓的提供者额外声明 ``uses_position_state = True``，此时 ``build``
     接收第四个关键字参数 ``state``；状态由执行层账本生成，提供者不得自行模拟持仓。
+
+    读取外部模型或数据产物的提供者可以实现可选的
+    ``artifact_snapshot(params)``，返回参与回测输入快照的稳定产物元数据。
     """
 
     name: str
@@ -216,7 +219,43 @@ def provider_metadata(
     )
 
 
-def provider_snapshot_metadata(spec: ProviderSpec) -> dict[str, Any]:
+def _provider_artifacts(
+    provider: TargetWeightProvider,
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    """调用提供者可选产物钩子并校验其返回值。"""
+
+    hook = getattr(provider, "artifact_snapshot", None)
+    if hook is None:
+        return None
+    if not callable(hook):
+        raise SpecError(
+            f"目标权重提供者 {provider.name} 的 artifact_snapshot 必须可调用"
+        )
+    payload = hook(dict(params))
+    if not isinstance(payload, dict):
+        raise SpecError(
+            f"目标权重提供者 {provider.name} 的产物快照必须是对象"
+        )
+    try:
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise SpecError(
+            f"目标权重提供者 {provider.name} 的产物快照不能序列化：{error}"
+        ) from error
+    return payload
+
+
+def provider_snapshot_metadata(
+    spec: ProviderSpec,
+    *,
+    include_artifacts: bool = False,
+) -> dict[str, Any]:
     """返回提供者的完整快照信息，包含模块源码。
 
     该接口只供回测输入快照使用；常规运行元数据的 :func:`signal_metadata`
@@ -224,6 +263,7 @@ def provider_snapshot_metadata(spec: ProviderSpec) -> dict[str, Any]:
 
     参数:
         spec: 策略中的提供者配置。
+        include_artifacts: 是否调用提供者可选的外部产物快照钩子。
     """
     provider = get_provider(spec)
     payload = _metadata(provider)
@@ -231,6 +271,10 @@ def provider_snapshot_metadata(spec: ProviderSpec) -> dict[str, Any]:
     payload["params"] = dict(spec.params)
     payload["source"] = source
     payload["source_sha256"] = digest
+    if include_artifacts:
+        artifacts = _provider_artifacts(provider, spec.params)
+        if artifacts is not None:
+            payload["artifacts"] = artifacts
     return payload
 
 
