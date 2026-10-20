@@ -1,8 +1,10 @@
-"""Alpha 模型层：研究契约、数据集、切分、线性模型和 LightGBM 集成。
+"""Alpha 模型层：研究契约、数据集、切分、模型训练与解释。"""
 
-P3-3 已具备五种子 rank 集成；回测提供者和生命周期管理在后续批次加入。
-"""
-
+from alpha.ablation import (
+    FamilyAblationResult,
+    fit_family_ablation,
+    predict_permuted_group,
+)
 from alpha.config import DEFAULT_CONTRACT, ResearchContract
 from alpha.dataset import (
     DatasetArtifact,
@@ -21,6 +23,15 @@ from alpha.errors import (
     AlphaRegistryError,
     AlphaSplitError,
 )
+from alpha.explain import (
+    ModelRef,
+    compute_feature_correlation,
+    compute_gain_importance,
+    compute_tree_shap_importance,
+    permute_group_within_dates,
+)
+from alpha.exposure import PortfolioExposureResult, compute_portfolio_exposure
+from alpha.feature_groups import FeatureGroup, FeatureGroups, build_feature_groups
 from alpha.gbdt import GbdtConfig, GbdtEnsembleConfig
 from alpha.preprocess import PreprocessConfig, PreprocessedFrame, transform
 from alpha.split import Fold, SplitConfig, build_folds, fold_masks
@@ -33,6 +44,19 @@ __all__ = [
     "DatasetSpec",
     "build_dataset",
     "load_dataset",
+    "ModelRef",
+    "compute_feature_correlation",
+    "compute_gain_importance",
+    "compute_tree_shap_importance",
+    "permute_group_within_dates",
+    "FeatureGroup",
+    "FeatureGroups",
+    "build_feature_groups",
+    "FamilyAblationResult",
+    "fit_family_ablation",
+    "predict_permuted_group",
+    "PortfolioExposureResult",
+    "compute_portfolio_exposure",
     "GbdtConfig",
     "GbdtEnsembleConfig",
     "PreprocessConfig",
