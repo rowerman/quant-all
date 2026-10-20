@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import lightgbm as lgb
@@ -71,6 +71,39 @@ class GbdtConfig:
         """转换为稳定字典。"""
 
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class GbdtEnsembleConfig:
+    """多种子 LightGBM 集成的固定配置。"""
+
+    seeds: tuple[int, ...] = (0, 1, 2, 3, 4)
+    member: GbdtConfig = field(default_factory=GbdtConfig)
+
+    def __post_init__(self) -> None:
+        seeds = tuple(self.seeds)
+        if not 3 <= len(seeds) <= 5:
+            raise AlphaModelError("集成种子数量必须在 3 到 5 之间")
+        if any(type(seed) is not int or seed < 0 for seed in seeds):
+            raise AlphaModelError("集成种子必须是非负整数")
+        if tuple(sorted(seeds)) != seeds or len(set(seeds)) != len(seeds):
+            raise AlphaModelError("集成种子必须严格递增且不重复")
+        object.__setattr__(self, "seeds", seeds)
+        object.__setattr__(self, "member", replace(self.member, seed=seeds[0]))
+
+    def for_seed(self, seed: int) -> GbdtConfig:
+        """返回替换为指定种子的成员配置。"""
+
+        return replace(self.member, seed=int(seed))
+
+    def to_dict(self) -> dict:
+        """转换为稳定字典。"""
+
+        return {
+            "seeds": list(self.seeds),
+            "member": self.member.to_dict(),
+            "aggregation": {"method": "datewise_rank_mean", "weights": "equal"},
+        }
 
 
 @dataclass(frozen=True)
