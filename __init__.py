@@ -34,6 +34,7 @@ from alpha.exposure import PortfolioExposureResult, compute_portfolio_exposure
 from alpha.feature_groups import FeatureGroup, FeatureGroups, build_feature_groups
 from alpha.gbdt import GbdtConfig, GbdtEnsembleConfig
 from alpha.preprocess import PreprocessConfig, PreprocessedFrame, transform
+from alpha.portfolio import HoldingPolicy, select_holdings, smooth_rank_scores
 from alpha.split import Fold, SplitConfig, build_folds, fold_masks
 from alpha.train import TrainConfig, fit, fit_gbdt, fit_gbdt_ensemble
 
@@ -62,6 +63,9 @@ __all__ = [
     "PreprocessConfig",
     "PreprocessedFrame",
     "transform",
+    "HoldingPolicy",
+    "select_holdings",
+    "smooth_rank_scores",
     "Fold",
     "SplitConfig",
     "build_folds",

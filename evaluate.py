@@ -1,6 +1,8 @@
-"""模型分数评估：RankIC、分箱、自相关与 P2 决策门。"""
+"""模型分数评估：RankIC、分箱、自相关与 P2/P3 决策门。"""
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -228,4 +230,138 @@ def p2_decision(
         "drawdown_improvement": drawdown_improvement,
         "turnover_improvement": turnover_improvement,
         "enter_p3": status == "pass",
+    }
+
+
+def p3_decision_gate(
+    candidate: dict,
+    ridge: dict,
+    yearly: Sequence[dict],
+    *,
+    expected_years: Sequence[int] | None = None,
+    required_improvements: int = 2,
+    turnover_multiple_limit: float = 2.0,
+) -> dict:
+    """按固定规则判断候选是否通过 P3，并给出逐项原因。"""
+
+    metric_names = (
+        "rank_ic_mean",
+        "icir",
+        "annual_return",
+        "max_drawdown",
+    )
+    try:
+        candidate_values = {
+            name: float(candidate[name]) for name in metric_names
+        }
+        ridge_values = {name: float(ridge[name]) for name in metric_names}
+        candidate_turnover = float(candidate["turnover_two_way_annual"])
+        ridge_turnover = float(ridge["turnover_two_way_annual"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise AlphaEvaluationError("P3 决策所需核心指标缺失或非数值") from error
+    if ridge_turnover <= 0:
+        raise AlphaEvaluationError("Ridge 换手必须为正")
+
+    improvements = [
+        name
+        for name in metric_names
+        if candidate_values[name] > ridge_values[name]
+    ]
+    turnover_multiple = candidate_turnover / ridge_turnover
+    turnover_ok = turnover_multiple <= float(turnover_multiple_limit)
+
+    expected = (
+        {int(year) for year in expected_years}
+        if expected_years is not None
+        else {int(row["year"]) for row in yearly}
+    )
+    by_year = {int(row["year"]): row for row in yearly}
+    missing_years = sorted(expected - set(by_year))
+    negative_rank_ic: list[int] = []
+    negative_excess: list[int] = []
+    for year in sorted(expected & set(by_year)):
+        row = by_year[year]
+        try:
+            rank_ic = float(row["rank_ic_mean"])
+            excess = float(row["excess_total_return"])
+        except (KeyError, TypeError, ValueError):
+            negative_rank_ic.append(year)
+            negative_excess.append(year)
+            continue
+        if not np.isfinite(rank_ic) or rank_ic <= 0:
+            negative_rank_ic.append(year)
+        if not np.isfinite(excess) or excess <= 0:
+            negative_excess.append(year)
+    yearly_stable = (
+        not missing_years and not negative_rank_ic and not negative_excess
+    )
+    passed = (
+        len(improvements) >= int(required_improvements)
+        and turnover_ok
+        and yearly_stable
+    )
+    reasons: list[str] = []
+    reasons.append(
+        f"优于 Ridge 的核心指标 {len(improvements)} 项：{improvements}"
+    )
+    reasons.append(
+        f"换手为 Ridge 的 {turnover_multiple:.3f} 倍，"
+        f"上限 {float(turnover_multiple_limit):.3f}"
+    )
+    if missing_years:
+        reasons.append(f"缺少年度：{missing_years}")
+    if negative_rank_ic:
+        reasons.append(f"RankIC 非正的年度：{negative_rank_ic}")
+    if negative_excess:
+        reasons.append(f"净超额非正的年度：{negative_excess}")
+    if yearly_stable:
+        reasons.append("分年 RankIC 和净超额均为正")
+    return {
+        "status": "pass" if passed else "fail",
+        "passed": passed,
+        "improvements": improvements,
+        "improvement_count": len(improvements),
+        "required_improvements": int(required_improvements),
+        "turnover_multiple": turnover_multiple,
+        "turnover_multiple_limit": float(turnover_multiple_limit),
+        "turnover_ok": turnover_ok,
+        "yearly_stable": yearly_stable,
+        "missing_years": missing_years,
+        "negative_rank_ic_years": negative_rank_ic,
+        "negative_excess_years": negative_excess,
+        "reasons": reasons,
+    }
+
+
+def select_p3_candidate(candidates: dict[str, dict]) -> dict:
+    """从通过决策门的候选中按固定优先级选出一个。"""
+
+    passed = {
+        name: item
+        for name, item in candidates.items()
+        if bool((item.get("gate") or {}).get("passed"))
+    }
+    if not passed:
+        return {
+            "selected": None,
+            "ranked": [],
+            "reason": "没有候选通过 P3 决策门，保留 Ridge",
+        }
+
+    def _sort_key(item: tuple[str, dict]) -> tuple:
+        name, payload = item
+        metrics = payload["metrics"]
+        annual = float(metrics["annual_return"])
+        sharpe = float(metrics.get("sharpe") or -np.inf)
+        drawdown = float(metrics.get("max_drawdown") or -np.inf)
+        turnover = float(metrics["turnover_two_way_annual"])
+        priority = int(payload.get("priority", 99))
+        return (-annual, -sharpe, -drawdown, turnover, priority, name)
+
+    ranked = sorted(passed.items(), key=_sort_key)
+    selected = ranked[0][0]
+    return {
+        "selected": selected,
+        "ranked": [name for name, _ in ranked],
+        "reason": f"按固定优先级选择 {selected}",
     }
