@@ -18,6 +18,7 @@ from alpha.errors import (
     AlphaDataError,
     AlphaError,
     AlphaEvaluationError,
+    AlphaLifecycleError,
     AlphaMonitorError,
     AlphaModelError,
     AlphaPreprocessError,
@@ -41,6 +42,15 @@ from alpha.monitor import (
     evaluate_monitor_frames,
     run_model_monitor,
     simulate_score_decay,
+)
+from alpha.lifecycle import (
+    DEFAULT_FALLBACK_MODEL_ID,
+    DEFAULT_PRIMARY_MODEL_ID,
+    LifecyclePolicy,
+    LifecycleResult,
+    evaluate_lifecycle,
+    load_model_lifecycle,
+    run_model_lifecycle,
 )
 from alpha.portfolio import HoldingPolicy, select_holdings, smooth_rank_scores
 from alpha.predict import (
@@ -87,6 +97,13 @@ __all__ = [
     "evaluate_monitor_frames",
     "run_model_monitor",
     "simulate_score_decay",
+    "DEFAULT_FALLBACK_MODEL_ID",
+    "DEFAULT_PRIMARY_MODEL_ID",
+    "LifecyclePolicy",
+    "LifecycleResult",
+    "evaluate_lifecycle",
+    "load_model_lifecycle",
+    "run_model_lifecycle",
     "HoldingPolicy",
     "select_holdings",
     "smooth_rank_scores",
@@ -110,6 +127,7 @@ __all__ = [
     "AlphaDataError",
     "AlphaError",
     "AlphaEvaluationError",
+    "AlphaLifecycleError",
     "AlphaMonitorError",
     "AlphaModelError",
     "AlphaPreprocessError",

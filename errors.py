@@ -7,6 +7,7 @@
     ALPHA-3xx  模型与评估
     ALPHA-4xx  产物与登记
                ALPHA-403 专用于模型监控
+               ALPHA-404 专用于模型生命周期
 """
 
 from __future__ import annotations
@@ -74,3 +75,9 @@ class AlphaMonitorError(AlphaError):
     """模型监控输入、告警策略或产物非法。"""
 
     code = "ALPHA-403"
+
+
+class AlphaLifecycleError(AlphaError):
+    """模型生命周期策略、状态或产物非法。"""
+
+    code = "ALPHA-404"
