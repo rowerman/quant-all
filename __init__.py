@@ -41,6 +41,11 @@ from alpha.predict import (
     load_predictions,
     model_artifact_snapshot,
 )
+from alpha.registry import (
+    get_registered_model,
+    load_registry,
+    rebuild_registry,
+)
 from alpha.split import Fold, SplitConfig, build_folds, fold_masks
 from alpha.train import TrainConfig, fit, fit_gbdt, fit_gbdt_ensemble
 
@@ -76,6 +81,9 @@ __all__ = [
     "load_prediction_parts",
     "load_predictions",
     "model_artifact_snapshot",
+    "get_registered_model",
+    "load_registry",
+    "rebuild_registry",
     "Fold",
     "SplitConfig",
     "build_folds",
