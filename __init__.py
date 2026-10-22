@@ -18,6 +18,7 @@ from alpha.errors import (
     AlphaDataError,
     AlphaError,
     AlphaEvaluationError,
+    AlphaMonitorError,
     AlphaModelError,
     AlphaPreprocessError,
     AlphaRegistryError,
@@ -34,6 +35,13 @@ from alpha.exposure import PortfolioExposureResult, compute_portfolio_exposure
 from alpha.feature_groups import FeatureGroup, FeatureGroups, build_feature_groups
 from alpha.gbdt import GbdtConfig, GbdtEnsembleConfig
 from alpha.preprocess import PreprocessConfig, PreprocessedFrame, transform
+from alpha.monitor import (
+    MonitorPolicy,
+    MonitorResult,
+    evaluate_monitor_frames,
+    run_model_monitor,
+    simulate_score_decay,
+)
 from alpha.portfolio import HoldingPolicy, select_holdings, smooth_rank_scores
 from alpha.predict import (
     load_model_manifest,
@@ -74,6 +82,11 @@ __all__ = [
     "PreprocessConfig",
     "PreprocessedFrame",
     "transform",
+    "MonitorPolicy",
+    "MonitorResult",
+    "evaluate_monitor_frames",
+    "run_model_monitor",
+    "simulate_score_decay",
     "HoldingPolicy",
     "select_holdings",
     "smooth_rank_scores",
@@ -97,6 +110,7 @@ __all__ = [
     "AlphaDataError",
     "AlphaError",
     "AlphaEvaluationError",
+    "AlphaMonitorError",
     "AlphaModelError",
     "AlphaPreprocessError",
     "AlphaRegistryError",
