@@ -50,6 +50,47 @@ PARAM_SCHEMAS = {
             "description": "使用 1 表示原始分数，使用 4 表示当前选中的四周 rank 平滑。",
         },
     ),
+    ("ml_rank", "3"): (
+        {
+            "name": "lifecycle_id",
+            "label": "生命周期 ID",
+            "type": "string",
+            "default": "p5_3_dd7c9b4bf235",
+            "description": "P5-3 生成且通过完整哈希校验的生命周期包。",
+        },
+        {
+            "name": "model_id",
+            "label": "主模型 ID",
+            "type": "string",
+            "default": "lightgbm_ensemble_label_rank_6aea5c9299d5",
+            "description": "normal 和 reduced 状态使用的主模型。",
+        },
+        {
+            "name": "fallback_model_id",
+            "label": "回滚模型 ID",
+            "type": "string",
+            "default": "ridge_label_rank_aaff2cb2fbcf",
+            "description": "rollback 状态使用的兜底模型。",
+        },
+        {
+            "name": "top_n",
+            "label": "持仓只数",
+            "type": "integer",
+            "default": 30,
+            "min": 1,
+            "step": 1,
+            "description": "按活动模型四周平滑分数等权持有的股票数。",
+        },
+        {
+            "name": "smoothing_weeks",
+            "label": "平滑周数",
+            "type": "integer",
+            "default": 4,
+            "min": 1,
+            "step": 1,
+            "description": "活动模型分数的因果 rank 平滑周数。",
+        },
+    ),
     ("momentum_timing", "1"): (
         {
             "name": "top_n",
