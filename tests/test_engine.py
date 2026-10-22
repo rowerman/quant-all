@@ -5,8 +5,10 @@ import pandas as pd
 import pytest
 
 from backtest.data import load_market_data
-from backtest.engine import run_backtest
+from backtest.engine import ChunkState, run_backtest
 from backtest.errors import DataAlignmentError, ExecutionError
+from backtest.ledger import LedgerSnapshot
+from backtest.orders import RuleState
 from backtest.specs import (
     BacktestParams,
     CostSpec,
@@ -732,6 +734,110 @@ def test_engine_refills_cash_limited_buy_after_cash_arrives(make_data):
         & result.orders["Side"].astype(str).str.lower().eq("sell")
     ]
     assert set(sells["stock_code"]) == {"SZ000001"}
+
+
+def test_engine_uses_capacity_limited_sell_proceeds_for_buy(make_data):
+    """容量受限卖出只能按实际成交所得补买，且固定点不能被账本剪裁阻断。"""
+    dates = pd.date_range("2024-01-29", periods=13, freq="B")
+    stocks = ["SH600000", "SZ000001", "SZ000002"]
+    score = pd.DataFrame(0.0, index=dates, columns=stocks)
+    score.loc[dates[:5], "SH600000"] = 1.0
+    score.loc[dates[5:], "SZ000001"] = 1.0
+    price = pd.DataFrame(10.0, index=dates, columns=stocks)
+    amount = pd.DataFrame(10_000_000.0, index=dates, columns=stocks)
+    amount.loc[dates[10]:dates[11], "SH600000"] = 10_000.0
+    data = make_data(
+        dates=dates,
+        stocks=stocks,
+        open=price.astype("float32"),
+        close=price.astype("float32"),
+        amount_cny=amount.astype("float32"),
+        factors={"MOM_20": score.astype("float32")},
+    )
+    strategy = _strategy(
+        portfolio=PortfolioSpec(top_n=1),
+        rebalance=RebalanceSpec(frequency="weekly"),
+        execution=ExecutionSpec(max_participation_rate=0.1),
+        costs=CostSpec.zero(),
+    )
+    params = BacktestParams(str(dates[0].date()), str(dates[-1].date()), 100_000.0)
+    result = run_backtest(data, strategy, params)
+    calibration = result.metadata["calibration"]
+
+    assert calibration["allocation_converged"] is True
+    assert calibration["cash_clipped_cells"] == 0
+    assert calibration["liquidity_limited_cells"] > 0
+    assert calibration["cash_limited_cells"] > 0
+    buy = result.allocations.loc[
+        (result.allocations["trade_date"] == dates[10])
+        & (result.allocations["stock_code"] == "SZ000001")
+    ].iloc[0]
+    assert bool(buy["cash_limited"])
+    assert buy["cash_shrunk_shares"] > 0
+
+
+def test_engine_reserves_fifo_dividend_tax_when_funding_buy(make_data):
+    """卖出红利税会减少同日可用现金，分配阶段不能把它当成可用卖出所得。"""
+    dates = pd.date_range("2024-01-29", periods=3, freq="B")
+    stocks = ["SH600000", "SZ000001"]
+    price = pd.DataFrame(10.0, index=dates, columns=stocks)
+    data = make_data(
+        dates=dates,
+        stocks=stocks,
+        open=price.astype("float32"),
+        close=price.astype("float32"),
+        factors={"MOM_20": pd.DataFrame(1.0, index=dates, columns=stocks)},
+    )
+    shares = pd.Series({"SH600000": 10_000.0, "SZ000001": 0.0})
+    lots = pd.DataFrame(
+        [
+            {
+                "stock_code": "SH600000",
+                "shares": 10_000.0,
+                "entry_date": pd.Timestamp("2024-01-02"),
+                "entry_price": 10.0,
+                "entry_fees": 0.0,
+                "dividend_gross": 10_000.0,
+            }
+        ]
+    )
+    marks = pd.Series(10.0, index=stocks)
+    state = ChunkState(
+        cash=0.0,
+        shares=shares,
+        mark_prices=marks,
+        last_prices=marks,
+        rule_state=RuleState(
+            held=shares > 0,
+            shadow=pd.Series({"SH600000": 1.0, "SZ000001": 0.0}),
+            pending=pd.Series(np.nan, index=stocks),
+        ),
+        carry=pd.Series(np.nan, index=stocks),
+        ledger_state=LedgerSnapshot(
+            cash=0.0,
+            shares=shares,
+            lots=lots,
+            receivables=pd.DataFrame(),
+            last_prices=marks,
+        ),
+    )
+    targets = pd.DataFrame(np.nan, index=dates, columns=stocks)
+    targets.loc[dates[1], ["SH600000", "SZ000001"]] = [0.0, 1.0]
+    ranks = pd.DataFrame(np.nan, index=dates, columns=stocks)
+    result = run_backtest(
+        data,
+        _strategy(portfolio=PortfolioSpec(top_n=1)),
+        BacktestParams(str(dates[0].date()), str(dates[-1].date()), 100_000.0),
+        initial_state=state,
+        warmup_rows=1,
+        target_override=(targets, ranks),
+    )
+    calibration = result.metadata["calibration"]
+
+    assert result.daily["dividend_tax"].sum() > 0
+    assert calibration["allocation_converged"] is True
+    assert calibration["cash_clipped_cells"] == 0
+    assert calibration["cash_limited_cells"] > 0
 
 
 def test_engine_keeps_cash_limited_cell_until_the_end(make_data):

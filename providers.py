@@ -324,6 +324,7 @@ def list_providers() -> list[dict[str, Any]]:
     return [
         _metadata(provider, include_param_schema=True)
         for _, provider in sorted(_REGISTRY.items())
+        if not getattr(provider, "hidden", False)
     ]
 
 

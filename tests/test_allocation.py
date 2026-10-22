@@ -13,6 +13,7 @@ from backtest.allocation import (
     execution_price,
     extend_carry,
 )
+from backtest.costs import ChargeArrays, CostSpec
 from backtest.errors import ExecutionError
 from backtest.trading_rules import BOARD_MAIN, BOARD_STAR, BOARD_BSE
 
@@ -201,6 +202,50 @@ def test_allocate_shares_retries_small_cash_shortfall():
     assert records.iloc[0]["cash_shrunk_shares"] == pytest.approx(100.0)
 
 
+def test_allocate_shares_limits_cash_rollback_to_buy_candidates(monkeypatch):
+    """现金回退只能从实际买单候选中选最大边际成本。"""
+
+    def charge_arrays(self, day, side, shares, reference_price, *args, **kwargs):
+        """构造非候选格也有成本的非真实响应，专门覆盖索引边界。"""
+
+        values = np.asarray(shares, dtype="float64")
+        active = values > 0
+        zeros = np.zeros_like(values)
+        fees = values.copy()
+        if active.any():
+            fees[-1] += 100.0
+        return ChargeArrays(
+            reference_price=np.asarray(reference_price, dtype="float64"),
+            fill_price=np.asarray(reference_price, dtype="float64"),
+            gross_amount=zeros,
+            fill_amount=zeros,
+            commission=zeros,
+            stamp_tax=zeros,
+            transfer_fee=zeros,
+            fees=fees,
+            slippage_rate=0.0,
+            slippage_cost=zeros,
+            impact_rate=zeros,
+            impact_cost=zeros,
+            total_cost=zeros,
+        )
+
+    monkeypatch.setattr(CostSpec, "charge_arrays", charge_arrays)
+    columns = [f"S{position}" for position in range(5)]
+    targets = _frame([[np.nan] * 5, [0.2, 0.2, 0.2, 0.0, 0.2], [np.nan] * 5], columns)
+    shares, _, _, _ = allocate_shares(
+        targets,
+        pd.Series([100_000.0] * 3, index=DATES),
+        pd.Series([10_000.0] * 3, index=DATES),
+        _frame([[10.0] * 5] * 3, columns),
+        _frame([[0.0] * 5] * 3, columns),
+        _boards(columns),
+        0.0,
+        costs=CostSpec(),
+    )
+    assert shares.loc[DATES[1]].notna().all()
+
+
 def test_allocate_shares_without_cash_pressure_marks_nothing():
     weights = [[np.nan], [0.5], [np.nan]]
     _, records, stats = _allocate(weights, [100_000.0] * 3, [[10.0]] * 3, ["A"], buffer=0.02)
@@ -240,6 +285,40 @@ def test_allocate_shares_limits_buy_by_daily_amount_participation():
     row = records.loc[records["trade_date"] == DATES[1]].iloc[0]
     assert row["capacity_limited"]
     assert row["capacity_shortfall_shares"] > 0
+    assert stats["liquidity_limited_cells"] == 1
+
+
+def test_capacity_limited_sell_cannot_fund_full_buy():
+    """卖单被成交额限制的部分不能计入同日买入预算。"""
+    columns = ["A", "B"]
+    baseline = [[10_000.0, 0.0]] * 3
+    targets = [[np.nan, np.nan], [0.0, 1.0], [np.nan, np.nan]]
+    prices = [[10.0, 10.0]] * 3
+    amount = _frame([[20_000.0, 1_000_000.0]] * 3, columns)
+
+    shares, records, _, stats = allocate_shares(
+        _frame(targets, columns),
+        pd.Series([100_000.0] * 3, index=DATES),
+        pd.Series([0.0] * 3, index=DATES),
+        _frame(prices, columns),
+        _frame(baseline, columns),
+        _boards(columns),
+        0.0,
+        costs=CostSpec.zero(),
+        amount_cny=amount,
+        max_participation_rate=0.1,
+    )
+
+    # A 最多卖 200 股，只能提供 2,000 元买入 B，不能按 10,000 股卖出估算预算。
+    assert shares.loc[DATES[1], "A"] == pytest.approx(9_800.0)
+    assert shares.loc[DATES[1], "B"] == pytest.approx(200.0)
+    sell = records.loc[records["stock_code"] == "A"].iloc[0]
+    buy = records.loc[records["stock_code"] == "B"].iloc[0]
+    assert bool(sell["capacity_limited"])
+    assert sell["capacity_shortfall_shares"] == pytest.approx(9_800.0)
+    assert bool(buy["cash_limited"])
+    assert buy["cash_shrunk_shares"] == pytest.approx(9_800.0)
+    assert stats["cash_limited_cells"] == 1
     assert stats["liquidity_limited_cells"] == 1
 
 

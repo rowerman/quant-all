@@ -153,6 +153,50 @@ def test_v1_and_v2_registration_and_explicit_dates(monkeypatch):
     assert weights.loc["2023-01-20"].isna().all()
 
 
+def test_v2_smoothing_weeks_defaults_to_four_and_supports_raw(monkeypatch):
+    """v2 默认保持四周平滑，窗口 1 只使用当日 rank。"""
+
+    provider = MlRankV2Provider()
+    assert provider.validate_params({"model_id": MODEL_ID})["smoothing_weeks"] == 4
+    with pytest.raises(SpecError, match="smoothing_weeks"):
+        provider.validate_params(
+            {"model_id": MODEL_ID, "smoothing_weeks": 0}
+        )
+
+    _mock_predictions(monkeypatch)
+    monkeypatch.setattr(
+        ml_rank_v2,
+        "load_predictions",
+        ml_rank.load_predictions,
+    )
+    index = pd.bdate_range("2023-01-02", "2023-02-10")
+    params = {
+        "model_id": MODEL_ID,
+        "top_n": 2,
+        "smoothing_weeks": 1,
+    }
+    weights = provider.build(
+        _data(index),
+        pd.DataFrame(True, index=index, columns=STOCKS),
+        params,
+    )
+    day = pd.Timestamp("2023-02-10")
+    wide = _predictions().pivot(
+        index="trade_date",
+        columns="stock_code",
+        values="score",
+    )
+    score = smooth_rank_scores(wide, wide.notna(), window=1)
+    chosen = (
+        score.loc[day]
+        .dropna()
+        .sort_values(ascending=False, kind="mergesort")
+        .head(2)
+        .index
+    )
+    assert weights.loc[day, chosen].tolist() == pytest.approx([0.5, 0.5])
+
+
 def test_artifact_snapshot_extracts_model_and_errors(monkeypatch):
     """产物快照使用规范化参数，失败转换为回测数据错误。"""
 

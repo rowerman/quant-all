@@ -63,13 +63,27 @@ class MlRankV2Provider(MlRankProvider):
             "step": 1,
             "description": "4 周平滑后等权持有的股票数。",
         },
+        {
+            "name": "smoothing_weeks",
+            "label": "平滑周数",
+            "type": "integer",
+            "default": SMOOTHING_WEEKS,
+            "min": 1,
+            "step": 1,
+            "description": "使用 1 表示原始分数，使用 4 表示当前选中的四周 rank 平滑。",
+        },
     )
 
     @staticmethod
     def validate_params(params: dict) -> dict:
-        """校验模型、Top-N 和可选调仓日。"""
+        """校验模型、Top-N、平滑周数和可选调仓日。"""
 
-        unknown = set(params) - {"model_id", "top_n", "rebalance_dates"}
+        unknown = set(params) - {
+            "model_id",
+            "top_n",
+            "smoothing_weeks",
+            "rebalance_dates",
+        }
         if unknown:
             raise SpecError(f"ml_rank.params 包含未知字段：{sorted(unknown)}")
         model_id = params.get("model_id")
@@ -78,7 +92,14 @@ class MlRankV2Provider(MlRankProvider):
         top_n = params.get("top_n", 30)
         if type(top_n) is not int or top_n <= 0:
             raise SpecError("ml_rank.params.top_n 必须是正整数")
-        result = {"model_id": model_id.strip(), "top_n": top_n}
+        smoothing_weeks = params.get("smoothing_weeks", SMOOTHING_WEEKS)
+        if type(smoothing_weeks) is not int or smoothing_weeks <= 0:
+            raise SpecError("ml_rank.params.smoothing_weeks 必须是正整数")
+        result = {
+            "model_id": model_id.strip(),
+            "top_n": top_n,
+            "smoothing_weeks": smoothing_weeks,
+        }
         dates = _rebalance_dates(params.get("rebalance_dates"))
         if dates is not None:
             result["rebalance_dates"] = list(dates)
@@ -139,7 +160,7 @@ class MlRankV2Provider(MlRankProvider):
         score = smooth_rank_scores(
             wide,
             wide.notna(),
-            window=SMOOTHING_WEEKS,
+            window=settings["smoothing_weeks"],
             min_periods=1,
         )
         for day in signal_dates:

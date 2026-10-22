@@ -40,6 +40,15 @@ PARAM_SCHEMAS = {
             "step": 1,
             "description": "4 周平滑后等权持有的股票数。",
         },
+        {
+            "name": "smoothing_weeks",
+            "label": "平滑周数",
+            "type": "integer",
+            "default": 4,
+            "min": 1,
+            "step": 1,
+            "description": "使用 1 表示原始分数，使用 4 表示当前选中的四周 rank 平滑。",
+        },
     ),
     ("momentum_timing", "1"): (
         {

@@ -4,14 +4,23 @@ import numpy as np
 import pandas as pd
 
 from backtest.data import MarketData
-from backtest.providers import get_provider
-from backtest.specs import ProviderSpec
+from backtest.providers import get_provider, list_providers
+from backtest.signals import eligible_mask, build_target_weights
+from backtest.specs import (
+    PortfolioSpec,
+    ProviderSpec,
+    RebalanceSpec,
+    SignalSpec,
+)
 from backtest.strategies._factor_rank import (
     ensure_registered,
     rank_composite,
     weekly_last_dates,
 )
 from backtest.strategies._factor_rank_v2 import ensure_registered as ensure_v2_registered
+from backtest.strategies._factor_linear import (
+    ensure_registered as ensure_linear_registered,
+)
 from backtest.trading_rules import board_from_stock_code
 
 
@@ -143,3 +152,42 @@ def test_v2_provider_uses_explicit_rebalance_dates():
     assert weights.loc["2024-01-03"].notna().all()
     assert weights.loc["2024-01-04"].notna().all()
     assert weights.loc["2024-01-05"].isna().all()
+
+
+def test_factor_linear_matches_direct_baseline_on_explicit_dates():
+    """隐藏线性 provider 与现有直接因子策略在相同日期选股一致。"""
+
+    ensure_linear_registered()
+    data = _data()
+    day = pd.Timestamp("2024-01-03")
+    params = {
+        "top_n": 2,
+        "factor_names": ["MOM_20", "VOL_20"],
+        "factor_weights": [1.0, -1.0],
+        "standardize": True,
+        "winsorize": False,
+        "rebalance_dates": [str(day.date())],
+    }
+    provider = get_provider(ProviderSpec("factor_linear", "1", params))
+    actual = provider.build(data, eligible_mask(data), params)
+    mask = pd.Series(False, index=data.index)
+    mask.loc[day] = True
+    expected, _ = build_target_weights(
+        data,
+        SignalSpec(
+            factors=("MOM_20", "VOL_20"),
+            weights=(1.0, -1.0),
+            standardize=True,
+            winsorize=False,
+        ),
+        PortfolioSpec(selection="top_n", top_n=2, weighting="equal"),
+        RebalanceSpec(frequency="weekly"),
+        rebalance_days=mask,
+    )
+    pd.testing.assert_series_equal(
+        actual.loc[day],
+        expected.loc[day],
+        check_names=False,
+    )
+    assert actual.drop(index=day).isna().all().all()
+    assert "factor_linear" not in {item["name"] for item in list_providers()}

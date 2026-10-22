@@ -970,6 +970,7 @@ def run_backtest(
             effective_targets, execution_industries, strategy.risk.max_industry_weight
         )
         risk_stats = {**concentration_stats, **turnover_stats, **industry_stats}
+        sell_tax = None if portfolio is None else portfolio.dividend_tax()
         candidate = build_order_plan(
             data, effective_targets, strategy.execution, probe_orders, budget, cash_open, state_shares,
             strategy.costs, carry,
@@ -977,6 +978,7 @@ def run_backtest(
             warmup_rows=warmup_rows,
             liquidations=writeoffs,
             opening_shares=state_open_shares,
+            sell_tax=sell_tax,
         )
         if (
             previous_shares is not None

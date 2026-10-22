@@ -502,6 +502,7 @@ def build_order_plan(
     liquidations: pd.DataFrame | None = None,
     seed_shares: pd.Series | None = None,
     opening_shares: pd.DataFrame | None = None,
+    sell_tax: pd.Series | None = None,
 ) -> OrderPlan:
     """把目标权重、探针成交明细与执行预算变成最终订单计划。
 
@@ -521,6 +522,7 @@ def build_order_plan(
         liquidations: 外部给定的退市核销候选；None 表示按面板现算。
         seed_shares: 分块回测的播种持股，写在预热行上；None 表示不需要播种。
         opening_shares: 执行日开盘前持股，已经包含当日公司行动；None 时退回旧平移口径。
+        sell_tax: 上一遍账本按日结算的 FIFO 红利税，用于缩减同日可用买入资金。
     """
     costs = costs or CostSpec()
     side, _ = probe_matrices(probe, targets.index, targets.columns)
@@ -538,6 +540,7 @@ def build_order_plan(
         impact_volatility=data.impact_volatility,
         max_participation_rate=execution.max_participation_rate,
         opening_shares=opening_shares,
+        sell_tax=sell_tax,
     )
     prior_holdings = (
         opening_shares.reindex(index=targets.index, columns=targets.columns).fillna(0.0)

@@ -19,6 +19,9 @@
 :func:`cash_carry` 变成下一交易日的补回事件。已有补回再次缺现金只保留
 ``cash_shrunk_shares`` 并延续原事件，不重复创建补回事件。普通申报单位取整造成的股数差
 不会进入现金补回队列。
+
+成交额参与率先限制每格的目标变化；卖单缩量后，再按实际可卖的净所得约束同日买单。
+这样容量受限的卖单不会在分配阶段虚增现金预算，也不会等到账本执行阶段才被静默截断。
 """
 
 from __future__ import annotations
@@ -178,6 +181,7 @@ def allocate_shares(
     impact_volatility: pd.DataFrame | None = None,
     max_participation_rate: float | None = None,
     opening_shares: pd.DataFrame | None = None,
+    sell_tax: pd.Series | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, dict]:
     """按预算把目标权重换成目标股数，返回 ``(股数矩阵, 逐格明细, 方向矩阵, 统计)``。
 
@@ -194,6 +198,8 @@ def allocate_shares(
         amount_cny: 执行日未复权成交额；None 表示不启用成交额参与率。
         impact_volatility: 执行日前 20 日复权收益波动率；None 表示冲击为 0。
         max_participation_rate: 单票成交额参与率；None 表示关闭。
+        sell_tax: 上一遍账本按日结算的 FIFO 红利税；用于从同日卖出净所得中预留。
+        opening_shares: 执行日开盘前持股，已经包含当日公司行动。
     """
     if not 0.0 <= float(cash_buffer) < 1.0:
         raise ExecutionError(f"现金缓冲必须在 [0, 1) 之间：{cash_buffer}")
@@ -281,9 +287,6 @@ def allocate_shares(
                 and abs(cell_shares[position] - held[position]) < 0.5
                 and abs(ideal[position] - held[position]) >= 0.5
             )
-        # 现金约束：本行买单总额不能超过「开盘现金 + 本行卖出所得」，超了就等比缩小买单。
-        # 口径用执行日开盘时刻的真实持股（上一交易日收盘），被规则拦下的持仓卖不掉，
-        # 它的市值换不到现金，只能少买。
         tradable_price = np.where(tradable, cell_price, 0.0)
         cell_codes = np.array(columns[cells], dtype=object)
         cell_boards = np.array([rules[cell].board for cell in cells], dtype=object)
@@ -296,9 +299,80 @@ def allocate_shares(
         )
         previous_held = previous[row, cells]
         previous_value = previous_held * tradable_price
-        target_value = cell_shares * tradable_price
-        buy_delta = np.maximum(cell_shares - previous_held, 0.0)
-        sell_delta = np.maximum(previous_held - cell_shares, 0.0)
+        intended = cell_shares.copy()
+
+        # 先限制单票持仓变化，再用实际可卖的股数计算同日买入预算。不能先按未受限的
+        # 卖出所得算预算，否则账本会在成交额限制后因现金不足截断买单。
+        capacity_limit = np.full(len(cells), np.nan, dtype="float64")
+        capacity_unavailable = np.zeros(len(cells), dtype=bool)
+        if max_participation_rate is not None and amounts is not None:
+            raw_amount = amounts[row, cells]
+            valid_amount = np.isfinite(raw_amount) & (raw_amount > 0)
+            capacity_limit = np.where(
+                valid_amount,
+                raw_amount * float(max_participation_rate),
+                0.0,
+            )
+            active_delta = np.abs(intended - previous_held) >= 0.5
+            pending_build = positive & (previous_held <= 0.5) & (intended == 0)
+            capacity_unavailable = ~valid_amount & (active_delta | pending_build)
+            max_shares = np.floor(
+                np.divide(
+                    capacity_limit,
+                    np.maximum(tradable_price, 1e-12),
+                    out=np.zeros_like(capacity_limit),
+                    where=tradable_price > 0,
+                )
+            )
+            capped_targets = np.array(
+                [
+                    rules[cells[position]].cap_target(
+                        previous_held[position], intended[position], max_shares[position]
+                    )
+                    if not capacity_unavailable[position]
+                    else previous_held[position]
+                    for position in range(len(cells))
+                ],
+                dtype="float64",
+            )
+            cell_shares = np.where(tradable, capped_targets, 0.0)
+            capped_delta = cell_shares - previous_held
+            capacity_shortfall = np.where(
+                active_delta,
+                np.maximum(np.abs(intended - previous_held) - np.abs(capped_delta), 0.0),
+                0.0,
+            )
+            blocked_min_order = (
+                positive
+                & (previous_held <= 0.5)
+                & (intended == 0)
+                & (max_shares < np.array([rules[cell].min_buy_shares for cell in cells]))
+                & ~capacity_unavailable
+            )
+            capacity_shortfall[blocked_min_order] = np.array(
+                [rules[cell].min_buy_shares for cell in cells], dtype="float64"
+            )[blocked_min_order]
+            capacity_limited = (
+                (active_delta & (capacity_shortfall >= 0.5))
+                | blocked_min_order
+            )
+            capacity_limited &= ~capacity_unavailable
+            minimum_values = np.array(
+                [rules[cell].min_buy_shares * tradable_price[position]
+                 for position, cell in enumerate(cells)],
+                dtype="float64",
+            )
+            capacity_requested_value = np.where(
+                pending_build,
+                minimum_values,
+                np.abs(intended - previous_held) * tradable_price,
+            )
+            capacity_executed_value = np.abs(capped_delta) * tradable_price
+        else:
+            capacity_shortfall = np.zeros(len(cells), dtype="float64")
+            capacity_limited = np.zeros(len(cells), dtype=bool)
+            capacity_requested_value = np.zeros(len(cells), dtype="float64")
+            capacity_executed_value = np.zeros(len(cells), dtype="float64")
 
         def charges_for(delta: np.ndarray, sell: bool = False):
             active = delta > 0.0
@@ -331,15 +405,23 @@ def allocate_shares(
             charge = charges_for(delta, sell=True)
             return np.where(delta > 0.0, charge.fill_amount - charge.fees, 0.0)
 
+        # 现金约束用容量封顶后的卖出所得；被规则拦下的持仓本来就不在 targets
+        # 的卖出格子里，因此仍只能少买。
+        buy_delta = np.maximum(cell_shares - previous_held, 0.0)
+        sell_delta = np.maximum(previous_held - cell_shares, 0.0)
         buy_need = float(buy_cost(buy_delta).sum())
         sell_funds = float(sell_proceeds(sell_delta).sum())
-        funds = cash_open + sell_funds
-        # 缩小前的目标股数，用来判断哪些买单被现金限制、差多少股
-        intended = cell_shares.copy()
+        tax_reserve = 0.0
+        if sell_tax is not None and sell_funds > 0:
+            tax_reserve = max(float(sell_tax.reindex(index).fillna(0.0).iloc[row]), 0.0)
+            tax_reserve = min(tax_reserve, sell_funds)
+        funds = max(cash_open + sell_funds - tax_reserve, 0.0)
+        cash_shortfall = np.zeros(len(cells), dtype="float64")
         buying = np.zeros(len(cells), dtype=bool)
         if buy_need > funds + 1e-9:
+            before_cash = cell_shares.copy()
             scale = max(funds, 0.0) / buy_need
-            buying = intended > previous_held + 0.5
+            buying = before_cash > previous_held + 0.5
             for position in np.flatnonzero(buying):
                 scaled_target = previous_held[position] + buy_delta[position] * scale
                 cell_shares[position] = rules[cells[position]].normalize_target(
@@ -362,16 +444,27 @@ def allocate_shares(
                 marginal_delta = np.zeros(len(cells), dtype="float64")
                 marginal_delta[candidates] = cell_shares[candidates] - previous_targets
                 marginal = buy_cost(marginal_delta)
-                selected = candidates[int(np.argmax(marginal))]
+                selected = candidates[int(np.argmax(marginal[candidates]))]
                 cell_shares[selected] = rules[cells[selected]].previous_buy_target(
                     previous_held[selected], cell_shares[selected]
                 )
-            target_value = cell_shares * tradable_price
-        bumpable = positive & (previous_held <= 0.5) & (cell_shares == 0)
+            cash_shortfall = np.where(
+                buying,
+                np.maximum(before_cash - cell_shares, 0.0),
+                0.0,
+            )
+        target_value = cell_shares * tradable_price
+        bumpable = (
+            positive
+            & (previous_held <= 0.5)
+            & (cell_shares == 0)
+            & ~capacity_limited
+            & ~capacity_unavailable
+        )
         used = float(target_value.sum())
         # 补最小申报量的余量同样受资金约束：不超过「开盘现金 + 本行持仓市值」，也不超过可用预算。
-        capacity = cash_open + float(previous_value.sum())
-        leftover = max(min(usable, capacity) - used, 0.0)
+        portfolio_capacity = cash_open + float(previous_value.sum())
+        leftover = max(min(usable, portfolio_capacity) - used, 0.0)
         cash_left = max(
             funds - float(buy_cost(np.maximum(cell_shares - previous_held, 0.0)).sum()),
             0.0,
@@ -399,66 +492,9 @@ def allocate_shares(
                 leftover -= minimum_value
                 cash_left -= minimum_cash
                 bump[cell] = True
-        # 被现金缩小的买单：补最小申报量之后仍未达到缩小前的目标股数。
-        shortfall = np.where(buying, intended - cell_shares, 0.0)
-        shrunk = buying & (shortfall >= 0.5)
+        # 只把真正由现金缩放造成的股数差计入补回；容量缺口单独保留。
+        shrunk = cash_shortfall >= 0.5
         cash_limited = shrunk & ~carried[row, cells]
-
-        # 成交额参与率限制订单的持仓变化，而不是目标持仓总额。这样已有仓位的
-        # 部分卖出和补回买入都能在下一交易日继续推进；退市强平由规则层显式豁免。
-        capacity_limit = np.full(len(cells), np.nan, dtype="float64")
-        capacity_unavailable = np.zeros(len(cells), dtype=bool)
-        if max_participation_rate is not None and amounts is not None:
-            raw_amount = amounts[row, cells]
-            valid_amount = np.isfinite(raw_amount) & (raw_amount > 0)
-            capacity_limit = np.where(
-                valid_amount,
-                raw_amount * float(max_participation_rate),
-                0.0,
-            )
-            capacity_unavailable = ~valid_amount
-            before_capacity = cell_shares.copy()
-            delta = before_capacity - previous_held
-            active_delta = np.abs(delta) >= 0.5
-            capacity_unavailable &= active_delta
-            max_shares = np.floor(
-                np.divide(
-                    capacity_limit,
-                    np.maximum(tradable_price, 1e-12),
-                    out=np.zeros_like(capacity_limit),
-                    where=tradable_price > 0,
-                )
-            )
-            capped_targets = np.array(
-                [
-                    rules[cells[position]].cap_target(
-                        previous_held[position], before_capacity[position], max_shares[position]
-                    )
-                    if not capacity_unavailable[position]
-                    else previous_held[position]
-                    for position in range(len(cells))
-                ],
-                dtype="float64",
-            )
-            cell_shares = np.where(tradable, capped_targets, 0.0)
-            capped_delta = cell_shares - previous_held
-            capacity_shortfall = np.where(
-                active_delta,
-                np.maximum(np.abs(delta) - np.abs(capped_delta), 0.0),
-                0.0,
-            )
-            capacity_limited = (
-                active_delta
-                & (capacity_shortfall >= 0.5)
-            )
-            capacity_limited &= ~capacity_unavailable
-            capacity_requested_value = np.abs(delta) * tradable_price
-            capacity_executed_value = np.abs(capped_delta) * tradable_price
-        else:
-            capacity_shortfall = np.zeros(len(cells), dtype="float64")
-            capacity_limited = np.zeros(len(cells), dtype=bool)
-            capacity_requested_value = np.zeros(len(cells), dtype="float64")
-            capacity_executed_value = np.zeros(len(cells), dtype="float64")
 
         shares[row, cells[tradable]] = cell_shares[tradable]
         order_shares = cell_shares - held
@@ -492,7 +528,7 @@ def allocate_shares(
         stats["cash_shrunk_cells"] += int(shrunk.sum())
         stats["cash_limited_cells"] += int(cash_limited.sum())
         stats["cash_limited_value"] += float(
-            np.sum(np.where(cash_limited, shortfall * tradable_price, 0.0))
+            np.sum(np.where(cash_limited, cash_shortfall * tradable_price, 0.0))
         )
         stats["liquidity_limited_cells"] += int(capacity_limited.sum())
         stats["liquidity_limited_value"] += float(
@@ -531,7 +567,7 @@ def allocate_shares(
                     "order_valid": bool(order_valid[position]),
                     "status": status,
                     "cash_limited": bool(cash_limited[position]),
-                    "cash_shrunk_shares": float(shortfall[position]),
+                    "cash_shrunk_shares": float(cash_shortfall[position]),
                     "capacity_limit_value": float(capacity_limit[position]),
                     "capacity_requested_value": float(capacity_requested_value[position]),
                     "capacity_executed_value": float(capacity_executed_value[position]),
