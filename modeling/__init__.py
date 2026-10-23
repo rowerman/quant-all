@@ -1,6 +1,6 @@
 """模型无关的训练、预测和产物接口。"""
 
-from alpha.modeling.backends import lightgbm, linear, sklearn_hist_gbdt
+from alpha.modeling.backends import discover_backends
 from alpha.modeling.contracts import (
     FoldFitResult,
     ModelArtifact,
@@ -23,6 +23,7 @@ __all__ = [
     "TrainingSpec",
     "available_backends",
     "backend_name_for_manifest",
+    "discover_backends",
     "fit_model",
     "get_backend",
     "load_folds",

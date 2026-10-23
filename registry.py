@@ -11,8 +11,9 @@ from alpha.config import MODEL_DATA_DIR
 from alpha.errors import AlphaArtifactError, AlphaRegistryError
 from alpha.logging_conf import get_logger
 from alpha.predict import model_artifact_snapshot
+from alpha.registry_runs import DOWNSTREAM_KINDS, scan_downstream_runs
 
-REGISTRY_SCHEMA_VERSION = "alpha_model_registry_v2"
+REGISTRY_SCHEMA_VERSION = "alpha_model_registry_v3"
 REGISTRY_FILENAME = "index.json"
 
 logger = get_logger("alpha.registry")
@@ -171,6 +172,7 @@ def _model_record(
         "model_dir": relative_folder,
         "storage": storage,
         "active": storage == "active",
+        "status_scope": "training",
         "model_type": model_type,
         "member_type": manifest.get("member_type"),
         "status": status,
@@ -278,17 +280,30 @@ def rebuild_registry(root: Path | None = None) -> dict:
     """扫描全部模型，完整校验后原子重建模型索引。"""
 
     output_root = _registry_root(root)
+    discovered = _discover_models(output_root)
+    downstream, run_link_count = scan_downstream_runs(
+        output_root,
+        {
+            str(manifest["model_id"]): folder
+            for folder, manifest in discovered
+        },
+    )
     records = []
-    for folder, manifest in _discover_models(output_root):
+    for folder, manifest in discovered:
         if (output_root / "archive" / "models") in folder.parents:
             storage = "archived"
         elif (output_root / "models") in folder.parents:
             storage = "active"
         else:
             storage = "legacy"
-        records.append(
-            _model_record(folder, manifest, output_root, storage=storage)
+        record = _model_record(
+            folder,
+            manifest,
+            output_root,
+            storage=storage,
         )
+        record["downstream"] = downstream[str(record["model_id"])]
+        records.append(record)
     records.sort(
         key=lambda item: (str(item.get("created_at") or ""), item["model_id"])
     )
@@ -297,6 +312,7 @@ def rebuild_registry(root: Path | None = None) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "model_count": len(records),
         "active_model_count": sum(1 for item in records if item["active"]),
+        "run_link_count": int(run_link_count),
         "models": records,
     }
     try:
@@ -333,11 +349,13 @@ def load_registry(root: Path | None = None) -> dict:
             "model_dir",
             "model_type",
             "status",
+            "status_scope",
             "features",
             "window",
             "parameters",
             "metrics",
             "artifacts",
+            "downstream",
         }
         missing = sorted(required - set(item))
         if missing:
@@ -355,10 +373,47 @@ def load_registry(root: Path | None = None) -> dict:
             raise AlphaRegistryError(f"模型索引目录与 ID 不一致：{model_id}")
         if model_id in identifiers:
             raise AlphaRegistryError(f"模型索引存在重复 ID：{model_id}")
+        if item.get("status_scope") != "training":
+            raise AlphaRegistryError(
+                f"模型 {model_id} 的 status_scope 非法"
+            )
+        downstream = item.get("downstream")
+        if not isinstance(downstream, dict) or set(downstream) != set(
+            DOWNSTREAM_KINDS
+        ):
+            raise AlphaRegistryError(
+                f"模型 {model_id} 的 downstream 结构非法"
+            )
+        for name in DOWNSTREAM_KINDS:
+            links = downstream.get(name)
+            if not isinstance(links, list):
+                raise AlphaRegistryError(
+                    f"模型 {model_id} 的 downstream.{name} 必须是数组"
+                )
+            for link in links:
+                if not isinstance(link, dict):
+                    raise AlphaRegistryError(
+                        f"模型 {model_id} 的 downstream.{name} 记录非法"
+                    )
+                digest = link.get("manifest_sha256")
+                if not isinstance(digest, str) or len(digest) != 64:
+                    raise AlphaRegistryError(
+                        f"模型 {model_id} 的运行 manifest_sha256 非法"
+                    )
         identifiers.add(model_id)
         artifact_sha256 = (item.get("artifacts") or {}).get("artifact_sha256")
         if not isinstance(artifact_sha256, str) or len(artifact_sha256) != 64:
             raise AlphaRegistryError(f"模型 {model_id} 的 artifact_sha256 非法")
+    expected_links = sum(
+        len(links)
+        for item in models
+        for links in item["downstream"].values()
+    )
+    if (
+        type(payload.get("run_link_count")) is not int
+        or payload["run_link_count"] != expected_links
+    ):
+        raise AlphaRegistryError("模型索引 run_link_count 与运行链接数不一致")
     return payload
 
 

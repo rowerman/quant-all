@@ -43,13 +43,47 @@ from alpha.preprocess import transform
 from alpha.split import Fold, fold_masks
 
 
-def _resume(folder: Path, model_id: str) -> ModelArtifact | None:
+def _validate_model_files(folder: Path, manifest: dict) -> None:
+    """校验已训练模型的折模型文件哈希。"""
+
+    records = manifest.get("fold_models")
+    if not isinstance(records, list) or not records:
+        raise AlphaModelError("已有模型 manifest 缺少折模型文件")
+    for record in records:
+        relative = str(record.get("model_file") or "")
+        expected = str(record.get("model_sha256") or "")
+        if not relative or not expected:
+            raise AlphaModelError("已有模型 manifest 的模型文件信息不完整")
+        path = folder / relative
+        if not path.is_file():
+            raise AlphaModelError(f"已有模型文件缺失：{path}")
+        if file_sha256(path) != expected:
+            raise AlphaModelError(f"已有模型文件哈希不一致：{path}")
+
+
+def _resume(
+    folder: Path,
+    model_id: str,
+    root: Path,
+) -> ModelArtifact | None:
     manifest_path = folder / "manifest.json"
     metrics_path = folder / "metrics.json"
     if not manifest_path.is_file() or not metrics_path.is_file():
         return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    if (
+        manifest.get("schema_version") != MODEL_SCHEMA_VERSION_V2
+        or manifest.get("model_id") != model_id
+        or metrics.get("model_id") != model_id
+    ):
+        raise AlphaModelError("已有模型 manifest 或 metrics 身份不一致")
+    _validate_model_files(folder, manifest)
+    from alpha.predict import load_predictions
+
+    _, _, predictions = load_predictions(model_id, root=root)
+    if len(predictions) != int(manifest.get("prediction_rows", -1)):
+        raise AlphaModelError("已有模型预测行数与 manifest 不一致")
     return ModelArtifact(
         model_id=model_id,
         path=folder,
@@ -96,7 +130,7 @@ def fit_model_loaded(
     root = Path(output_root or MODEL_DATA_DIR)
     folder = model_dir(model_id, root, include_archived=False)
     if not force:
-        resumed = _resume(folder, model_id)
+        resumed = _resume(folder, model_id, root)
         if resumed is not None:
             return resumed
 
