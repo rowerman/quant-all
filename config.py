@@ -19,6 +19,7 @@ MODELS_DIR = MODEL_DATA_DIR / "models"
 ARCHIVE_MODELS_DIR = MODEL_DATA_DIR / "archive" / "models"
 RUNS_DIR = MODEL_DATA_DIR / "runs"
 ACCEPTANCE_RUNS_DIR = RUNS_DIR / "acceptance"
+EVALUATION_RUNS_DIR = RUNS_DIR / "evaluation"
 FINAL_HOLDOUT_RUNS_DIR = RUNS_DIR / "final_holdout"
 LOG_DIR = PROJECT_ROOT / "logs" / "alpha"
 

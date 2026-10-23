@@ -400,6 +400,7 @@ def evaluate_monitor_frames(
     start: str | None = None,
     end: str | None = None,
     allow_holdout: bool = False,
+    holdout_window: object | None = None,
 ) -> MonitorResult:
     """计算一组已对齐的模型、账本和暴露监控结果。"""
 
@@ -415,6 +416,7 @@ def evaluate_monitor_frames(
         start=start,
         end=end,
         allow_holdout=allow_holdout,
+        holdout_window=holdout_window,
     )
     dates = pd.DatetimeIndex(score.index)
     ledger_frame = _ledger_timeseries(ledger, dates, settings)

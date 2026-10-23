@@ -12,7 +12,6 @@ from alpha.evaluate import evaluate_score_frame, p3_decision_gate
 from alpha.exposure import PortfolioExposureResult, compute_portfolio_exposure
 from alpha.portfolio import smooth_rank_scores
 
-HOLDOUT_YEARS = (2024, 2025, 2026)
 MODEL_METRIC_KEYS = (
     "rank_ic_mean",
     "rank_ic_std",
@@ -126,6 +125,7 @@ def compute_holdout_exposure(
     *,
     top_n: int,
     smoothing_weeks: int,
+    window: object | None = None,
 ) -> PortfolioExposureResult:
     """计算主候选 Top-N 目标组合的留出期风格和行业暴露。"""
 
@@ -148,6 +148,7 @@ def compute_holdout_exposure(
         data,
         top_n=top_n,
         allow_holdout=True,
+        holdout_window=window,
     )
 
 
@@ -185,6 +186,7 @@ def evaluate_final_holdout_gate(
     *,
     selected_name: str,
     reference_name: str,
+    expected_years: tuple[int, ...] | None = None,
 ) -> dict:
     """按预注册 P3 门判断四周平滑主候选。"""
 
@@ -206,7 +208,12 @@ def evaluate_final_holdout_gate(
         yearly["candidate"].eq(selected_name)
     ]
     yearly_rows = []
-    for year in HOLDOUT_YEARS:
+    years = (
+        tuple(expected_years)
+        if expected_years is not None
+        else tuple(sorted({int(item) for item in yearly["year"]}))
+    )
+    for year in years:
         model_row = model_yearly.get(year)
         ledger_row = ledger_yearly.loc[ledger_yearly["year"].eq(year)]
         yearly_rows.append(
@@ -224,7 +231,7 @@ def evaluate_final_holdout_gate(
         selected,
         ridge,
         yearly_rows,
-        expected_years=HOLDOUT_YEARS,
+        expected_years=years,
         required_improvements=2,
         turnover_multiple_limit=2.0,
     )
@@ -259,7 +266,6 @@ def model_metrics_for_registry(model_metrics: Mapping[str, dict]) -> dict:
 
 
 __all__ = [
-    "HOLDOUT_YEARS",
     "compute_holdout_exposure",
     "evaluate_final_holdout_gate",
     "evaluate_holdout_models",

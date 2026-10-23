@@ -52,6 +52,7 @@ def prepare_signal_frames(
     start: str | None,
     end: str | None,
     allow_holdout: bool = False,
+    holdout_window: object | None = None,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -78,6 +79,7 @@ def prepare_signal_frames(
         str(start_stamp.date()),
         str(end_stamp.date()),
         allow_holdout=allow_holdout,
+        holdout_window=holdout_window,
     )
     dates = dates[(dates >= start_stamp) & (dates <= end_stamp)]
     if len(dates) < 2:
@@ -189,6 +191,7 @@ def score_timeseries(
     start: str | None,
     end: str | None,
     allow_holdout: bool = False,
+    holdout_window: object | None = None,
 ) -> pd.DataFrame:
     """计算分数、缺失、滚动 RankIC 和行业对齐辅助数据。"""
 
@@ -199,6 +202,7 @@ def score_timeseries(
         start=start,
         end=end,
         allow_holdout=allow_holdout,
+        holdout_window=holdout_window,
     )
     deployed = smooth_rank_scores(
         raw,

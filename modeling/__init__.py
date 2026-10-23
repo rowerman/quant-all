@@ -1,6 +1,6 @@
 """模型无关的训练、预测和产物接口。"""
 
-from alpha.modeling.backends import lightgbm, linear
+from alpha.modeling.backends import lightgbm, linear, sklearn_hist_gbdt
 from alpha.modeling.contracts import (
     FoldFitResult,
     ModelArtifact,

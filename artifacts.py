@@ -124,6 +124,7 @@ def validate_dev_range(
     end: str,
     *,
     allow_holdout: bool = False,
+    holdout_window: object | None = None,
 ) -> None:
     """校验日期区间；默认拒绝跨入最终测试集。"""
 
@@ -135,13 +136,20 @@ def validate_dev_range(
     if start_stamp > end_stamp:
         raise AlphaConfigError(f"起始日 {start} 晚于截止日 {end}")
     if allow_holdout:
-        if start_stamp < pd.Timestamp(DEFAULT_CONTRACT.holdout_start):
+        from alpha.holdout import LEGACY_HOLDOUT_WINDOW_ID, get_holdout_window
+
+        window = holdout_window or get_holdout_window(LEGACY_HOLDOUT_WINDOW_ID)
+        window_start = pd.Timestamp(window.start)
+        window_end = pd.Timestamp(window.end)
+        if start_stamp < window_start:
             raise AlphaConfigError(
-                f"留出集起始日 {start} 早于 {DEFAULT_CONTRACT.holdout_start}"
+                f"留出集起始日 {start} 早于窗口 {window.window_id} 的 "
+                f"{window.start}"
             )
-        if end_stamp > pd.Timestamp(DEFAULT_CONTRACT.holdout_end):
+        if end_stamp > window_end:
             raise AlphaConfigError(
-                f"留出集截止日 {end} 超过 {DEFAULT_CONTRACT.holdout_end}"
+                f"留出集截止日 {end} 超过窗口 {window.window_id} 的 "
+                f"{window.end}"
             )
         return
     if start_stamp < pd.Timestamp(DEFAULT_CONTRACT.dev_start):

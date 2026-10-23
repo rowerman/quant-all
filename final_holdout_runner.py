@@ -5,6 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pandas as pd
+
 from alpha.artifacts import file_sha256
 from alpha.config import MODEL_DATA_DIR
 from alpha.errors import AlphaFinalHoldoutError
@@ -40,6 +42,7 @@ from alpha.final_holdout_report import (
     incomplete_report,
     result_files,
 )
+from alpha.holdout import holdout_run_ids
 from alpha.lifecycle import evaluate_lifecycle
 from alpha.lifecycle_policy import LifecyclePolicy
 from alpha.monitor import MonitorPolicy
@@ -83,6 +86,21 @@ def run_final_holdout(
     reference_name = plan.reference
     control_name = plan.controls[0].name
     output_root = Path(root or FINAL_HOLDOUT_ROOT)
+    window = settings.window
+    if window.sealed:
+        raise AlphaFinalHoldoutError(
+            f"留出窗口 {window.window_id} 已封存，只允许读取既有结果"
+        )
+    recorded_runs = holdout_run_ids(window, output_root.parent)
+    if recorded_runs and resume_from not in recorded_runs:
+        raise AlphaFinalHoldoutError(
+            f"留出窗口 {window.window_id} 已被运行消耗："
+            f"{', '.join(recorded_runs)}"
+        )
+    if resume_from and resume_from not in recorded_runs:
+        raise AlphaFinalHoldoutError(
+            f"续跑 ID 不属于窗口 {window.window_id}：{resume_from}"
+        )
     dataset = build_final_holdout_dataset(settings)
     data, dataset_manifest = load_holdout_dataset(dataset.dataset_id)
     dates = complete_signal_dates(data, settings)
@@ -104,6 +122,7 @@ def run_final_holdout(
             "manifest_sha256": file_sha256(dataset.path.parent / "manifest.json"),
             "data_sha256": file_sha256(dataset.path),
         },
+        "window": window.to_dict(),
         "prediction_metadata": prediction_metadata,
     }
     current_code_hash = code_sha256()
@@ -210,6 +229,7 @@ def run_final_holdout(
             dates,
             top_n=settings.top_n,
             smoothing_weeks=selected_weeks,
+            window=window,
         )
         exposure_folder = target / "exposure"
         atomic_write_frame(
@@ -244,6 +264,7 @@ def run_final_holdout(
             start=str(dates.min().date()),
             end=str(dates.max().date()),
             allow_holdout=True,
+            holdout_window=window,
         )
         monitor_folder = target / "monitor"
         atomic_write_frame(
@@ -261,6 +282,7 @@ def run_final_holdout(
             start=str(dates.min().date()),
             end=str(dates.max().date()),
             allow_holdout=True,
+            holdout_window=window,
             include_retrain_schedule=False,
         )
         lifecycle_folder = target / "lifecycle"
@@ -304,6 +326,12 @@ def run_final_holdout(
             yearly,
             selected_name=selected_name,
             reference_name=reference_name,
+            expected_years=tuple(
+                range(
+                    pd.Timestamp(settings.start).year,
+                    pd.Timestamp(settings.end).year + 1,
+                )
+            ),
         )
         atomic_write_json(target / "gate.json", gate)
         comparison = comparison_frame(candidate_results)
@@ -318,6 +346,7 @@ def run_final_holdout(
             else "fail_final_holdout"
         )
         scope = {
+            "window_id": window.window_id,
             "data_start": settings.start,
             "data_end": settings.end,
             "signal_start": str(dates.min().date()),

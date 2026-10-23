@@ -300,6 +300,7 @@ def evaluate_lifecycle(
     start: str | None = None,
     end: str | None = None,
     allow_holdout: bool = False,
+    holdout_window: object | None = None,
     include_retrain_schedule: bool = True,
 ) -> LifecycleResult:
     """计算因果生命周期状态、动作和年度重训日程。"""
@@ -328,6 +329,7 @@ def evaluate_lifecycle(
         start_text,
         end_text,
         allow_holdout=allow_holdout,
+        holdout_window=holdout_window,
     )
     work = work.loc[
         (work["trade_date"] >= pd.Timestamp(start_text))

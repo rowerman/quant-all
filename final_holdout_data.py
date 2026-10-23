@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -11,50 +11,43 @@ import pandas as pd
 
 import factors
 from alpha.artifacts import prediction_sha256
-from alpha.config import DEFAULT_CONTRACT, MODEL_DATA_DIR, PROJECT_ROOT
+from alpha.calendar import load_calendar
+from alpha.config import DEFAULT_CONTRACT, MODEL_DATA_DIR
 from alpha.dataset import DatasetArtifact, DatasetSpec, build_dataset, load_dataset
 from alpha.evaluation_plan import EvaluationPlan
 from alpha.errors import AlphaFinalHoldoutError
+from alpha.holdout import (
+    DEFAULT_HOLDOUT_WINDOWS_PATH,
+    FUTURE_HOLDOUT_WINDOW_ID,
+    HoldoutWindow,
+    get_holdout_window,
+)
 from alpha.modeling.forecast import predict_model_rows
 from alpha.predict import load_model_manifest
 from alpha.preprocess import PreprocessConfig, transform
 
 FINAL_HOLDOUT_SCHEMA_VERSION = "alpha_final_holdout_v1"
-FINAL_HOLDOUT_DATASET_NAME = "weekly_final_holdout_2024_2026_v1"
-DEFAULT_HOLDOUT_PLAN = (
-    PROJECT_ROOT / "configs" / "alpha" / "final_holdout_2024_2026.json"
-)
 PREDICTION_NAMES = ("lightgbm", "ridge", "b4")
 
 
 @dataclass(frozen=True)
 class FinalHoldoutSpec:
-    """一次性最终留出验证的固定口径。"""
+    """一次性最终留出验证的窗口和运行口径。"""
 
-    start: str = DEFAULT_CONTRACT.holdout_start
-    end: str = DEFAULT_CONTRACT.holdout_end
-    plan_path: str = str(DEFAULT_HOLDOUT_PLAN)
+    window_id: str = FUTURE_HOLDOUT_WINDOW_ID
+    window_registry_path: str = str(DEFAULT_HOLDOUT_WINDOWS_PATH)
+    plan_path: str | None = None
     top_n: int = DEFAULT_CONTRACT.top_n
-    smoothing_weeks: int = 4
     init_cash: float = 1_000_000.0
     risk_free_rate: float = 0.02
     max_participation_rate: float = 0.1
-    min_label_coverage: float = 0.95
-    min_signal_days: int = 100
+    min_label_coverage: float | None = None
+    min_signal_days: int | None = None
 
     def __post_init__(self) -> None:
-        if self.start != DEFAULT_CONTRACT.holdout_start:
-            raise AlphaFinalHoldoutError(
-                f"最终留出集起始日固定为 {DEFAULT_CONTRACT.holdout_start}"
-            )
-        if self.end != DEFAULT_CONTRACT.holdout_end:
-            raise AlphaFinalHoldoutError(
-                f"最终留出集截止日固定为 {DEFAULT_CONTRACT.holdout_end}"
-            )
+        window = self.window
         if type(self.top_n) is not int or self.top_n <= 0:
             raise AlphaFinalHoldoutError("top_n 必须是正整数")
-        if type(self.smoothing_weeks) is not int or self.smoothing_weeks <= 0:
-            raise AlphaFinalHoldoutError("smoothing_weeks 必须是正整数")
         if (
             isinstance(self.init_cash, bool)
             or not isinstance(self.init_cash, (int, float))
@@ -65,20 +58,83 @@ class FinalHoldoutSpec:
             raise AlphaFinalHoldoutError("risk_free_rate 必须在 [-0.99, 1]")
         if not 0.0 < float(self.max_participation_rate) <= 1.0:
             raise AlphaFinalHoldoutError("max_participation_rate 必须在 (0, 1]")
-        if not 0.0 < float(self.min_label_coverage) <= 1.0:
+        if not 0.0 < float(self.label_coverage) <= 1.0:
             raise AlphaFinalHoldoutError("min_label_coverage 必须在 (0, 1]")
-        if type(self.min_signal_days) is not int or self.min_signal_days <= 0:
+        if type(self.signal_days) is not int or self.signal_days <= 0:
             raise AlphaFinalHoldoutError("min_signal_days 必须是正整数")
+        if self.plan_path is not None and not Path(self.plan_path).is_file():
+            raise AlphaFinalHoldoutError(f"评估计划不存在：{self.plan_path}")
+        if not window.window_id:
+            raise AlphaFinalHoldoutError("留出窗口 ID 不能为空")
 
     def to_dict(self) -> dict:
         """返回稳定字典。"""
 
-        return asdict(self)
+        return {
+            "window_id": self.window_id,
+            "plan_path": self.plan_path,
+            "top_n": self.top_n,
+            "init_cash": self.init_cash,
+            "risk_free_rate": self.risk_free_rate,
+            "max_participation_rate": self.max_participation_rate,
+            "min_label_coverage": self.label_coverage,
+            "min_signal_days": self.signal_days,
+        }
+
+    @property
+    def window(self) -> HoldoutWindow:
+        """返回注册的留出窗口。"""
+
+        return get_holdout_window(
+            self.window_id,
+            Path(self.window_registry_path),
+        )
+
+    @property
+    def start(self) -> str:
+        """返回窗口起始日。"""
+
+        return self.window.start
+
+    @property
+    def end(self) -> str:
+        """返回窗口截止日。"""
+
+        return self.window.end
+
+    @property
+    def label_coverage(self) -> float:
+        """返回标签覆盖门槛。"""
+
+        return (
+            self.window.min_label_coverage
+            if self.min_label_coverage is None
+            else float(self.min_label_coverage)
+        )
+
+    @property
+    def signal_days(self) -> int:
+        """返回最少完整标签信号日。"""
+
+        return (
+            self.window.min_signal_days
+            if self.min_signal_days is None
+            else int(self.min_signal_days)
+        )
+
+    @property
+    def dataset_name(self) -> str:
+        """返回窗口对应数据集名称。"""
+
+        suffix = self.window_id.removeprefix("holdout_")
+        return f"weekly_final_holdout_{suffix}_v1"
 
     @property
     def evaluation_plan(self) -> EvaluationPlan:
         """读取本规格引用的评估计划。"""
 
+        if not self.plan_path:
+            raise AlphaFinalHoldoutError("留出验证尚未绑定评估计划")
         return EvaluationPlan.from_file(Path(self.plan_path))
 
     @property
@@ -104,11 +160,17 @@ def build_final_holdout_dataset(
     *,
     force: bool = False,
 ) -> DatasetArtifact:
-    """构建唯一允许读取 2024-2026 的周频数据集。"""
+    """构建指定留出窗口的周频数据集。"""
 
+    calendar = load_calendar(spec.start, spec.end)
+    if calendar.empty:
+        raise AlphaFinalHoldoutError(
+            f"留出窗口 {spec.window_id} 没有可用行情："
+            f"{spec.start}～{spec.end}"
+        )
     return build_dataset(
         DatasetSpec(
-            name=FINAL_HOLDOUT_DATASET_NAME,
+            name=spec.dataset_name,
             start=spec.start,
             end=spec.end,
             allow_holdout=True,
@@ -139,12 +201,13 @@ def complete_signal_dates(
     )
     coverage = label_count.div(eligible_count.replace(0, np.nan))
     selected = coverage[
-        (coverage >= float(spec.min_label_coverage)) & (eligible_count >= 100)
+        (coverage >= float(spec.label_coverage)) & (eligible_count >= 100)
     ].index
     dates = pd.DatetimeIndex(sorted(pd.to_datetime(selected)))
-    if len(dates) < spec.min_signal_days:
+    if len(dates) < spec.signal_days:
         raise AlphaFinalHoldoutError(
-            f"完整标签信号日不足：{len(dates)}；请检查留出集数据"
+            f"完整标签信号日不足：{len(dates)}；"
+            f"窗口 {spec.window_id} 要求至少 {spec.signal_days}"
         )
     return dates
 
@@ -369,7 +432,6 @@ def read_final_holdout_json(path: Path, label: str) -> dict:
 
 
 __all__ = [
-    "FINAL_HOLDOUT_DATASET_NAME",
     "FINAL_HOLDOUT_SCHEMA_VERSION",
     "FinalHoldoutSpec",
     "PREDICTION_NAMES",

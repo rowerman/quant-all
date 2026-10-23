@@ -96,6 +96,7 @@ def compute_portfolio_exposure(
     top_n: int = 30,
     styles: pd.DataFrame | None = None,
     allow_holdout: bool = False,
+    holdout_window: object | None = None,
 ) -> PortfolioExposureResult:
     """计算 Top-N 等权目标持仓的七类风格和行业暴露。"""
 
@@ -109,7 +110,12 @@ def compute_portfolio_exposure(
     work["trade_date"] = pd.to_datetime(work["trade_date"])
     start = str(work["trade_date"].min().date())
     end = str(work["trade_date"].max().date())
-    validate_dev_range(start, end, allow_holdout=allow_holdout)
+    validate_dev_range(
+        start,
+        end,
+        allow_holdout=allow_holdout,
+        holdout_window=holdout_window,
+    )
     scores = work.pivot(
         index="trade_date", columns="stock_code", values="score"
     )

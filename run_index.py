@@ -9,6 +9,7 @@ from pathlib import Path
 from alpha.artifacts import write_json
 from alpha.config import RUNS_DIR
 from alpha.errors import AlphaArtifactError
+from alpha.holdout import HoldoutWindow, load_holdout_windows
 
 RUN_INDEX_SCHEMA_VERSION = "alpha_run_index_v1"
 
@@ -23,10 +24,15 @@ def _read_manifest(path: Path) -> dict:
     return payload
 
 
-def rebuild_run_index(root: Path | None = None) -> dict:
+def rebuild_run_index(
+    root: Path | None = None,
+    *,
+    windows_path: Path | None = None,
+) -> dict:
     """扫描验收与最终留出目录并记录消耗状态。"""
 
     base = Path(root or RUNS_DIR)
+    windows = load_holdout_windows(windows_path)
     records = []
     for run_type, folder_name, consumed in (
         ("acceptance", "acceptance", False),
@@ -57,11 +63,51 @@ def rebuild_run_index(root: Path | None = None) -> dict:
                     "path": path.relative_to(base).as_posix(),
                 }
             )
+    for record in records:
+        if record["run_type"] != "final_holdout":
+            continue
+        for window in windows:
+            if record["start"] == window.start and record["end"] == window.end:
+                record["window_id"] = window.window_id
+                break
+    window_records = []
+    for window in windows:
+        matching = [
+            item
+            for item in records
+            if item.get("window_id") == window.window_id
+        ]
+        window_records.append(_window_record(window, matching))
     payload = {
         "schema_version": RUN_INDEX_SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run_count": len(records),
         "runs": sorted(records, key=lambda item: item["run_id"]),
+        "holdout_window_count": len(window_records),
+        "holdout_windows": window_records,
     }
     write_json(base / "index.json", payload)
     return payload
+
+
+def _window_record(window: HoldoutWindow, runs: list[dict]) -> dict:
+    """把窗口和匹配的运行合并为消耗记录。"""
+
+    run_ids = sorted(str(item["run_id"]) for item in runs)
+    consumed = bool(run_ids)
+    status = (
+        str(runs[-1].get("status") or "consumed")
+        if consumed
+        else "sealed"
+        if window.sealed
+        else "planned"
+    )
+    return {
+        "window_id": window.window_id,
+        "start": window.start,
+        "end": window.end,
+        "sealed": window.sealed,
+        "status": status,
+        "consumed_as_holdout": consumed,
+        "run_ids": run_ids,
+    }
