@@ -8,9 +8,10 @@ import numpy as np
 import pandas as pd
 
 from alpha.errors import AlphaMonitorError
+from alpha.evaluation_plan import current_model_ids
 
 MONITOR_SCHEMA_VERSION = "alpha_model_monitor_v1"
-DEFAULT_MODEL_ID = "lightgbm_ensemble_label_rank_6aea5c9299d5"
+DEFAULT_MODEL_ID, _ = current_model_ids()
 DEFAULT_ACCEPTANCE_ID = "p4_4a_23c7e101aee9"
 DEFAULT_EXPOSURE_ANALYSIS_ID = "p3_4_8152f500bb86"
 SEVERITY_ORDER = {"insufficient_data": 0, "ok": 1, "warning": 2, "alert": 3}

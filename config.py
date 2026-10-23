@@ -15,6 +15,11 @@ DB_FILE = DB_DIR / "quant.duckdb"
 FACTOR_DB_FILE = DB_DIR / "factors.duckdb"
 FACTOR_DIR = PROJECT_ROOT / "factor_data"
 MODEL_DATA_DIR = PROJECT_ROOT / "model_data"
+MODELS_DIR = MODEL_DATA_DIR / "models"
+ARCHIVE_MODELS_DIR = MODEL_DATA_DIR / "archive" / "models"
+RUNS_DIR = MODEL_DATA_DIR / "runs"
+ACCEPTANCE_RUNS_DIR = RUNS_DIR / "acceptance"
+FINAL_HOLDOUT_RUNS_DIR = RUNS_DIR / "final_holdout"
 LOG_DIR = PROJECT_ROOT / "logs" / "alpha"
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from alpha.artifacts import file_sha256, prediction_sha256, write_json
+from alpha.artifacts import file_sha256, model_dir, prediction_sha256, write_json
 from alpha.config import MODEL_DATA_DIR
 from alpha.errors import AlphaLifecycleError
 from alpha.lifecycle_engine import evaluate_lifecycle
@@ -149,7 +149,8 @@ def _load_sources(
     if not fallback_decision.startswith("pass"):
         raise AlphaLifecycleError("回滚模型没有通过既有决策门")
 
-    monitor_folder = root / model_id / "monitoring" / monitor_id
+    model_folder = model_dir(model_id, root)
+    monitor_folder = model_folder / "monitoring" / monitor_id
     monitor_manifest = _read_json(
         monitor_folder / "manifest.json", "P5-2 监控 manifest"
     )
@@ -197,10 +198,10 @@ def _load_sources(
     acceptance_id = str(monitor_sources.get("acceptance_id") or "")
     candidate = str(monitor_sources.get("acceptance_candidate") or "")
     metrics_path = (
-        root / "acceptance" / acceptance_id / candidate / "metrics.json"
+        root / "runs" / "acceptance" / acceptance_id / candidate / "metrics.json"
     )
     strategy_path = (
-        root / "acceptance" / acceptance_id / candidate / "strategy.json"
+        root / "runs" / "acceptance" / acceptance_id / candidate / "strategy.json"
     )
     acceptance_metrics = _read_json(metrics_path, "P4 候选指标")
     if file_sha256(metrics_path) != monitor_sources.get("metrics_sha256"):
@@ -233,10 +234,10 @@ def _load_sources(
         "primary_artifact_sha256": primary_record["artifacts"]["artifact_sha256"],
         "fallback_artifact_sha256": fallback_record["artifacts"]["artifact_sha256"],
         "primary_manifest_sha256": file_sha256(
-            root / model_id / "manifest.json"
+            model_folder / "manifest.json"
         ),
         "fallback_manifest_sha256": file_sha256(
-            root / fallback_model_id / "manifest.json"
+            model_dir(fallback_model_id, root) / "manifest.json"
         ),
         "acceptance_id": acceptance_id,
         "acceptance_candidate": candidate,
@@ -261,7 +262,7 @@ def load_model_lifecycle(
     """读取并校验完整生命周期包。"""
 
     output_root = root or MODEL_DATA_DIR
-    folder = output_root / model_id / "lifecycle" / lifecycle_id
+    folder = model_dir(model_id, output_root) / "lifecycle" / lifecycle_id
     manifest = _read_json(folder / "manifest.json", "生命周期 manifest")
     complete = _read_json(folder / "complete.json", "生命周期完成标记")
     if (
@@ -336,7 +337,7 @@ def run_model_lifecycle(
         "code_sha256": code_hash,
     }
     lifecycle_id = _lifecycle_id(identity)
-    target = output_root / model_id / "lifecycle" / lifecycle_id
+    target = model_dir(model_id, output_root) / "lifecycle" / lifecycle_id
     if target.is_dir() and not force:
         return load_model_lifecycle(lifecycle_id, model_id=model_id, root=output_root)[
             "manifest"

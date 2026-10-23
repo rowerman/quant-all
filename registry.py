@@ -12,11 +12,8 @@ from alpha.errors import AlphaArtifactError, AlphaRegistryError
 from alpha.logging_conf import get_logger
 from alpha.predict import model_artifact_snapshot
 
-REGISTRY_SCHEMA_VERSION = "alpha_model_registry_v1"
+REGISTRY_SCHEMA_VERSION = "alpha_model_registry_v2"
 REGISTRY_FILENAME = "index.json"
-RESERVED_MODEL_DIRS = frozenset(
-    {"acceptance", "audit", "baselines", "datasets", "splits"}
-)
 
 logger = get_logger("alpha.registry")
 
@@ -123,7 +120,13 @@ def _validate_metrics(manifest: dict, metrics: dict) -> None:
             raise AlphaArtifactError(f"metrics.json 的 {name} 与模型 manifest 不一致")
 
 
-def _model_record(folder: Path, manifest: dict, root: Path) -> dict:
+def _model_record(
+    folder: Path,
+    manifest: dict,
+    root: Path,
+    *,
+    storage: str,
+) -> dict:
     """把单个模型产物归一化为稳定的登记记录。"""
 
     model_id = str(manifest.get("model_id") or "")
@@ -162,9 +165,12 @@ def _model_record(folder: Path, manifest: dict, root: Path) -> dict:
             )
     folds = list(model_snapshot.get("folds") or [])
 
+    relative_folder = folder.relative_to(root).as_posix()
     return {
         "model_id": model_id,
-        "model_dir": model_id,
+        "model_dir": relative_folder,
+        "storage": storage,
+        "active": storage == "active",
         "model_type": model_type,
         "member_type": manifest.get("member_type"),
         "status": status,
@@ -185,7 +191,9 @@ def _model_record(folder: Path, manifest: dict, root: Path) -> dict:
         "metrics": _metric_summary(metrics),
         "artifacts": {
             "analysis_dir": (
-                f"{model_id}/analysis" if (folder / "analysis").is_dir() else None
+                f"{relative_folder}/analysis"
+                if (folder / "analysis").is_dir()
+                else None
             ),
             "manifest_sha256": model_snapshot["manifest_sha256"],
             "config_sha256": file_sha256(config_path),
@@ -212,13 +220,38 @@ def _discover_models(root: Path) -> list[tuple[Path, dict]]:
     """发现模型目录并校验目录名与 manifest ID 一致。"""
 
     discovered: list[tuple[Path, dict]] = []
-    try:
-        entries = sorted(root.iterdir(), key=lambda path: path.name)
-    except OSError as error:
-        raise AlphaRegistryError(f"无法扫描模型根目录：{root}") from error
-    for folder in entries:
-        if not folder.is_dir() or folder.name in RESERVED_MODEL_DIRS:
+    directories = []
+    for base, storage in (
+        (root / "models", "active"),
+        (root / "archive" / "models", "archived"),
+    ):
+        if not base.is_dir():
             continue
+        try:
+            entries = sorted(base.iterdir(), key=lambda path: path.name)
+        except OSError as error:
+            raise AlphaRegistryError(f"无法扫描模型根目录：{base}") from error
+        directories.extend((folder, storage) for folder in entries if folder.is_dir())
+    if not directories:
+        reserved = {
+            "archive",
+            "audit",
+            "baselines",
+            "datasets",
+            "models",
+            "runs",
+            "splits",
+        }
+        try:
+            entries = sorted(root.iterdir(), key=lambda path: path.name)
+        except OSError as error:
+            raise AlphaRegistryError(f"无法扫描模型根目录：{root}") from error
+        directories.extend(
+            (folder, "legacy")
+            for folder in entries
+            if folder.is_dir() and folder.name not in reserved
+        )
+    for folder, storage in directories:
         manifest_path = folder / "manifest.json"
         if not manifest_path.is_file():
             continue
@@ -245,10 +278,17 @@ def rebuild_registry(root: Path | None = None) -> dict:
     """扫描全部模型，完整校验后原子重建模型索引。"""
 
     output_root = _registry_root(root)
-    records = [
-        _model_record(folder, manifest, output_root)
-        for folder, manifest in _discover_models(output_root)
-    ]
+    records = []
+    for folder, manifest in _discover_models(output_root):
+        if (output_root / "archive" / "models") in folder.parents:
+            storage = "archived"
+        elif (output_root / "models") in folder.parents:
+            storage = "active"
+        else:
+            storage = "legacy"
+        records.append(
+            _model_record(folder, manifest, output_root, storage=storage)
+        )
     records.sort(
         key=lambda item: (str(item.get("created_at") or ""), item["model_id"])
     )
@@ -256,6 +296,7 @@ def rebuild_registry(root: Path | None = None) -> dict:
         "schema_version": REGISTRY_SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "model_count": len(records),
+        "active_model_count": sum(1 for item in records if item["active"]),
         "models": records,
     }
     try:
@@ -304,7 +345,13 @@ def load_registry(root: Path | None = None) -> dict:
         model_id = item.get("model_id")
         if not isinstance(model_id, str) or not model_id:
             raise AlphaRegistryError("模型索引记录缺少 model_id")
-        if item.get("model_dir") != model_id:
+        if item.get("storage") == "active":
+            expected_dir = f"models/{model_id}"
+        elif item.get("storage") == "archived":
+            expected_dir = f"archive/models/{model_id}"
+        else:
+            expected_dir = model_id
+        if item.get("model_dir") != expected_dir:
             raise AlphaRegistryError(f"模型索引目录与 ID 不一致：{model_id}")
         if model_id in identifiers:
             raise AlphaRegistryError(f"模型索引存在重复 ID：{model_id}")

@@ -8,6 +8,7 @@
     ALPHA-4xx  产物与登记
                ALPHA-403 专用于模型监控
                ALPHA-404 专用于模型生命周期
+               ALPHA-405 专用于最终留出集验证
 """
 
 from __future__ import annotations
@@ -81,3 +82,9 @@ class AlphaLifecycleError(AlphaError):
     """模型生命周期策略、状态或产物非法。"""
 
     code = "ALPHA-404"
+
+
+class AlphaFinalHoldoutError(AlphaError):
+    """最终留出集数据、冻结模型、产物或验收失败。"""
+
+    code = "ALPHA-405"

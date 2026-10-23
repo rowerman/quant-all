@@ -11,10 +11,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from alpha.config import DEFAULT_CONTRACT, MODEL_DATA_DIR
+from alpha.config import (
+    ARCHIVE_MODELS_DIR,
+    DEFAULT_CONTRACT,
+    MODELS_DIR,
+)
 from alpha.errors import AlphaArtifactError, AlphaConfigError
 
 MODEL_SCHEMA_VERSION = "alpha_model_v1"
+MODEL_SCHEMA_VERSION_V2 = "alpha_model_v2"
 PREDICTION_COLUMNS = ("trade_date", "stock_code", "score")
 
 
@@ -84,16 +89,43 @@ def prediction_sha256(frame: pd.DataFrame) -> str:
     return digest.hexdigest()
 
 
-def model_dir(model_id: str, root: Path | None = None) -> Path:
-    """返回模型目录；模型 ID 不能逃出模型根目录。"""
+def model_dir(
+    model_id: str,
+    root: Path | None = None,
+    *,
+    include_archived: bool = True,
+) -> Path:
+    """返回模型目录；优先活跃目录，必要时查找归档目录。"""
 
     if not model_id or Path(model_id).name != model_id:
         raise AlphaArtifactError(f"非法模型 ID：{model_id!r}")
-    return (root or MODEL_DATA_DIR) / model_id
+    if root is None:
+        active = MODELS_DIR / model_id
+        archived = ARCHIVE_MODELS_DIR / model_id
+    else:
+        base = Path(root)
+        candidates = [base / "models" / model_id]
+        if include_archived:
+            candidates.append(base / "archive" / "models" / model_id)
+        candidates.append(base / model_id)
+        for candidate in candidates:
+            if candidate.is_dir():
+                return candidate
+        return candidates[0]
+    if active.is_dir() or not include_archived:
+        return active
+    if archived.is_dir():
+        return archived
+    return active
 
 
-def validate_dev_range(start: str, end: str) -> None:
-    """拒绝跨入最终测试集。"""
+def validate_dev_range(
+    start: str,
+    end: str,
+    *,
+    allow_holdout: bool = False,
+) -> None:
+    """校验日期区间；默认拒绝跨入最终测试集。"""
 
     try:
         start_stamp = pd.Timestamp(start)
@@ -102,6 +134,16 @@ def validate_dev_range(start: str, end: str) -> None:
         raise AlphaConfigError(f"非法日期区间：{start!r} ~ {end!r}") from error
     if start_stamp > end_stamp:
         raise AlphaConfigError(f"起始日 {start} 晚于截止日 {end}")
+    if allow_holdout:
+        if start_stamp < pd.Timestamp(DEFAULT_CONTRACT.holdout_start):
+            raise AlphaConfigError(
+                f"留出集起始日 {start} 早于 {DEFAULT_CONTRACT.holdout_start}"
+            )
+        if end_stamp > pd.Timestamp(DEFAULT_CONTRACT.holdout_end):
+            raise AlphaConfigError(
+                f"留出集截止日 {end} 超过 {DEFAULT_CONTRACT.holdout_end}"
+            )
+        return
     if start_stamp < pd.Timestamp(DEFAULT_CONTRACT.dev_start):
         raise AlphaConfigError(
             f"起始日 {start} 早于研究契约 {DEFAULT_CONTRACT.dev_start}"

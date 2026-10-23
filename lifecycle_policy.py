@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 import pandas as pd
 
 from alpha.errors import AlphaLifecycleError
+from alpha.evaluation_plan import current_model_ids
 from alpha.monitor_policy import MonitorPolicy
 
 LIFECYCLE_SCHEMA_VERSION = "alpha_model_lifecycle_v1"
@@ -18,8 +19,7 @@ LIFECYCLE_RESULT_FILES = (
     "report.md",
     "timeseries.csv",
 )
-DEFAULT_PRIMARY_MODEL_ID = "lightgbm_ensemble_label_rank_6aea5c9299d5"
-DEFAULT_FALLBACK_MODEL_ID = "ridge_label_rank_aaff2cb2fbcf"
+DEFAULT_PRIMARY_MODEL_ID, DEFAULT_FALLBACK_MODEL_ID = current_model_ids()
 DEFAULT_MONITOR_ID = "p5_2_0a9e6523e9e7"
 STATES = ("normal", "reduced", "rollback", "paused")
 

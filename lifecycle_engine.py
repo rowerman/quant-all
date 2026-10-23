@@ -299,6 +299,8 @@ def evaluate_lifecycle(
     policy: LifecyclePolicy | None = None,
     start: str | None = None,
     end: str | None = None,
+    allow_holdout: bool = False,
+    include_retrain_schedule: bool = True,
 ) -> LifecycleResult:
     """计算因果生命周期状态、动作和年度重训日程。"""
 
@@ -322,7 +324,11 @@ def evaluate_lifecycle(
     dates = pd.DatetimeIndex(work["trade_date"])
     start_text = start or str(dates.min().date())
     end_text = end or str(dates.max().date())
-    validate_dev_range(start_text, end_text)
+    validate_dev_range(
+        start_text,
+        end_text,
+        allow_holdout=allow_holdout,
+    )
     work = work.loc[
         (work["trade_date"] >= pd.Timestamp(start_text))
         & (work["trade_date"] <= pd.Timestamp(end_text))
@@ -330,10 +336,28 @@ def evaluate_lifecycle(
     if len(work) < 2:
         raise AlphaLifecycleError("生命周期区间至少需要 2 个信号日")
     dates = pd.DatetimeIndex(work["trade_date"])
-    schedule = build_retrain_schedule(
-        dates,
-        folds,
-        retrain_start=settings.retrain_start,
+    schedule = (
+        build_retrain_schedule(
+            dates,
+            folds,
+            retrain_start=settings.retrain_start,
+        )
+        if include_retrain_schedule
+        else pd.DataFrame(
+            columns=(
+                "trade_date",
+                "event_type",
+                "fold_id",
+                "train_start",
+                "train_end",
+                "valid_start",
+                "valid_end",
+                "test_start",
+                "test_end",
+                "purge_days",
+                "embargo_days",
+            )
+        )
     )
 
     observable_rank_ic = pd.to_numeric(

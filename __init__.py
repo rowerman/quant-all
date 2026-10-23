@@ -18,6 +18,7 @@ from alpha.errors import (
     AlphaDataError,
     AlphaError,
     AlphaEvaluationError,
+    AlphaFinalHoldoutError,
     AlphaLifecycleError,
     AlphaMonitorError,
     AlphaModelError,
@@ -33,8 +34,27 @@ from alpha.explain import (
     permute_group_within_dates,
 )
 from alpha.exposure import PortfolioExposureResult, compute_portfolio_exposure
+from alpha.evaluation_plan import (
+    EvaluationCandidate,
+    EvaluationPlan,
+    ScorePolicy,
+    SourceSpec,
+)
 from alpha.feature_groups import FeatureGroup, FeatureGroups, build_feature_groups
+from alpha.final_holdout import (
+    FinalHoldoutSpec,
+    load_final_holdout,
+    run_final_holdout,
+)
 from alpha.gbdt import GbdtConfig, GbdtEnsembleConfig
+from alpha.modeling import (
+    FoldFitResult,
+    ModelArtifact,
+    ModelBackend,
+    TrainingSpec,
+    available_backends,
+    fit_model,
+)
 from alpha.preprocess import PreprocessConfig, PreprocessedFrame, transform
 from alpha.monitor import (
     MonitorPolicy,
@@ -65,7 +85,6 @@ from alpha.registry import (
     rebuild_registry,
 )
 from alpha.split import Fold, SplitConfig, build_folds, fold_masks
-from alpha.train import TrainConfig, fit, fit_gbdt, fit_gbdt_ensemble
 
 __all__ = [
     "DEFAULT_CONTRACT",
@@ -82,13 +101,26 @@ __all__ = [
     "FeatureGroup",
     "FeatureGroups",
     "build_feature_groups",
+    "FinalHoldoutSpec",
+    "load_final_holdout",
+    "run_final_holdout",
     "FamilyAblationResult",
     "fit_family_ablation",
     "predict_permuted_group",
     "PortfolioExposureResult",
     "compute_portfolio_exposure",
+    "EvaluationCandidate",
+    "EvaluationPlan",
+    "ScorePolicy",
+    "SourceSpec",
     "GbdtConfig",
     "GbdtEnsembleConfig",
+    "FoldFitResult",
+    "ModelArtifact",
+    "ModelBackend",
+    "TrainingSpec",
+    "available_backends",
+    "fit_model",
     "PreprocessConfig",
     "PreprocessedFrame",
     "transform",
@@ -118,15 +150,12 @@ __all__ = [
     "SplitConfig",
     "build_folds",
     "fold_masks",
-    "TrainConfig",
-    "fit",
-    "fit_gbdt",
-    "fit_gbdt_ensemble",
     "AlphaArtifactError",
     "AlphaConfigError",
     "AlphaDataError",
     "AlphaError",
     "AlphaEvaluationError",
+    "AlphaFinalHoldoutError",
     "AlphaLifecycleError",
     "AlphaMonitorError",
     "AlphaModelError",

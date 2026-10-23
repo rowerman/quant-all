@@ -13,6 +13,7 @@ import pandas as pd
 
 from alpha.artifacts import (
     file_sha256,
+    model_dir,
     prediction_sha256,
     validate_dev_range,
     write_json,
@@ -179,7 +180,8 @@ def _source_and_frames(
     """读取并校验正式模型、账本和暴露来源。"""
 
     record = get_registered_model(model_id, root)
-    manifest_path = root / model_id / "manifest.json"
+    model_folder = model_dir(model_id, root)
+    manifest_path = model_folder / "manifest.json"
     manifest = _read_json(manifest_path, "模型 manifest")
     model_manifest_sha256 = file_sha256(manifest_path)
     registered_manifest = (record.get("artifacts") or {}).get("manifest_sha256")
@@ -202,7 +204,7 @@ def _source_and_frames(
         sorted(pd.to_datetime(predictions["trade_date"]).unique())
     )
 
-    acceptance_folder = root / "acceptance" / acceptance_id
+    acceptance_folder = root / "runs" / "acceptance" / acceptance_id
     acceptance_manifest = _read_json(
         acceptance_folder / "manifest.json",
         "P4 验收 manifest",
@@ -253,7 +255,7 @@ def _source_and_frames(
     if reference_turnover is None or reference_turnover <= 0:
         raise AlphaMonitorError("P4 候选缺少基准换手")
 
-    exposure_folder = root / model_id / "analysis" / exposure_analysis_id
+    exposure_folder = model_folder / "analysis" / exposure_analysis_id
     exposure_manifest = _read_json(exposure_folder / "manifest.json", "P3-4 manifest")
     if (
         exposure_manifest.get("analysis_id") != exposure_analysis_id
@@ -351,7 +353,7 @@ def run_model_monitor(
         "code_sha256": code_hash,
     }
     monitor_id = _monitor_id(identity)
-    target = output_root / model_id / "monitoring" / monitor_id
+    target = model_dir(model_id, output_root) / "monitoring" / monitor_id
     complete_path = target / "complete.json"
     if complete_path.is_file() and not force:
         payload = _read_json(complete_path, "监控完成标记")

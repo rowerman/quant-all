@@ -51,6 +51,7 @@ def prepare_signal_frames(
     *,
     start: str | None,
     end: str | None,
+    allow_holdout: bool = False,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -73,7 +74,11 @@ def prepare_signal_frames(
         raise AlphaMonitorError("监控没有信号日")
     start_stamp = pd.Timestamp(start) if start is not None else dates.min()
     end_stamp = pd.Timestamp(end) if end is not None else dates.max()
-    validate_dev_range(str(start_stamp.date()), str(end_stamp.date()))
+    validate_dev_range(
+        str(start_stamp.date()),
+        str(end_stamp.date()),
+        allow_holdout=allow_holdout,
+    )
     dates = dates[(dates >= start_stamp) & (dates <= end_stamp)]
     if len(dates) < 2:
         raise AlphaMonitorError("监控区间至少需要 2 个信号日")
@@ -183,6 +188,7 @@ def score_timeseries(
     *,
     start: str | None,
     end: str | None,
+    allow_holdout: bool = False,
 ) -> pd.DataFrame:
     """计算分数、缺失、滚动 RankIC 和行业对齐辅助数据。"""
 
@@ -192,6 +198,7 @@ def score_timeseries(
         rebalance_dates,
         start=start,
         end=end,
+        allow_holdout=allow_holdout,
     )
     deployed = smooth_rank_scores(
         raw,

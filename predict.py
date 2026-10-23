@@ -21,8 +21,8 @@ from alpha.config import MODEL_DATA_DIR
 from alpha.dataset import load_dataset
 from alpha.ensemble import combine_rank_predictions
 from alpha.errors import AlphaArtifactError
-from alpha.gbdt import load_gbdt_model, predict_gbdt
-from alpha.linear import load_model_bundle, predict_linear
+from alpha.modeling.manifests import backend_from_manifest, records_by_fold
+from alpha.modeling.registry import get_backend
 from alpha.preprocess import PreprocessConfig, transform
 
 ARTIFACT_SNAPSHOT_SCHEMA_VERSION = "alpha_model_artifact_snapshot_v1"
@@ -408,74 +408,14 @@ def _predict_loaded(
     if preprocessed.feature_names != features:
         raise AlphaArtifactError("预处理特征与模型 manifest 不一致")
     folder = model_dir(manifest["model_id"], root)
-    model_type = str(manifest.get("model_type"))
-    linear_bundle = None
-    gbdt_models = {}
-    ensemble_models: dict[str, dict[int, object]] = {}
-    if model_type == "lightgbm":
-        for fold in manifest["folds"]:
-            fold_id = str(fold["fold_id"])
-            relative = str(fold.get("model_file") or f"models/{fold_id}.txt")
-            path = folder / relative
-            expected = str(fold.get("model_sha256") or "")
-            if not path.is_file():
-                raise AlphaArtifactError(f"LightGBM 模型文件缺失：{path}")
-            if not expected or file_sha256(path) != expected:
-                raise AlphaArtifactError(f"LightGBM 模型文件哈希不一致：{path}")
-            try:
-                gbdt_models[fold_id] = load_gbdt_model(path)
-            except Exception as error:
-                raise AlphaArtifactError(f"无法读取 LightGBM 模型：{path}") from error
-    elif model_type == "lightgbm_ensemble":
-        expected_seeds = tuple(int(seed) for seed in manifest.get("seeds", ()))
-        if len(expected_seeds) < 2:
-            raise AlphaArtifactError("LightGBM 集成缺少成员种子")
-        for fold in manifest["folds"]:
-            fold_id = str(fold["fold_id"])
-            members = fold.get("members") or []
-            if len(members) != len(expected_seeds):
-                raise AlphaArtifactError(f"{fold_id} 集成成员数量不一致")
-            loaded: dict[int, object] = {}
-            for member in members:
-                seed = int(member["seed"])
-                relative = str(member.get("model_file") or "")
-                path = folder / relative
-                expected = str(member.get("model_sha256") or "")
-                if not relative or not path.is_file():
-                    raise AlphaArtifactError(
-                        f"LightGBM 集成成员模型缺失：{path}"
-                    )
-                if not expected or file_sha256(path) != expected:
-                    raise AlphaArtifactError(
-                        f"LightGBM 集成成员模型哈希不一致：{path}"
-                    )
-                try:
-                    loaded[seed] = load_gbdt_model(path)
-                except Exception as error:
-                    raise AlphaArtifactError(
-                        f"无法读取 LightGBM 集成成员模型：{path}"
-                    ) from error
-            if tuple(sorted(loaded)) != expected_seeds:
-                raise AlphaArtifactError(f"{fold_id} 集成成员种子不一致")
-            ensemble_models[fold_id] = loaded
-    else:
-        linear_bundle = load_model_bundle(folder / "model.npz")
+    backend = get_backend(backend_from_manifest(manifest))
+    grouped = records_by_fold(manifest)
     start_stamp = pd.Timestamp(start)
     end_stamp = pd.Timestamp(end)
     parts: list[pd.DataFrame] = []
     dates = pd.to_datetime(preprocessed.data["trade_date"])
     for fold in manifest["folds"]:
         fold_id = str(fold["fold_id"])
-        if model_type == "lightgbm_ensemble":
-            model = ensemble_models.get(fold_id)
-            if not model:
-                raise AlphaArtifactError(f"集成模型文件缺少 {fold_id}")
-        elif model_type == "lightgbm":
-            model = gbdt_models.get(fold_id)
-        else:
-            model = None if linear_bundle is None else linear_bundle.get(fold_id)
-        if model_type != "lightgbm_ensemble" and model is None:
-            raise AlphaArtifactError(f"模型文件缺少 {fold_id}")
         lo = max(start_stamp, pd.Timestamp(fold["test_start"]))
         hi = min(end_stamp, pd.Timestamp(fold["test_end"]))
         if lo > hi:
@@ -489,31 +429,40 @@ def _predict_loaded(
         if rows.empty:
             continue
         matrix = rows.loc[:, features].to_numpy(dtype="float32")
-        if model_type == "lightgbm_ensemble":
-            fold_models = ensemble_models.get(fold_id, {})
-            member_parts = []
-            for seed in sorted(fold_models):
-                member_part = rows.loc[:, ["trade_date", "stock_code"]].copy()
-                member_part["trade_date"] = pd.to_datetime(
-                    member_part["trade_date"]
-                )
-                member_part["score"] = predict_gbdt(
-                    fold_models[seed], matrix
-                )
-                member_parts.append(member_part)
-            part = combine_rank_predictions(
+        records = grouped.get(fold_id) or []
+        if not records:
+            raise AlphaArtifactError(f"模型文件缺少 {fold_id}")
+        member_parts: list[pd.DataFrame] = []
+        for record in sorted(records, key=lambda item: int(item.get("seed", 0))):
+            relative = str(record.get("model_file") or "")
+            path = folder / relative
+            expected = str(record.get("model_sha256") or "")
+            if not relative or not path.is_file():
+                raise AlphaArtifactError(f"模型文件缺失：{path}")
+            if not expected or file_sha256(path) != expected:
+                raise AlphaArtifactError(f"模型文件哈希不一致：{path}")
+            try:
+                model = backend.load_model(path, fold_id=fold_id)
+                scores = backend.predict(model, matrix)
+            except Exception as error:
+                raise AlphaArtifactError(f"无法重放模型 {path}：{error}") from error
+            member_part = rows.loc[:, ["trade_date", "stock_code"]].copy()
+            member_part["trade_date"] = pd.to_datetime(
+                member_part["trade_date"]
+            )
+            member_part["score"] = scores
+            member_parts.append(member_part)
+        part = (
+            member_parts[0]
+            if len(member_parts) == 1
+            else combine_rank_predictions(
                 member_parts,
-                names=tuple(f"seed={seed}" for seed in sorted(fold_models)),
+                names=tuple(
+                    f"seed={record.get('seed', index)}"
+                    for index, record in enumerate(records)
+                ),
             )
-        else:
-            scores = (
-                predict_gbdt(model, matrix)
-                if model_type == "lightgbm"
-                else predict_linear(model, matrix)
-            )
-            part = rows.loc[:, ["trade_date", "stock_code"]].copy()
-            part["trade_date"] = pd.to_datetime(part["trade_date"])
-            part["score"] = scores
+        )
         parts.append(part)
     if not parts:
         raise AlphaArtifactError(f"区间 {start} ~ {end} 没有可重放的样本外测试日")
