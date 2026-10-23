@@ -11,8 +11,10 @@ import numpy as np
 
 from alpha.config import PROJECT_ROOT
 from alpha.errors import AlphaEvaluationError
+from alpha.risk import RiskGatePolicy
 
-EVALUATION_PLAN_SCHEMA_VERSION = "alpha_model_evaluation_plan_v2"
+EVALUATION_PLAN_SCHEMA_VERSION = "alpha_model_evaluation_plan_v3"
+V2_EVALUATION_PLAN_SCHEMA_VERSION = "alpha_model_evaluation_plan_v2"
 LEGACY_EVALUATION_PLAN_SCHEMA_VERSION = "alpha_model_evaluation_plan_v1"
 DEFAULT_CURRENT_PLAN = (
     PROJECT_ROOT / "configs" / "alpha" / "final_holdout_2024_2026.json"
@@ -170,6 +172,7 @@ class EvaluationPlan:
     selected: str | None = None
     frozen_fold_id: str | None = None
     gate: GatePolicy = field(default_factory=GatePolicy)
+    risk_gate: RiskGatePolicy | None = None
     selection_metrics: tuple[str, ...] = DEFAULT_SELECTION_METRICS
 
     def __post_init__(self) -> None:
@@ -209,6 +212,7 @@ class EvaluationPlan:
         schema = payload.get("schema_version")
         if schema not in {
             LEGACY_EVALUATION_PLAN_SCHEMA_VERSION,
+            V2_EVALUATION_PLAN_SCHEMA_VERSION,
             EVALUATION_PLAN_SCHEMA_VERSION,
         }:
             raise AlphaEvaluationError("评估计划 schema_version 不支持")
@@ -229,6 +233,12 @@ class EvaluationPlan:
             ),
         )
         metrics = payload.get("selection_metrics")
+        risk_payload = payload.get("risk_gate")
+        risk_gate = (
+            None
+            if risk_payload is None
+            else RiskGatePolicy(**dict(risk_payload))
+        )
         return cls(
             candidates=candidates,
             reference=str(payload.get("reference") or ""),
@@ -236,6 +246,7 @@ class EvaluationPlan:
             selected=payload.get("selected"),
             frozen_fold_id=payload.get("frozen_fold_id"),
             gate=gate,
+            risk_gate=risk_gate,
             selection_metrics=(
                 DEFAULT_SELECTION_METRICS
                 if metrics is None
@@ -268,6 +279,9 @@ class EvaluationPlan:
                 "required_improvements": self.gate.required_improvements,
                 "turnover_multiple_limit": self.gate.turnover_multiple_limit,
             },
+            "risk_gate": (
+                None if self.risk_gate is None else self.risk_gate.to_dict()
+            ),
             "selection_metrics": list(self.selection_metrics),
             "candidates": [_candidate_dict(item) for item in self.candidates],
             "controls": [_candidate_dict(item) for item in self.controls],
@@ -359,6 +373,7 @@ __all__ = [
     "DEFAULT_CURRENT_PLAN",
     "DEFAULT_SELECTION_METRICS",
     "EVALUATION_PLAN_SCHEMA_VERSION",
+    "V2_EVALUATION_PLAN_SCHEMA_VERSION",
     "EvaluationCandidate",
     "EvaluationPlan",
     "GatePolicy",

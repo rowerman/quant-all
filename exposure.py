@@ -9,6 +9,7 @@ import pandas as pd
 
 from alpha.artifacts import validate_dev_range
 from alpha.errors import AlphaEvaluationError
+from alpha.portfolio import HoldingPolicy, select_holdings
 from calculate.normalize import winsorize_by_day, zscore_by_day
 from calculate.stats import series_stats
 from calculate.styles import RAW_COLUMNS, STYLE_KEYS, STYLE_FACTORS
@@ -23,27 +24,6 @@ class PortfolioExposureResult:
     industry_summary: pd.DataFrame
     industry_series: pd.DataFrame
     summary: dict
-
-
-def _select_holdings(
-    score: pd.Series,
-    eligible: pd.Series,
-    label: pd.Series,
-    top_n: int,
-) -> pd.Series:
-    """按周频模拟器口径选择 Top-N 等权目标持仓。"""
-
-    chosen = (
-        score.where(eligible)
-        .dropna()
-        .sort_values(ascending=False, kind="mergesort")
-        .head(top_n)
-        .index
-    )
-    chosen = label.reindex(chosen).dropna().index
-    if not len(chosen):
-        return pd.Series(dtype="float64")
-    return pd.Series(1.0 / len(chosen), index=chosen, dtype="float64")
 
 
 def _standardized_styles(universe: pd.DataFrame, day: pd.Timestamp) -> pd.DataFrame:
@@ -94,6 +74,7 @@ def compute_portfolio_exposure(
     data: pd.DataFrame,
     *,
     top_n: int = 30,
+    holding_policy: HoldingPolicy | None = None,
     styles: pd.DataFrame | None = None,
     allow_holdout: bool = False,
     holdout_window: object | None = None,
@@ -160,16 +141,26 @@ def compute_portfolio_exposure(
     holding_counts: list[int] = []
     hhi_values: list[float] = []
     unknown_weights: list[float] = []
+    previous = pd.Index([])
+    policy = holding_policy or HoldingPolicy()
     for day in scores.index:
         score = scores.loc[day]
-        holdings = _select_holdings(
+        chosen = select_holdings(
             score,
             eligible.loc[day],
-            labels.loc[day],
-            top_n,
+            previous,
+            top_n=top_n,
+            policy=policy,
         )
-        if holdings.empty:
+        chosen = chosen[labels.loc[day].reindex(chosen).notna()]
+        previous = chosen
+        if not len(chosen):
             continue
+        holdings = pd.Series(
+            1.0 / len(chosen),
+            index=chosen,
+            dtype="float64",
+        )
         holding_counts.append(int(len(holdings)))
         hhi_values.append(float((holdings**2).sum()))
         universe_codes = eligible.columns[eligible.loc[day].fillna(False)]

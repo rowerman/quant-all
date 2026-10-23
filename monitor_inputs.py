@@ -192,6 +192,7 @@ def score_timeseries(
     end: str | None,
     allow_holdout: bool = False,
     holdout_window: object | None = None,
+    smoothing_weeks: int = DEPLOYED_SMOOTHING_WEEKS,
 ) -> pd.DataFrame:
     """计算分数、缺失、滚动 RankIC 和行业对齐辅助数据。"""
 
@@ -207,7 +208,7 @@ def score_timeseries(
     deployed = smooth_rank_scores(
         raw,
         eligible,
-        window=DEPLOYED_SMOOTHING_WEEKS,
+        window=smoothing_weeks,
         min_periods=1,
     )
     result = pd.DataFrame(index=dates)

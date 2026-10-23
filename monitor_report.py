@@ -86,6 +86,10 @@ def write_monitor_package(
     report = {
         "schema_version": MONITOR_SCHEMA_VERSION,
         "monitor_id": monitor_id,
+        "smoothing_weeks": identity["smoothing_weeks"],
+        "evaluation_id": identity.get("evaluation_id"),
+        "candidate": identity.get("candidate"),
+        "style_kind": identity.get("style_kind"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": result.summary,
         "policy": identity["policy"],
@@ -155,7 +159,8 @@ def write_monitor_package(
         alert_table,
         "## 模型衰减演练",
         "",
-        "对最后 13 个信号周的原始分数做截面排名反转，再按正式 4 周平滑监控；"
+        "对最后 13 个信号周的原始分数做截面排名反转，再按本次候选的"
+        f" {identity['smoothing_weeks']} 周平滑监控；"
         "该演练只用于验证告警链路，不代表经济回测结果。",
         "",
         f"- 状态：`{decay['status']}`",
@@ -165,7 +170,7 @@ def write_monitor_package(
         "",
         "## 风格暴露",
         "",
-        "风格暴露复用 P3-4 的原始 Top-30 目标持仓口径，不等同于完整账本成交持仓。",
+        "风格暴露来自评估候选的原始目标持仓口径，不等同于完整账本成交持仓。",
         "",
         style_table,
         "## 实际行业主动暴露",
@@ -173,9 +178,10 @@ def write_monitor_package(
         industry_table,
         "## 口径与限制",
         "",
-        "- 模型层 RankIC 使用部署分数：原始五种子分数按日 rank 后做 4 周因果平滑。",
-        "- 净超额和换手来自 P4-4A 完整账本，不把日频收益重新解释为周频信号收益。",
-        "- 风格暴露沿用 P3-4 目标持仓；行业暴露使用完整账本实际持仓和数据集行业列。",
+        "- 模型层 RankIC 使用部署分数：原始模型分数按日 rank 后做"
+        f" {identity['smoothing_weeks']} 周因果平滑。",
+        "- 净超额和换手来自选定的完整账本，不把日频收益重新解释为周频信号收益。",
+        "- 风格暴露来自候选目标持仓；行业暴露使用完整账本实际持仓和数据集行业列。",
         "- 缺失率只统计可交易股票中缺少模型分数的比例。",
         "- 监控是 2018-2023 研究期离线报告，不包含生产实时推送。",
         "",
@@ -189,6 +195,10 @@ def write_monitor_package(
     return {
         "schema_version": MONITOR_SCHEMA_VERSION,
         "monitor_id": monitor_id,
+        "smoothing_weeks": identity["smoothing_weeks"],
+        "evaluation_id": identity.get("evaluation_id"),
+        "candidate": identity.get("candidate"),
+        "style_kind": identity.get("style_kind"),
         "created_at": report["generated_at"],
         "summary": result.summary,
         "decay_simulation": report["decay_simulation"],

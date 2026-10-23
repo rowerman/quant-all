@@ -23,6 +23,7 @@ from alpha.errors import AlphaMonitorError
 from alpha.logging_conf import get_logger
 from alpha.monitor_inputs import DEPLOYED_SMOOTHING_WEEKS
 from alpha.monitor_metrics import evaluate_monitor_frames, simulate_score_decay
+from alpha.monitor_plan_sources import load_plan_monitor_source
 from alpha.monitor_policy import (
     DEFAULT_ACCEPTANCE_ID,
     DEFAULT_EXPOSURE_ANALYSIS_ID,
@@ -95,10 +96,13 @@ def _monitor_code_sha256() -> str:
         "alpha/monitor_policy.py",
         "alpha/monitor_inputs.py",
         "alpha/monitor_metrics.py",
+        "alpha/monitor_plan_sources.py",
         "alpha/monitor_artifacts.py",
         "alpha/monitor_report.py",
         "alpha/portfolio.py",
         "alpha/evaluate.py",
+        "alpha/evaluation_plan.py",
+        "alpha/ledger_acceptance.py",
         "scripts/build_alpha/monitor.py",
     ):
         path = root / relative
@@ -309,6 +313,10 @@ def _source_and_frames(
         "holdings": holdings,
         "reference_turnover": reference_turnover,
         "sources": sources,
+        "evaluation_id": None,
+        "candidate": candidate,
+        "smoothing_weeks": DEPLOYED_SMOOTHING_WEEKS,
+        "style_kind": "p3_4_daily",
     }
 
 
@@ -317,6 +325,8 @@ def run_model_monitor(
     *,
     acceptance_id: str = DEFAULT_ACCEPTANCE_ID,
     exposure_analysis_id: str = DEFAULT_EXPOSURE_ANALYSIS_ID,
+    evaluation_id: str | None = None,
+    candidate: str | None = None,
     start: str | None = None,
     end: str | None = None,
     policy: MonitorPolicy | None = None,
@@ -329,13 +339,25 @@ def run_model_monitor(
 
     output_root = root or MODEL_DATA_DIR
     settings = policy or MonitorPolicy()
-    source = _source_and_frames(
-        model_id,
-        acceptance_id,
-        exposure_analysis_id,
-        root=output_root,
-        start=start,
-        end=end,
+    source = (
+        load_plan_monitor_source(
+            model_id,
+            acceptance_id,
+            evaluation_id,
+            candidate,
+            root=output_root,
+            start=start,
+            end=end,
+        )
+        if evaluation_id
+        else _source_and_frames(
+            model_id,
+            acceptance_id,
+            exposure_analysis_id,
+            root=output_root,
+            start=start,
+            end=end,
+        )
     )
     dates = source["rebalance_dates"]
     monitor_start = start or str(dates.min().date())
@@ -349,7 +371,10 @@ def run_model_monitor(
         "end": monitor_end,
         "sources": source["sources"],
         "policy": settings.to_dict(),
-        "smoothing_weeks": DEPLOYED_SMOOTHING_WEEKS,
+        "smoothing_weeks": source["smoothing_weeks"],
+        "evaluation_id": source["evaluation_id"],
+        "candidate": source["candidate"],
+        "style_kind": source["style_kind"],
         "code_sha256": code_hash,
     }
     monitor_id = _monitor_id(identity)
@@ -376,6 +401,8 @@ def run_model_monitor(
         policy=settings,
         start=monitor_start,
         end=monitor_end,
+        smoothing_weeks=source["smoothing_weeks"],
+        style_already_rolling=source["style_kind"] == "evaluation_rolling",
     )
     decay = simulate_score_decay(
         source["predictions"],
@@ -384,6 +411,7 @@ def run_model_monitor(
         policy=settings,
         start=monitor_start,
         end=monitor_end,
+        smoothing_weeks=source["smoothing_weeks"],
     )
     if not decay["alert_triggered"]:
         raise AlphaMonitorError("衰减演练未触发 RankIC alert")

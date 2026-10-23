@@ -109,8 +109,10 @@ def _style_timeseries(
     style_series: pd.DataFrame,
     signal_dates: pd.DatetimeIndex,
     policy: MonitorPolicy,
+    *,
+    already_rolling: bool,
 ) -> pd.DataFrame:
-    """按信号日计算绝对风格暴露的滚动均值。"""
+    """按信号日计算绝对风格暴露；支持已滚动的通用评估来源。"""
 
     required = {"trade_date", "style", "exposure"}
     missing = sorted(required - set(style_series.columns))
@@ -120,15 +122,25 @@ def _style_timeseries(
     if work.duplicated(["trade_date", "style"]).any():
         raise AlphaMonitorError("风格暴露存在重复日期和风格")
     work["exposure"] = pd.to_numeric(work["exposure"], errors="coerce")
-    if not np.isfinite(work["exposure"].to_numpy(dtype="float64")).all():
+    finite = np.isfinite(work["exposure"].to_numpy(dtype="float64"))
+    if already_rolling:
+        if np.isinf(work["exposure"].to_numpy(dtype="float64")).any():
+            raise AlphaMonitorError("预设滚动风格暴露包含无穷值")
+    elif not finite.all():
         raise AlphaMonitorError("风格暴露必须全部为有限值")
     pivot = work.pivot(index="trade_date", columns="style", values="exposure")
-    if not pd.DatetimeIndex(pivot.index).equals(signal_dates):
+    if already_rolling:
+        pivot = pivot.reindex(index=signal_dates)
+    elif not pd.DatetimeIndex(pivot.index).equals(signal_dates):
         raise AlphaMonitorError("风格暴露日期与监控信号日不一致")
-    rolling = pivot.abs().rolling(
-        policy.rolling_weeks,
-        min_periods=policy.min_periods,
-    ).mean()
+    rolling = (
+        pivot.abs()
+        if already_rolling
+        else pivot.abs().rolling(
+            policy.rolling_weeks,
+            min_periods=policy.min_periods,
+        ).mean()
+    )
     rows: list[dict] = []
     for day in signal_dates:
         values = rolling.loc[day].dropna()
@@ -401,6 +413,8 @@ def evaluate_monitor_frames(
     end: str | None = None,
     allow_holdout: bool = False,
     holdout_window: object | None = None,
+    smoothing_weeks: int = 4,
+    style_already_rolling: bool = False,
 ) -> MonitorResult:
     """计算一组已对齐的模型、账本和暴露监控结果。"""
 
@@ -417,10 +431,16 @@ def evaluate_monitor_frames(
         end=end,
         allow_holdout=allow_holdout,
         holdout_window=holdout_window,
+        smoothing_weeks=smoothing_weeks,
     )
     dates = pd.DatetimeIndex(score.index)
     ledger_frame = _ledger_timeseries(ledger, dates, settings)
-    style_frame = _style_timeseries(style_series, dates, settings)
+    style_frame = _style_timeseries(
+        style_series,
+        dates,
+        settings,
+        already_rolling=style_already_rolling,
+    )
     industry_frame = _industry_timeseries(
         holdings,
         dates,
@@ -528,6 +548,7 @@ def simulate_score_decay(
     weeks: int = 13,
     start: str | None = None,
     end: str | None = None,
+    smoothing_weeks: int = 4,
 ) -> dict:
     """反转最近若干周原始截面排名，验证 RankIC 告警链路。"""
 
@@ -541,6 +562,7 @@ def simulate_score_decay(
         settings,
         start=start,
         end=end,
+        smoothing_weeks=smoothing_weeks,
     )
     dates = pd.DatetimeIndex(original.index)[-min(weeks, len(original.index)) :]
     if len(dates) < 2:
@@ -565,6 +587,7 @@ def simulate_score_decay(
         settings,
         start=start,
         end=end,
+        smoothing_weeks=smoothing_weeks,
     )
     records = pd.DataFrame(
         {

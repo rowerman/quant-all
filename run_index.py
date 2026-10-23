@@ -35,6 +35,7 @@ def rebuild_run_index(
     windows = load_holdout_windows(windows_path)
     records = []
     for run_type, folder_name, consumed in (
+        ("evaluation", "evaluation", False),
         ("acceptance", "acceptance", False),
         ("final_holdout", "final_holdout", True),
     ):
@@ -57,8 +58,16 @@ def rebuild_run_index(
                     "run_id": str(run_id),
                     "run_type": run_type,
                     "status": str(manifest.get("status") or "unknown"),
-                    "start": scope.get("start") or scope.get("data_start"),
-                    "end": scope.get("end") or scope.get("data_end"),
+                    "start": (
+                        scope.get("start")
+                        or scope.get("data_start")
+                        or manifest.get("start")
+                    ),
+                    "end": (
+                        scope.get("end")
+                        or scope.get("data_end")
+                        or manifest.get("end")
+                    ),
                     "consumed_as_holdout": consumed,
                     "path": path.relative_to(base).as_posix(),
                 }

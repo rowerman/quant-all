@@ -73,6 +73,7 @@ from alpha.lifecycle import (
     run_model_lifecycle,
 )
 from alpha.portfolio import HoldingPolicy, select_holdings, smooth_rank_scores
+from alpha.risk import RiskGatePolicy, RiskGateResult, evaluate_risk_gate
 from alpha.predict import (
     load_model_manifest,
     load_prediction_parts,
@@ -139,6 +140,9 @@ __all__ = [
     "HoldingPolicy",
     "select_holdings",
     "smooth_rank_scores",
+    "RiskGatePolicy",
+    "RiskGateResult",
+    "evaluate_risk_gate",
     "load_model_manifest",
     "load_prediction_parts",
     "load_predictions",
