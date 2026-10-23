@@ -112,6 +112,8 @@ def test_v3_registration_and_parameter_validation():
     normalized = provider.validate_params(
         {
             "lifecycle_id": "p5_3_test",
+            "model_id": DEFAULT_PRIMARY_MODEL_ID,
+            "fallback_model_id": DEFAULT_FALLBACK_MODEL_ID,
             "top_n": 2,
             "rebalance_dates": ["2023-01-20", "2023-01-06"],
         }
@@ -119,8 +121,8 @@ def test_v3_registration_and_parameter_validation():
     assert normalized["model_id"] == DEFAULT_PRIMARY_MODEL_ID
     assert normalized["fallback_model_id"] == DEFAULT_FALLBACK_MODEL_ID
     assert normalized["rebalance_dates"] == ["2023-01-06", "2023-01-20"]
-    with pytest.raises(SpecError, match="lifecycle_id"):
-        provider.validate_params({})
+    with pytest.raises(SpecError, match="model_id"):
+        provider.validate_params({"lifecycle_id": "p5_3_test"})
     with pytest.raises(SpecError, match="不能相同"):
         provider.validate_params(
             {

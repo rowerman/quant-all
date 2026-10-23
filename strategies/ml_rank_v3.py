@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from alpha.errors import AlphaError
+from alpha.evaluation_plan import current_model_ids
 from alpha.lifecycle import (
     DEFAULT_FALLBACK_MODEL_ID,
     DEFAULT_PRIMARY_MODEL_ID,
@@ -23,6 +24,7 @@ from backtest.strategies.ml_rank import MlRankProvider
 from backtest.strategies.ml_rank_v2 import _rebalance_dates
 
 SMOOTHING_WEEKS = 4
+SCHEMA_MODEL_ID, SCHEMA_FALLBACK_ID = current_model_ids()
 
 
 class MlRankLifecycleProvider(MlRankProvider):
@@ -44,14 +46,14 @@ class MlRankLifecycleProvider(MlRankProvider):
             "name": "model_id",
             "label": "主模型 ID",
             "type": "string",
-            "default": DEFAULT_PRIMARY_MODEL_ID,
+            "default": SCHEMA_MODEL_ID,
             "description": "生命周期 normal 和 reduced 状态使用的主模型。",
         },
         {
             "name": "fallback_model_id",
             "label": "回滚模型 ID",
             "type": "string",
-            "default": DEFAULT_FALLBACK_MODEL_ID,
+            "default": SCHEMA_FALLBACK_ID,
             "description": "生命周期 rollback 状态使用的兜底模型。",
         },
         {
@@ -94,10 +96,8 @@ class MlRankLifecycleProvider(MlRankProvider):
         lifecycle_id = params.get("lifecycle_id")
         if not isinstance(lifecycle_id, str) or not lifecycle_id.strip():
             raise SpecError("ml_rank.params.lifecycle_id 必须是非空字符串")
-        model_id = params.get("model_id", DEFAULT_PRIMARY_MODEL_ID)
-        fallback_model_id = params.get(
-            "fallback_model_id", DEFAULT_FALLBACK_MODEL_ID
-        )
+        model_id = params.get("model_id")
+        fallback_model_id = params.get("fallback_model_id")
         for name, value in (
             ("model_id", model_id),
             ("fallback_model_id", fallback_model_id),

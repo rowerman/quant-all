@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from alpha.errors import AlphaError
+from alpha.evaluation_plan import current_model_ids
 from alpha.portfolio import smooth_rank_scores
 from alpha.predict import load_predictions, model_artifact_snapshot
 from backtest.data import MarketData
@@ -17,6 +18,7 @@ from backtest.strategies._factor_rank import weekly_last_dates
 from backtest.strategies.ml_rank import MlRankProvider
 
 SMOOTHING_WEEKS = 4
+SCHEMA_MODEL_ID, _ = current_model_ids()
 
 
 def _rebalance_dates(value) -> tuple[str, ...] | None:
@@ -51,7 +53,7 @@ class MlRankV2Provider(MlRankProvider):
             "name": "model_id",
             "label": "模型 ID",
             "type": "string",
-            "default": "lightgbm_ensemble_label_rank_6aea5c9299d5",
+            "default": SCHEMA_MODEL_ID,
             "description": "使用哪个已登记模型的样本外预测。",
         },
         {

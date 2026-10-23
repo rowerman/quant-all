@@ -4,13 +4,17 @@
 修改提供者源码，从而保持已登记源码哈希和既有策略版本不变。
 """
 
+from alpha.evaluation_plan import current_model_ids
+
+SCHEMA_MODEL_ID, SCHEMA_FALLBACK_ID = current_model_ids()
+
 PARAM_SCHEMAS = {
     ("ml_rank", "1"): (
         {
             "name": "model_id",
             "label": "模型 ID",
             "type": "string",
-            "default": "lightgbm_ensemble_label_rank_6aea5c9299d5",
+            "default": SCHEMA_MODEL_ID,
             "description": "使用哪个已登记模型的样本外预测。",
         },
         {
@@ -28,7 +32,7 @@ PARAM_SCHEMAS = {
             "name": "model_id",
             "label": "模型 ID",
             "type": "string",
-            "default": "lightgbm_ensemble_label_rank_6aea5c9299d5",
+            "default": SCHEMA_MODEL_ID,
             "description": "使用哪个已登记模型的样本外预测。",
         },
         {
@@ -62,14 +66,14 @@ PARAM_SCHEMAS = {
             "name": "model_id",
             "label": "主模型 ID",
             "type": "string",
-            "default": "lightgbm_ensemble_label_rank_6aea5c9299d5",
+            "default": SCHEMA_MODEL_ID,
             "description": "normal 和 reduced 状态使用的主模型。",
         },
         {
             "name": "fallback_model_id",
             "label": "回滚模型 ID",
             "type": "string",
-            "default": "ridge_label_rank_aaff2cb2fbcf",
+            "default": SCHEMA_FALLBACK_ID,
             "description": "rollback 状态使用的兜底模型。",
         },
         {

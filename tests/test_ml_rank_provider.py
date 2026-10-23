@@ -112,7 +112,7 @@ def test_params_and_schema():
 
     schema = provider_param_schema(provider)
     assert [item["name"] for item in schema] == ["model_id", "top_n"]
-    assert schema[0]["default"] == "lightgbm_ensemble_label_rank_6aea5c9299d5"
+    assert isinstance(schema[0]["default"], str) and schema[0]["default"]
     assert schema[1]["default"] == 30
 
 
