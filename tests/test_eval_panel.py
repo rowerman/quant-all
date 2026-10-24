@@ -24,7 +24,7 @@ from scripts.build_factors import validate
 from calculate.config import DB_FILE
 from calculate.errors import EvalFactorError, EvalPanelError, EvalParamError
 
-pytestmark = pytest.mark.skipif(not DB_FILE.exists(), reason="需要真实主库 db/quant.duckdb")
+pytestmark = pytest.mark.skipif(not DB_FILE.exists(), reason="需要真实主库 data/databases/quant.duckdb")
 
 START, END = "2024-05-06", "2024-05-10"
 

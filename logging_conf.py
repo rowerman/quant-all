@@ -1,6 +1,6 @@
 """计算包的日志配置。
 
-共享实现位于 :mod:`common.logging_conf`；本模块只绑定 ``calculate/logs/``。
+共享实现位于 :mod:`common.logging_conf`；本模块绑定 ``logs/research/evaluation/``。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ class TimestampedFileHandler(_SharedTimestampedFileHandler):
 
 
 def get_logger(module_name: str) -> logging.Logger:
-    """取得写入 ``calculate/logs/<模块名>/`` 的 logger。"""
+    """取得写入 ``logs/research/evaluation/<模块名>/`` 的 logger。"""
     return _get_logger(
         module_name,
         LOG_DIR,

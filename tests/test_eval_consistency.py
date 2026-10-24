@@ -13,7 +13,7 @@ from calculate.panel import EvalParams, build_panel, open_source
 from scripts.build_factors import validate
 from calculate.config import DB_FILE
 
-pytestmark = pytest.mark.skipif(not DB_FILE.exists(), reason="需要真实主库 db/quant.duckdb")
+pytestmark = pytest.mark.skipif(not DB_FILE.exists(), reason="需要真实主库 data/databases/quant.duckdb")
 
 START, END = "2024-01-01", "2024-12-31"
 

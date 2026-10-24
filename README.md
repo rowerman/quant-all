@@ -3,12 +3,14 @@
 ## 阅读顺序与运行方式
 
 本文件是计算包的使用文档。先读“快速调用”，再按需要查指标、上下文与底层函数。
-[面板细节](docs/panel.md) 和 [风格口径](docs/styles.md) 放在 docs/。
+[面板细节](../../../docs/research/evaluation/panel.md) 和
+[风格口径](../../../docs/research/evaluation/styles.md) 放在根 `docs/research/evaluation/`。
 
 在项目根目录 `/home/hanwen/quant` 使用 `.venv/bin/python`，或在 notebook 的项目环境里
-`import calculate`。不要在 calculate/ 内直接执行 `python evaluate.py`，那会改变包导入路径。
+`import calculate`。不要在 research/evaluation/calculate/ 内直接执行 `python evaluate.py`，那会改变包导入路径。
 使用 Python 3.12；依赖 numpy、pandas、scipy、duckdb（沿用项目 .venv）。
-后端、前端与因子相关性阶段已接入；后端原生计算资源保护见 [原生计算资源保护](docs/native.md)。
+后端、前端与因子相关性阶段已接入；后端原生计算资源保护见
+[原生计算资源保护](../../../docs/research/evaluation/native.md)。
 
 ## 快速调用
 
@@ -135,21 +137,21 @@ print(zscore(mad_winsorize([1., 2., 3., 100.])))
 本项目与数据项目（取数 / 清洗 / 建库 / 因子库）分开，目录约定：
 
 ```
-calculate/   计算包：只算，自带配置、错误码与日志     ← 本目录
-total_front_back/backend/    后端：接口、任务调度、流式输出
-total_front_back/frontend/   前端：纯 HTML/JS + ECharts
+research/evaluation/calculate/   计算包：只算，自带配置、错误码与日志     ← 本目录
+apps/monitor/backend/    后端：接口、任务调度、流式输出
+apps/monitor/frontend/   前端：纯 HTML/JS + ECharts
 ```
 
-计算包对数据侧只有三个依赖：`db/quant.duckdb`（行情、标签、指数与成分）、
-`db/factors.duckdb`（数据侧因子目录，当前评估不读取）、`factor_data/`（因子值）；另加数据项目的
+计算包对数据侧只有三个依赖：`data/databases/quant.duckdb`（行情、标签、指数与成分）、
+`data/databases/factors.duckdb`（数据侧因子目录，当前评估不读取）、`data/factors/`（因子值）；另加数据项目的
 `factors` 注册表用于取因子的定义与方向（`panel.py` 里的 `import factors`，
 尚未彻底解耦：目前因子定义实际来自 `factors` 注册表，目录库不是评估必需读取项）。
 
 三条边界：
 
 1. **只算**：不展示、不落库、不产生新因子；
-2. **只读**：数据一律经 DuckDB 只读连接（`db/quant.duckdb` 的 `md` / `ref` 表 +
-   `factor_data/` 的 parquet），不写数据产物；日志写本包 logs/，轻量 IC 的溢出临时文件自动清理；
+2. **只读**：数据一律经 DuckDB 只读连接（`data/databases/quant.duckdb` 的 `md` / `ref` 表 +
+   `data/factors/` 的 parquet），不写数据产物；日志写集中日志目录，轻量 IC 的溢出临时文件自动清理；
 3. **指标不缓存到磁盘**：结果只在单次请求的进程内存在，下一次请求重新算。
 
 ## 模块与依赖
@@ -158,9 +160,9 @@ total_front_back/frontend/   前端：纯 HTML/JS + ECharts
 |---|---|---|---|---|
 | `config.py` | 数据路径与常量（库、因子产物、本包日志目录） | 全部模块 | — | 只认目录结构，不引用数据项目的 `scripts`；换数据位置改这里 |
 | `errors.py` | `CalculateError` 基类与 `EVAL-1xx/2xx/3xx` 错误码 | 全部模块 | — | 后端 `MONITOR-1xx` 在 backend 里定义，别混进来 |
-| `logging_conf.py` | 绑定本包日志目录，处理器复用 `common.logging_conf` | 全部模块 | `config`、`common` | 日志写 `calculate/logs/`，与数据项目的 `logs/` 分开 |
+| `logging_conf.py` | 绑定本包日志目录，处理器复用 `common.logging_conf` | 全部模块 | `config`、`common` | 日志写 `logs/research/evaluation/` |
 | `params.py` | `EvalParams` 定义与校验 | `panel`、指标、接口层 | `errors` | 加字段要同步 `describe()`，meta 事件靠它回显参数 |
-| `universe.py` | 股票池定义与指数成分 CTE | `panel`、接口层 | `errors` | 全 A 池口径必须与数据项目的 `scripts/build_factors/validate.py` 的 `POOL_FILTER` 一字不差；指数池用**上一个已结束月份**的月末快照，别改成当月（会前视） |
+| `universe.py` | 股票池定义与指数成分 CTE | `panel`、接口层 | `errors` | 全 A 池口径必须与数据项目的 `core/data/scripts/build_factors/validate.py` 的 `POOL_FILTER` 一字不差；指数池用**上一个已结束月份**的月末快照，别改成当月（会前视） |
 | `panel.py` | 评估面板、连接、默认参数、`EvalContext` | `evaluate`、各指标、后续拆分阶段 | `factors` 注册表、`universe`、DuckDB、`config` | 面板列是公共契约，后续阶段只加不删；行数/交易日上限也在这里；**不要给面板加 ORDER BY**（几百万行排序要多花 2 秒以上，下游都按交易日分组） |
 | `correlation.py` | 按月取数、成对Spearman、Top-N与矩阵 | metrics/correlation | DuckDB、factors、panel上下文 | 成对缺失后重排名，不用标签；目录跟随context.factor_dir |
 | `metrics/correlation.py` | 相关性指标声明 | 注册表/evaluate | correlation、metrics/base | Top-N只影响明细数量，不改变全矩阵 |
@@ -215,11 +217,12 @@ for stage, payload in evaluate("MOM_20", params, stages=["overview", "ic_series"
 | `incremental_ic` | `metrics.incremental_ic`：剔除风格后残差的 RankIC（`residual`）与原始 RankIC（`raw`）对照、`delta`、`survivor_share`、逐日两条序列 |
 | `done` | 各 stage 耗时、总耗时、面板概览 |
 
-`correlation` 阶段已实现：与全部已注册且落盘因子的逐日成对 Spearman 均值、Top-N和全矩阵。前后端已接入，启动见 `backend/README.md`。
+`correlation` 阶段已实现：与全部已注册且落盘因子的逐日成对 Spearman 均值、Top-N和全矩阵。
+前后端已接入，启动见 `apps/monitor/backend/README.md`。
 
 ## 怎么加一个指标
 
-1. 在 `calculate/metrics/` 下新增一个模块，写 `compute(context, options) -> dict`；
+1. 在 `research/evaluation/calculate/metrics/` 下新增一个模块，写 `compute(context, options) -> dict`；
 2. 调 `register_metric(Metric(key=..., label=..., stage=..., compute=compute))` 注册；
 3. 重启调用进程，包会自动发现并导入该模块，不用编辑导入清单。
    已运行的进程可调用 `calculate.metrics.discover_metrics()` 发现新增文件（不会重载已导入模块）。
@@ -252,7 +255,7 @@ for stage, payload in evaluate("MOM_20", params, stages=["overview", "ic_series"
   多头超额 = 最高分位 − 池内均值，多空价差 = 最高分位 − 最低分位，各出等权与分位内市值加权。
   期收益逐日重叠（1 日与 20 日的持有区间互相套嵌），跨档的 t 值不可直接比较。
 - **风格拆分**：7 个 Barra 近似风格因子的定义、窗口与最小观测见
-  [docs/styles.md](docs/styles.md)；因子与风格都在回归样本上逐日做 3 倍 MAD 去极值 + z-score，
+  [风格口径](../../../docs/research/evaluation/styles.md)；因子与风格都在回归样本上逐日做 3 倍 MAD 去极值 + z-score，
   回归系数统一为「因子每 1 个标准差的风格暴露」，逐日截面回归（Fama-MacBeth），
   报系数时序均值与其 t 值、|日度 t| > 1.96 的占比；单日样本 < 30 只或因子常数时跳过，
   有效回归日 < 20 天只报「样本不足」。
@@ -287,11 +290,11 @@ for stage, payload in evaluate("MOM_20", params, stages=["overview", "ic_series"
 8 列原料与因子截面标准化 3.6 s、逐日回归 3 s），`incremental_ic` 2.5 s。
 流式推送下用户先看到 IC，再看到各项分层结果；进一步的压测与优化见 V11-9。
 
-日志按模块分目录写在 `calculate/logs/calculate_panel/`、`calculate/logs/calculate_evaluate/`
+日志按模块分目录写在 `logs/research/evaluation/calculate_panel/`、`logs/research/evaluation/calculate_evaluate/`
 （模块名里的点换成下划线，与数据项目的日志命名规则一致）。
 
 目录约定与后续安排见 `AiRecord/plans/20261011-1.md`（项目拆分）；
-前后端代码落在 `total_front_back/backend/` 与 `total_front_back/frontend/`，
+前后端代码落在 `apps/monitor/backend/` 与 `apps/monitor/frontend/`，
 本包只提供纯函数式的计算与流式 stage。
 
 ## 完整可调用函数参考
@@ -1469,10 +1472,10 @@ EVAL-101 参数/日期/阶段，102 面板，103 股票池，104 因子，201 �
 ### 验证命令
 
 ```bash
-.venv/bin/python -m pytest calculate/tests tests -q
+.venv/bin/python -m pytest research/evaluation/calculate/tests tests -q
 ```
 
-真实库相关测试需要 db/quant.duckdb 与 factor_data/；其余合成数据回归不依赖网络。
+真实库相关测试需要 data/databases/quant.duckdb 与 data/factors/；其余合成数据回归不依赖网络。
 
 ## 修复后性能核验（2026-10-12）
 
@@ -1491,7 +1494,7 @@ V11-5～V11-9 的相关性、前后端与多请求压测仍按原计划实施。
 ## V11-5 相关性接口（2026-10-12）
 
 模块 `calculate.correlation` 只读取产物，不使用数据项目内部脚本。
-`EvalContext.factor_dir` 保存此次评估所用的因子目录（默认 `factor_data/`）；
+`EvalContext.factor_dir` 保存此次评估所用的因子目录（默认 `data/factors/`）；
 `build_panel` 已传入此字段，相关性不会绕过调用者指定的自定义目录。
 `open_source` 默认每连接工作内存1GB、2线程；全历史轻量IC仍独立设4线程。
 
@@ -1521,4 +1524,4 @@ insufficient表示没有足够样本的可比较同伴，矩阵仍可有有效�
 相同有限掩码分组复用排序；成对删除后按保留的并列块重新排名，不能先对全截面
 排名再直接删股票。相关性不筛收益标签，不做去极值。不同因子对可以有不同样本，
 因此均值矩阵不保证半正定；Top-N按绝对相关性排序并保留正负号。
-完整分析性能请看 `docs/monitor/performance.md`，旧12指标耗时不包含本阶段。
+完整分析性能请看 `docs/apps/monitor/performance.md`，旧12指标耗时不包含本阶段。

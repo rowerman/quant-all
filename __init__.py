@@ -4,7 +4,7 @@
 - :mod:`calculate.metrics`：指标注册表与已实现指标（覆盖率、IC 家族）；
 - :mod:`calculate.evaluate`：按 stage 逐段产出结果，接口层直接转成 SSE。
 
-数据读取一律走 DuckDB 只读连接（主库的 ``md`` / ``ref`` 表 + ``factor_data`` 的 parquet）。
+数据读取一律走 DuckDB 只读连接（主库的 ``md`` / ``ref`` 表 + ``data/factors`` 的 parquet）。
 """
 
 from calculate.history import ic_sql, load_daily_ic

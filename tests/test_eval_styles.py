@@ -18,7 +18,7 @@ from calculate.styles import (
     lookback_start,
 )
 
-pytestmark = pytest.mark.skipif(not DB_FILE.exists(), reason="需要真实主库 db/quant.duckdb")
+pytestmark = pytest.mark.skipif(not DB_FILE.exists(), reason="需要真实主库 data/databases/quant.duckdb")
 
 START, END = "2024-03-01", "2024-03-29"
 LOOKBACK_START = "2022-12-01"

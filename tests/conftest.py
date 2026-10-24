@@ -14,7 +14,7 @@ YEAR = 2024
 def momentum_dir(tmp_path_factory):
     """把动量族 2024 年的因子构建到临时目录，供评估相关测试复用。"""
     if not DB_FILE.exists():
-        pytest.skip("需要真实主库 db/quant.duckdb")
+        pytest.skip("需要真实主库 data/databases/quant.duckdb")
     root = tmp_path_factory.mktemp("calculate_momentum")
     build_module.build(
         ["momentum"], f"{YEAR}-01-01", f"{YEAR}-12-31",

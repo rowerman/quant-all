@@ -17,7 +17,6 @@ from calculate.panel import (
 )
 from calculate.params import EvalParams
 from calculate.universe import membership_cte, resolve_universe, TRADABLE_FILTER
-
 logger = get_logger('calculate.history')
 
 
