@@ -105,7 +105,7 @@ def factor_glob(family: str, factor_dir: Path | str = FACTOR_DIR) -> str:
     return str(Path(factor_dir) / family / "year=*" / "part.parquet")
 
 
-def resolve_factor(name: str, factor_dir: Path | str = FACTOR_DIR) -> FactorSpec:
+def resolve_factor(name: str, factor_dir: Path | str = FACTOR_DIR) -> "FactorView":
     """取得因子定义，并确认它已经有落盘的数值列。
 
     参数:
@@ -135,7 +135,7 @@ def resolve_factor(name: str, factor_dir: Path | str = FACTOR_DIR) -> FactorSpec
         raise EvalFactorError(
             f"因子 {name} 在 {spec.family} 族的落盘文件里不存在；该族实际有：{available}"
         )
-    return spec
+    return FactorView.from_registry(spec, factor_dir)
 
 
 def count_trade_days(conn: duckdb.DuckDBPyConnection, start: str, end: str) -> int:
@@ -169,6 +169,35 @@ def check_label_columns(conn: duckdb.DuckDBPyConnection, label_columns) -> None:
         )
 
 
+def estimate_panel_rows_from_glob(
+    conn: duckdb.DuckDBPyConnection,
+    parquet_glob: str,
+    start: str,
+    end: str,
+) -> int:
+    """用明确 Parquet 通配路径估算评估区间内的面板行数上界。"""
+
+    first_year, last_year = int(start[:4]), int(end[:4])
+    partition_parent = Path(parquet_glob).parent
+    files_pattern = f"{partition_parent.name}/{Path(parquet_glob).name}"
+    files = [
+        path for path in sorted(partition_parent.parent.glob(files_pattern))
+        if path.parent.name.startswith("year=")
+        and first_year <= int(path.parent.name.split("=")[1]) <= last_year
+    ]
+    if not files:
+        raise EvalFactorError(
+            f"因子在 {start} ~ {end} 没有落盘文件：{parquet_glob}"
+        )
+    total = 0
+    for path in files:
+        rows = conn.execute(
+            "SELECT sum(num_rows) FROM parquet_file_metadata(?)", [str(path)]
+        ).fetchone()[0]
+        total += int(rows or 0)
+    return total
+
+
 def estimate_panel_rows(conn: duckdb.DuckDBPyConnection, family: str,
                         factor_dir: Path | str, start: str, end: str) -> int:
     """用 parquet 元数据估算区间内的面板行数上界（不扫数据本身）。
@@ -180,34 +209,19 @@ def estimate_panel_rows(conn: duckdb.DuckDBPyConnection, family: str,
         start: 起始日。
         end: 截止日。
     """
-    first_year, last_year = int(start[:4]), int(end[:4])
-    files = [
-        path for path in sorted(Path(factor_dir).joinpath(family).glob("year=*/part.parquet"))
-        if first_year <= int(path.parent.name.split("=")[1]) <= last_year
-    ]
-    if not files:
-        raise EvalFactorError(
-            f"{family} 族在 {start} ~ {end} 没有落盘文件；"
-            f"先跑 python -m scripts.build_factors.build --families {family}"
-        )
-    total = 0
-    for path in files:
-        rows = conn.execute(
-            "SELECT sum(num_rows) FROM parquet_file_metadata(?)", [str(path)]
-        ).fetchone()[0]
-        total += int(rows or 0)
-    return total
+    return estimate_panel_rows_from_glob(
+        conn, factor_glob(family, factor_dir), start, end
+    )
 
 
-def panel_sql(params: EvalParams, spec: FactorSpec, universe: UniverseSpec,
-              factor_dir: Path | str = FACTOR_DIR) -> str:
+def panel_sql(params: EvalParams, spec: "FactorView", universe: UniverseSpec) -> str:
     """生成评估面板的 SQL。
 
     参数:
         params: 评估参数。
         spec: 因子定义。
         universe: 股票池。
-        factor_dir: 因子数据根目录。
+        spec: 正式或候选的明确因子来源。
     """
     cte_tail = ""
     member_join = ""
@@ -224,7 +238,8 @@ def panel_sql(params: EvalParams, spec: FactorSpec, universe: UniverseSpec,
         "WITH "
         "factor_values AS ("
         f" SELECT stock_code, trade_date, CAST({spec.name} AS DOUBLE) AS factor"
-        f" FROM read_parquet('{factor_glob(spec.family, factor_dir)}', hive_partitioning = 1)"
+        f" FROM read_parquet('{spec.parquet_glob.replace(chr(39), chr(39) * 2)}',"
+        " hive_partitioning = 1)"
         f" WHERE trade_date BETWEEN DATE '{params.start}' AND DATE '{params.end}'), "
         "labels AS ("
         " SELECT stock_code, trade_date, "
@@ -297,6 +312,40 @@ def summarize_panel(frame: pd.DataFrame, universe: UniverseSpec) -> dict:
     }
 
 
+@dataclass(frozen=True)
+class FactorView:
+    """一次评估使用的因子元数据和明确的数据文件来源。"""
+
+    name: str
+    family: str
+    formula: str
+    description: str
+    steps: tuple[str, ...]
+    direction: int
+    lookback: int
+    fields: tuple[str, ...]
+    extra_sources: tuple[str, ...]
+    parquet_glob: str
+    formal: bool = True
+
+    @classmethod
+    def from_registry(cls, spec: FactorSpec, factor_dir: Path | str = FACTOR_DIR) -> "FactorView":
+        """把正式注册定义包装成带明确文件来源的评估视图。"""
+
+        return cls(
+            name=spec.name,
+            family=spec.family,
+            formula=spec.formula,
+            description=spec.description,
+            steps=spec.steps,
+            direction=spec.direction,
+            lookback=spec.lookback,
+            fields=spec.fields,
+            extra_sources=spec.extra_sources,
+            parquet_glob=factor_glob(spec.family, factor_dir),
+        )
+
+
 @dataclass
 class EvalContext:
     """一次评估请求的共享上下文。
@@ -312,7 +361,7 @@ class EvalContext:
     """
 
     params: EvalParams
-    spec: FactorSpec
+    spec: FactorView
     universe: UniverseSpec
     panel: pd.DataFrame
     summary: dict
@@ -414,18 +463,24 @@ class EvalContext:
 
 def build_panel(params: EvalParams, *, db_file: Path | str = DB_FILE,
                 factor_dir: Path | str = FACTOR_DIR,
+                factor: FactorView | None = None,
                 conn: duckdb.DuckDBPyConnection | None = None) -> EvalContext:
     """构建评估面板。
 
     参数:
         params: 评估参数。
         db_file: 日线主库路径。
-        factor_dir: 因子数据根目录。
+        factor_dir: 正式因子对照根目录。
+        factor: 显式因子来源；留空时按名称从正式注册表解析。
         conn: 已有的主库连接；留空则自行打开并在结束时关闭。
     """
     started = time.perf_counter()
     universe = resolve_universe(params.universe)
-    spec = resolve_factor(params.factor, factor_dir)
+    spec = factor or resolve_factor(params.factor, factor_dir)
+    if spec.name != params.factor:
+        raise EvalFactorError(
+            f"显式因子名 {spec.name!r} 与评估参数 {params.factor!r} 不一致"
+        )
 
     owns_connection = conn is None
     conn = conn or open_source(db_file)
@@ -437,7 +492,9 @@ def build_panel(params: EvalParams, *, db_file: Path | str = DB_FILE,
             raise EvalParamError(
                 f"区间含 {days} 个交易日，超过上限 {MAX_TRADE_DAYS}；请缩小起止范围"
             )
-        estimate = estimate_panel_rows(conn, spec.family, factor_dir, params.start, params.end)
+        estimate = estimate_panel_rows_from_glob(
+            conn, spec.parquet_glob, params.start, params.end
+        )
         if estimate > MAX_PANEL_ROWS:
             raise EvalPanelError(
                 f"区间内面板约 {estimate:,} 行，超过上限 {MAX_PANEL_ROWS:,} 行；请缩小起止范围"
@@ -445,7 +502,7 @@ def build_panel(params: EvalParams, *, db_file: Path | str = DB_FILE,
         labels = [params.label_column, params.label_column_for(1)]
         labels.extend(params.label_column_for(horizon) for horizon, _ in params.extra_label_specs())
         check_label_columns(conn, labels)
-        frame = conn.execute(panel_sql(params, spec, universe, factor_dir)).df()
+        frame = conn.execute(panel_sql(params, spec, universe)).df()
     finally:
         if owns_connection:
             conn.close()

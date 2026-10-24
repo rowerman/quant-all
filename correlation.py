@@ -110,6 +110,8 @@ def compute_correlation(context, options) -> dict:
     """读取上下文所在数据目录的所有因子，按月对齐池内键并计算相关性。"""
     if type(options['top_n']) is not int or not 1 <= options['top_n'] <= 100:
         raise MetricError('top_n 必须是 1～100 的整数')
+    if not getattr(getattr(context, "spec", None), "formal", True):
+        return compute_target_correlation(context, options)
     grouped = available_factors(context.factor_dir)
     names = [name for family_names in grouped.values() for name in family_names]
     if context.params.factor not in names:
@@ -136,5 +138,60 @@ def compute_correlation(context, options) -> dict:
             accumulate_correlations(frame, names, sums, days)
             conn.unregister('pool_keys')
             logger.info('相关性月块完成：factor=%s month=%s rows=%d factors=%d',
+                        context.params.factor, month_key, len(frame), len(names))
+    return correlation_result(names, sums, days, context.params.factor, options['top_n'])
+
+
+def compute_target_correlation(context, options) -> dict:
+    """只计算候选对正式因子的相关性，避免构建正式因子两两全矩阵。"""
+
+    grouped = available_factors(context.factor_dir)
+    formal_names = [
+        name
+        for family_names in grouped.values()
+        for name in family_names
+        if name != context.params.factor
+    ]
+    names = [context.params.factor, *formal_names]
+    sums = np.zeros((len(names), len(names)))
+    days = np.zeros(sums.shape, dtype=np.int64)
+    pool = context.panel.loc[context.panel.in_universe, ['stock_code', 'trade_date']]
+    target_column = 'f."' + context.params.factor.replace('"', '""') + '"'
+    with duckdb.connect() as conn:
+        conn.execute("SET memory_limit='512MB'")
+        conn.execute('SET threads=2')
+        for month_key, keys in pool.groupby(pool.trade_date.dt.to_period('M'), sort=True):
+            conn.register('pool_keys', keys)
+            frame = keys.copy()
+            target = conn.execute(
+                "SELECT f.stock_code, f.trade_date, "
+                + target_column
+                + " FROM read_parquet(?, hive_partitioning=1) f "
+                "JOIN pool_keys k USING(stock_code, trade_date) "
+                "WHERE f.trade_date BETWEEN ? AND ?",
+                [context.spec.parquet_glob, keys.trade_date.min(), keys.trade_date.max()],
+            ).df()
+            frame = frame.merge(
+                target, on=['stock_code', 'trade_date'], how='left',
+                validate='one_to_one',
+            )
+            for family, family_names in grouped.items():
+                selected = [name for name in family_names if name != context.params.factor]
+                if not selected:
+                    continue
+                path = str(Path(context.factor_dir) / family / 'year=*' / 'part.parquet')
+                selections = ','.join('f."' + name.replace('"', '""') + '"' for name in selected)
+                month = conn.execute(f'''SELECT f.stock_code, f.trade_date, {selections}
+                    FROM read_parquet(?, hive_partitioning=1, union_by_name=1) f
+                    JOIN pool_keys k USING(stock_code, trade_date)
+                    WHERE f.trade_date BETWEEN ? AND ?''',
+                    [path, keys.trade_date.min(), keys.trade_date.max()]).df()
+                frame = frame.merge(
+                    month, on=['stock_code', 'trade_date'], how='left',
+                    validate='one_to_one',
+                )
+            accumulate_correlations(frame, names, sums, days)
+            conn.unregister('pool_keys')
+            logger.info('候选相关性月块完成：factor=%s month=%s rows=%d factors=%d',
                         context.params.factor, month_key, len(frame), len(names))
     return correlation_result(names, sums, days, context.params.factor, options['top_n'])

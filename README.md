@@ -67,6 +67,7 @@ for stage, payload in evaluate("MOM_20", params,
 |---|---|---|
 | `EvalParams(factor, start, end, universe="all_a", horizon=5, price="close", quantiles=10, winsorize=True)` | 不可变评估输入；周期 1/3/5/10/15/20，价格 close/open，组数 5/10/20 | `describe()`、标签列映射方法；完整字段见下面函数参考 |
 | `EvalContext` | 通常由 `build_panel` 返回；手工构造需要 params/spec/universe/panel/summary/panel_elapsed_ms，db_file 可选 | `panel` 是 DataFrame；`daily_ic/bins/bin_matrices/styles/exposures` 复用请求内缓存 |
+| `FactorView` | 描述正式或候选因子的展示元数据、目标 Parquet glob 和正式因子对照目录 | 可直接传给 `build_panel(..., factor=view)`、`load_daily_ic(..., factor=view)` |
 | `ExposureResult` | `run_exposure` 或 `ctx.exposures()` 返回 | dates、coefficients、t_stats、intercept、r2、rows、skipped_days、residual、industry |
 | `Metric(key, label, stage, compute, params=(), requires_quantiles=False)` | 指标声明；compute(context, options) → dict | `describe()`；新增指标调用 `register_metric` |
 | `MetricParam(key, label, kind, default=None, choices=())` | 指标参数；kind 支持 int/bool/enum | 用 `resolve_options` 合并默认值与校验 |
@@ -182,6 +183,11 @@ apps/monitor/frontend/   前端：纯 HTML/JS + ECharts
 | `metrics/decay.py` | 多周期衰减：1/3/5/10/20 日标签的 RankIC 与多头超额、多空价差（各两套权重） | 经注册表调用 | `daily`、`binning`、`stats` | 各档独立取样本，末端缺标签只从该档剔除、不填充；主档取参数里的周期，参数用 15 档时回退到最接近的一档 |
 | `metrics/exposure.py` | 风格暴露（系数/t 值/逐日序列）与剔除风格后的增量 IC | 经注册表调用 | `exposure`、`stats`、`daily` | 两个 stage 共用同一份回归结果（`EvalContext.exposures()` 带缓存）；行业开关是 `enum` 参数，默认 `off` |
 | `evaluate.py` | stage 生成器与 meta 组装 | backend服务 | `panel`、`metrics` | `STAGE_ORDER` 是前后端的公共契约，后续阶段只往空位里填 |
+
+正式入口 `evaluate()` 先解析注册因子并构建面板，再调用 `evaluate_context()`。需要评估
+候选临时因子时，调用方构造 `FactorView(formal=False, parquet_glob=...)`，通过
+`build_panel(..., factor=view)` 构建同一面板后交给 `evaluate_context()`；指标注册、
+stage 顺序和输出结构完全一致。
 
 ## 怎么用
 

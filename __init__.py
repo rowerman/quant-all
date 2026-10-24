@@ -12,7 +12,13 @@ from calculate.correlation import (
     available_factors, accumulate_correlations, daily_spearman_matrix,
     correlation_result, compute_correlation,
 )
-from calculate.evaluate import STAGE_ORDER, evaluate, meta_payload, planned_stages
+from calculate.evaluate import (
+    STAGE_ORDER,
+    evaluate,
+    evaluate_context,
+    meta_payload,
+    planned_stages,
+)
 from calculate.metrics import (
     Metric,
     MetricParam,
@@ -26,6 +32,7 @@ from calculate.panel import (
     MAX_PANEL_ROWS,
     PANEL_COLUMNS,
     EvalContext,
+    FactorView,
     build_panel,
     default_params,
     open_source,
@@ -86,6 +93,7 @@ __all__ = [
     "STYLE_KEYS",
     "TRADABLE_FILTER",
     "EvalContext",
+    "FactorView",
     "EvalParams",
     "ExposureResult",
     "IndustrySource",
@@ -106,6 +114,7 @@ __all__ = [
     "default_params",
     "describe_styles",
     "evaluate",
+    "evaluate_context",
     "get_metric",
     "list_industry_sources",
     "list_metrics",

@@ -13,26 +13,36 @@ from calculate.errors import EvalParamError
 from calculate.logging_conf import get_logger
 from calculate.normalize import MAD_SCALE
 from calculate.panel import (
-    check_label_columns, count_trade_days, factor_glob, open_source, resolve_factor,
+    FactorView, check_label_columns, count_trade_days, open_source, resolve_factor,
 )
 from calculate.params import EvalParams
 from calculate.universe import membership_cte, resolve_universe, TRADABLE_FILTER
 logger = get_logger('calculate.history')
 
 
-def ic_sql(params: EvalParams, *, factor_dir: Path | str = FACTOR_DIR) -> str:
+def ic_sql(
+    params: EvalParams,
+    *,
+    factor_dir: Path | str = FACTOR_DIR,
+    factor: FactorView | None = None,
+) -> str:
     """生成逐日 IC 的 SQL：有效配对内平均并列排名，Pearson 可选 MAD 去极值。
 
     参数:
         params: 因子、股票池、区间、标签与去极值参数。
-        factor_dir: 因子 parquet 根目录。
+        factor_dir: 正式因子对照根目录。
+        factor: 显式因子来源；留空时按名称从正式注册表解析。
     """
-    spec = resolve_factor(params.factor, factor_dir)
+    spec = factor or resolve_factor(params.factor, factor_dir)
+    if spec.name != params.factor:
+        raise EvalParamError(
+            f"显式因子名 {spec.name!r} 与评估参数 {params.factor!r} 不一致"
+        )
     universe = resolve_universe(params.universe)
     membership = membership_cte(universe, params.start, params.end) + ', ' if universe.is_index else ''
     member_join = ('JOIN member m ON m.stock_code = f.stock_code AND m.trade_date = f.trade_date'
                    if universe.is_index else '')
-    path = factor_glob(spec.family, factor_dir).replace("'", "''")
+    path = spec.parquet_glob.replace("'", "''")
     normalise = ''
     pearson_x, pearson_y = 'factor', 'label'
     if params.winsorize:
@@ -75,14 +85,20 @@ def ic_sql(params: EvalParams, *, factor_dir: Path | str = FACTOR_DIR) -> str:
     FROM {source} GROUP BY trade_date ORDER BY trade_date'''
 
 
-def load_daily_ic(params: EvalParams, *, db_file: Path | str = DB_FILE,
-                  factor_dir: Path | str = FACTOR_DIR) -> pd.DataFrame:
+def load_daily_ic(
+    params: EvalParams,
+    *,
+    db_file: Path | str = DB_FILE,
+    factor_dir: Path | str = FACTOR_DIR,
+    factor: FactorView | None = None,
+) -> pd.DataFrame:
     """读取任意区间（含全历史）的日度 IC、RankIC 与配对数。
 
     参数:
         params: 同 build_panel 的评估参数；仅使用因子、日期、股票池、标签与 winsorize。
         db_file: 行情主库路径。
         factor_dir: 因子 parquet 根目录。
+        factor: 显式因子来源；留空时按名称从正式注册表解析。
 
     返回:
         交易日索引的 DataFrame，列 ic、rank_ic、n。无配对的日期不出现；
@@ -90,7 +106,7 @@ def load_daily_ic(params: EvalParams, *, db_file: Path | str = DB_FILE,
         attrs['elapsed_ms'] 为本次含校验和取数的耗时，结果不持久化。
     """
     started = time.perf_counter()
-    sql = ic_sql(params, factor_dir=factor_dir)
+    sql = ic_sql(params, factor_dir=factor_dir, factor=factor)
     conn = open_source(db_file)
     try:
         if count_trade_days(conn, params.start, params.end) == 0:

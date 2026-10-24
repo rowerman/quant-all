@@ -13,7 +13,7 @@ from collections.abc import Mapping
 
 from calculate.jsonutil import json_safe
 from calculate.metrics import list_metrics, metrics_by_stage, resolve_options
-from calculate.panel import build_panel, default_params
+from calculate.panel import EvalContext, FactorView, build_panel, default_params
 from calculate.params import EvalParams
 from calculate.stages import STAGE_ORDER
 from calculate.config import DB_FILE, FACTOR_DIR
@@ -22,9 +22,25 @@ from calculate.logging_conf import get_logger
 
 logger = get_logger("calculate.evaluate")
 
+
 def planned_stages() -> tuple[str, ...]:
     """列出当前已注册指标会真正产出的 stage（不含 meta 与 done）。"""
     return tuple(stage for stage in STAGE_ORDER[1:-1] if metrics_by_stage(stage))
+
+
+def _resolve_metric_options(metric_options: Mapping | None) -> dict[str, dict]:
+    """校验调用方传入的全部指标参数；在读库前失败。"""
+
+    if metric_options is not None and not isinstance(metric_options, Mapping):
+        raise EvalParamError("metric_options 必须是指标 key 到参数映射")
+    supplied = {} if metric_options is None else dict(metric_options)
+    unknown_metrics = supplied.keys() - {metric.key for metric in list_metrics()}
+    if unknown_metrics:
+        raise EvalParamError(f"未知指标参数：{sorted(unknown_metrics)}")
+    return {
+        metric.key: resolve_options(metric, supplied.get(metric.key))
+        for metric in list_metrics()
+    }
 
 
 def meta_payload(context, stages=None, metric_options=None) -> dict:
@@ -60,7 +76,8 @@ def meta_payload(context, stages=None, metric_options=None) -> dict:
 
 def evaluate(factor: str, params: EvalParams | None = None, *,
              db_file: Path | str | None = None, factor_dir: Path | str | None = None,
-             stages=None, metric_options: Mapping | None = None) -> Iterator[tuple[str, dict]]:
+             stages=None, metric_options: Mapping | None = None,
+             factor_view: FactorView | None = None) -> Iterator[tuple[str, dict]]:
     """跑一次因子评估，按 stage 逐段产出结果。
 
     参数:
@@ -71,11 +88,11 @@ def evaluate(factor: str, params: EvalParams | None = None, *,
         stages: 只跑这些已实现 stage；留空表示全部。
         metric_options: 指标 key 到参数映射，例如
             {"exposure": {"industry": "stock_basic"}}。不改变其他指标的参数。
+        factor_view: 显式因子来源；供候选临时目录复用同一评估入口。
 
     产出:
         ``(stage, payload)`` 序列，payload 保证是 JSON 可序列化的 dict。
     """
-    started = time.perf_counter()
     available = planned_stages()
     if isinstance(stages, str):
         raise EvalParamError("stages 必须是阶段名序列，不能是字符串")
@@ -83,14 +100,7 @@ def evaluate(factor: str, params: EvalParams | None = None, *,
     unknown = set() if selected is None else selected - set(available)
     if unknown:
         raise EvalParamError(f"未实现或未知 stage：{sorted(unknown)}；可选：{list(available)}")
-    if metric_options is not None and not isinstance(metric_options, Mapping):
-        raise EvalParamError("metric_options 必须是指标 key 到参数映射")
-    supplied = {} if metric_options is None else dict(metric_options)
-    unknown_metrics = supplied.keys() - {metric.key for metric in list_metrics()}
-    if unknown_metrics:
-        raise EvalParamError(f"未知指标参数：{sorted(unknown_metrics)}")
-    options = {metric.key: resolve_options(metric, supplied.get(metric.key))
-               for metric in list_metrics()}
+    _resolve_metric_options(metric_options)
     actual_stages = tuple(stage for stage in available if selected is None or stage in selected)
     target_db = db_file or DB_FILE
     target_dir = factor_dir or FACTOR_DIR
@@ -101,7 +111,38 @@ def evaluate(factor: str, params: EvalParams | None = None, *,
             f"参数里的因子名 {params.factor!r} 与调用参数 {factor!r} 不一致"
         )
 
-    context = build_panel(params, db_file=target_db, factor_dir=target_dir)
+    context = build_panel(
+        params,
+        db_file=target_db,
+        factor_dir=target_dir,
+        factor=factor_view,
+    )
+    yield from evaluate_context(
+        context,
+        stages=actual_stages,
+        metric_options=metric_options,
+    )
+
+
+def evaluate_context(
+    context: EvalContext,
+    *,
+    stages=None,
+    metric_options: Mapping | None = None,
+) -> Iterator[tuple[str, dict]]:
+    """在已构建的正式或候选面板上按固定 stage 顺序计算指标。"""
+
+    started = time.perf_counter()
+    available = planned_stages()
+    selected = None if stages is None else set(stages)
+    unknown = set() if selected is None else selected - set(available)
+    if unknown:
+        raise EvalParamError(f"未实现或未知 stage：{sorted(unknown)}；可选：{list(available)}")
+    options = _resolve_metric_options(metric_options)
+    actual_stages = tuple(
+        stage for stage in available if selected is None or stage in selected
+    )
+    params = context.params
     timings = [{"stage": "meta", "elapsed_ms": round(context.panel_elapsed_ms, 1)}]
     yield ("meta", json_safe(meta_payload(context, actual_stages, options)))
 
