@@ -18,6 +18,7 @@ from alpha.final_holdout_data import (
     read_final_holdout_json,
 )
 from alpha.predict import load_model_manifest
+from common.paths import PROJECT_ROOT
 from scripts.build_alpha.backtest_accept_artifacts import (
     atomic_write_frame,
     atomic_write_json,
@@ -41,29 +42,29 @@ def _canonical(payload: object) -> str:
 def code_sha256() -> str:
     """汇总最终验证链路的源码哈希。"""
 
-    project = Path(__file__).resolve().parents[1]
+    project = PROJECT_ROOT
     digest = hashlib.sha256()
     for relative in (
-        "alpha/final_holdout.py",
-        "alpha/final_holdout_artifacts.py",
-        "alpha/final_holdout_data.py",
-        "alpha/final_holdout_eval.py",
-        "alpha/final_holdout_ledger.py",
-        "alpha/final_holdout_report.py",
-        "alpha/final_holdout_runner.py",
-        "alpha/exposure.py",
-        "alpha/monitor_inputs.py",
-        "alpha/monitor_metrics.py",
-        "alpha/lifecycle_engine.py",
-        "backtest/strategies/_final_holdout.py",
-        "scripts/build_alpha/backtest_accept.py",
-        "scripts/build_alpha/backtest_accept_artifacts.py",
-        "scripts/build_alpha/backtest_accept_report.py",
-        "backtest/chunked.py",
-        "backtest/engine.py",
-        "backtest/ledger.py",
-        "backtest/allocation.py",
-        "backtest/signals.py",
+        "research/modeling/alpha/final_holdout.py",
+        "research/modeling/alpha/final_holdout_artifacts.py",
+        "research/modeling/alpha/final_holdout_data.py",
+        "research/modeling/alpha/final_holdout_eval.py",
+        "research/modeling/alpha/final_holdout_ledger.py",
+        "research/modeling/alpha/final_holdout_report.py",
+        "research/modeling/alpha/final_holdout_runner.py",
+        "research/modeling/alpha/exposure.py",
+        "research/modeling/alpha/monitor_inputs.py",
+        "research/modeling/alpha/monitor_metrics.py",
+        "research/modeling/alpha/lifecycle_engine.py",
+        "trading/backtest/strategies/_final_holdout.py",
+        "core/data/scripts/build_alpha/backtest_accept.py",
+        "core/data/scripts/build_alpha/backtest_accept_artifacts.py",
+        "core/data/scripts/build_alpha/backtest_accept_report.py",
+        "trading/backtest/chunked.py",
+        "trading/backtest/engine.py",
+        "trading/backtest/ledger.py",
+        "trading/backtest/allocation.py",
+        "trading/backtest/signals.py",
     ):
         path = project / relative
         digest.update(relative.encode("utf-8"))

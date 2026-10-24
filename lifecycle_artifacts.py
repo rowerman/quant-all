@@ -28,6 +28,7 @@ from alpha.logging_conf import get_logger
 from alpha.monitor_policy import MONITOR_SCHEMA_VERSION, number
 from alpha.predict import load_model_manifest, load_predictions
 from alpha.registry import get_registered_model
+from common.paths import PROJECT_ROOT
 
 logger = get_logger("alpha.lifecycle")
 
@@ -62,16 +63,16 @@ def _verify_files(folder: Path, declared: dict, label: str) -> None:
 def _code_sha256() -> str:
     """汇总生命周期计算和入口代码哈希。"""
 
-    root = Path(__file__).resolve().parents[1]
+    root = PROJECT_ROOT
     digest = hashlib.sha256()
     for relative in (
-        "alpha/lifecycle.py",
-        "alpha/lifecycle_policy.py",
-        "alpha/lifecycle_engine.py",
-        "alpha/lifecycle_report.py",
-        "alpha/lifecycle_artifacts.py",
-        "alpha/monitor_policy.py",
-        "scripts/build_alpha/lifecycle.py",
+        "research/modeling/alpha/lifecycle.py",
+        "research/modeling/alpha/lifecycle_policy.py",
+        "research/modeling/alpha/lifecycle_engine.py",
+        "research/modeling/alpha/lifecycle_report.py",
+        "research/modeling/alpha/lifecycle_artifacts.py",
+        "research/modeling/alpha/monitor_policy.py",
+        "core/data/scripts/build_alpha/lifecycle.py",
     ):
         path = root / relative
         digest.update(relative.encode("utf-8"))

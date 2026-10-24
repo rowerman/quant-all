@@ -6,22 +6,23 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
 
+from common.paths import DB_DIR
+from common.paths import DB_FILE
+from common.paths import FACTOR_DB_FILE
+from common.paths import FACTOR_DIR
+from common.paths import LOGS_DIR
+from common.paths import MODEL_DATA_DIR
+from common.paths import PROJECT_ROOT
 from alpha.errors import AlphaConfigError
 from alpha.errors import AlphaDataError
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DB_DIR = PROJECT_ROOT / "db"
-DB_FILE = DB_DIR / "quant.duckdb"
-FACTOR_DB_FILE = DB_DIR / "factors.duckdb"
-FACTOR_DIR = PROJECT_ROOT / "factor_data"
-MODEL_DATA_DIR = PROJECT_ROOT / "model_data"
 MODELS_DIR = MODEL_DATA_DIR / "models"
 ARCHIVE_MODELS_DIR = MODEL_DATA_DIR / "archive" / "models"
 RUNS_DIR = MODEL_DATA_DIR / "runs"
 ACCEPTANCE_RUNS_DIR = RUNS_DIR / "acceptance"
 EVALUATION_RUNS_DIR = RUNS_DIR / "evaluation"
 FINAL_HOLDOUT_RUNS_DIR = RUNS_DIR / "final_holdout"
-LOG_DIR = PROJECT_ROOT / "logs" / "alpha"
+LOG_DIR = LOGS_DIR / "research" / "modeling"
 
 
 def _iso_date(value: str, name: str) -> str:

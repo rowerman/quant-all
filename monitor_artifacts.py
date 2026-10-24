@@ -34,6 +34,7 @@ from alpha.monitor_policy import (
 )
 from alpha.predict import load_predictions
 from alpha.registry import get_registered_model
+from common.paths import PROJECT_ROOT
 
 MONITOR_COMPLETE_SCHEMA_VERSION = "alpha_model_monitor_complete_v1"
 MONITOR_RESULT_FILES = (
@@ -89,21 +90,21 @@ def _verify_declared_files(folder: Path, files: dict, label: str) -> None:
 def _monitor_code_sha256() -> str:
     """汇总监控计算与报告代码哈希。"""
 
-    root = Path(__file__).resolve().parents[1]
+    root = PROJECT_ROOT
     digest = hashlib.sha256()
     for relative in (
-        "alpha/monitor.py",
-        "alpha/monitor_policy.py",
-        "alpha/monitor_inputs.py",
-        "alpha/monitor_metrics.py",
-        "alpha/monitor_plan_sources.py",
-        "alpha/monitor_artifacts.py",
-        "alpha/monitor_report.py",
-        "alpha/portfolio.py",
-        "alpha/evaluate.py",
-        "alpha/evaluation_plan.py",
-        "alpha/ledger_acceptance.py",
-        "scripts/build_alpha/monitor.py",
+        "research/modeling/alpha/monitor.py",
+        "research/modeling/alpha/monitor_policy.py",
+        "research/modeling/alpha/monitor_inputs.py",
+        "research/modeling/alpha/monitor_metrics.py",
+        "research/modeling/alpha/monitor_plan_sources.py",
+        "research/modeling/alpha/monitor_artifacts.py",
+        "research/modeling/alpha/monitor_report.py",
+        "research/modeling/alpha/portfolio.py",
+        "research/modeling/alpha/evaluate.py",
+        "research/modeling/alpha/evaluation_plan.py",
+        "research/modeling/alpha/ledger_acceptance.py",
+        "core/data/scripts/build_alpha/monitor.py",
     ):
         path = root / relative
         if path.is_file():

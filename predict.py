@@ -315,7 +315,7 @@ def model_artifact_snapshot(model_id: str, root: Path | None = None) -> dict:
 
     参数:
         model_id: 已落盘模型 ID。
-        root: 可选的模型产物根目录，默认是 ``model_data/``。
+        root: 可选的模型产物根目录，默认是 ``data/models/``。
     """
 
     output_root = root or MODEL_DATA_DIR

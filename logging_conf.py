@@ -21,7 +21,7 @@ class TimestampedFileHandler(_SharedTimestampedFileHandler):
 
 
 def get_logger(module_name: str) -> logging.Logger:
-    """取得写入 ``logs/alpha/<模块名>/`` 的 logger。"""
+    """取得写入 ``logs/research/modeling/<模块名>/`` 的 logger。"""
 
     return _get_logger(
         module_name,
