@@ -8,7 +8,7 @@ import pytest
 
 import backtest.providers as providers
 import backtest.snapshot as snapshot_module
-from backtest.config import PROJECT_ROOT
+from common.paths import DB_FILE
 from backtest.errors import DataAlignmentError, SnapshotConflictError
 from backtest.pipeline import RunRequest, run
 from backtest.snapshot import (
@@ -33,7 +33,7 @@ from backtest.store import BacktestStore
 @pytest.fixture
 def snapshot_db(tmp_path):
     """从主库复制一段最小行情，供快照范围测试使用。"""
-    source = PROJECT_ROOT / "db" / "quant.duckdb"
+    source = DB_FILE
     target = tmp_path / "quant.duckdb"
     con = duckdb.connect(str(target))
     con.execute(f"ATTACH '{source}' AS src (READ_ONLY)")
