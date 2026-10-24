@@ -5,7 +5,7 @@ from pathlib import Path
 from backend import service
 from calculate.config import DB_FILE, FACTOR_DB_FILE
 
-# 前端与后端同在 total_front_back 下，用文件位置定位，不再依赖仓库根路径
+# 前端与后端同在 apps/monitor 下，用文件位置定位，不再依赖仓库根路径
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / 'frontend'
 
 

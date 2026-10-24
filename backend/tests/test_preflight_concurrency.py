@@ -7,9 +7,9 @@ import sys
 
 
 def _subprocess_env() -> tuple[Path, dict]:
-    """子进程要同时导入仓库根的 calculate 与 total_front_back 下的 backend。"""
+    """子进程要同时导入仓库根的 calculate 与 apps/monitor 下的 backend。"""
     backend_root = Path(__file__).resolve().parents[2]
-    project_root = backend_root.parent
+    project_root = Path(__file__).resolve().parents[4]
     roots = [str(project_root), str(backend_root)]
     if os.environ.get('PYTHONPATH'):
         roots.append(os.environ['PYTHONPATH'])

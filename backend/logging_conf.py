@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+from common.paths import LOGS_DIR
+
 
 class SegmentHandler(logging.Handler):
     """时间段日志处理器；参数 directory 为模块目录。"""
@@ -37,7 +39,9 @@ def get_logger(module):
     """返回后端模块logger，参数module同时确定logs下目录。"""
     logger = logging.getLogger(module)
     if not logger.handlers:
-        handler = SegmentHandler(Path(__file__).parent / 'logs' / module.replace('.', '_'))
+        handler = SegmentHandler(
+            LOGS_DIR / 'apps' / 'monitor' / module.replace('.', '_')
+        )
         handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)

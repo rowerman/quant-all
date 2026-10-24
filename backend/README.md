@@ -1,7 +1,8 @@
 # 因子监测后端
 
 从项目根目录执行 `bash tools/monitor/serve.sh`，浏览器打开 http://127.0.0.1:8800。
-环境缺少接口依赖时执行 `.venv/bin/pip install -r backend/requirements.txt`。
+环境缺少接口依赖时执行
+`.venv/bin/pip install -r apps/monitor/backend/requirements.txt`。
 服务仅使用本地产物，不自动取数或建库；必须单进程单 worker。
 
 | 模块 | 职责与调用关系 | 修改注意事项 |
@@ -23,11 +24,13 @@
 同步回测则通过服务日志记录同一组状态和耗时。
 2026-10-13 已验收：双任务完整分析重复5轮（真实调度器+SSE）与真实HTTP 1轮均完整结束、
 退出码0、无SIGSEGV，取消与慢消费者也通过；原生崩溃根因仍未知，该保护只覆盖后端入口，
-直接并行调用底层calculate不在此列。实测见 docs/monitor/performance.md。
+直接并行调用底层 calculate 不在此列。实测见
+[性能记录](../../../docs/apps/monitor/performance.md)。
 
-验证：`.venv/bin/python -m pytest backtest/tests calculate/tests tests total_front_back/backend/tests -q`
-（前后端都在 `total_front_back/` 下，该目录的 `conftest.py` 已把它加进导入路径）。
-接口详解见 `docs/monitor/api.md`；性能实测见 `docs/monitor/performance.md`。
+验证：`.venv/bin/python -m pytest -q`。
+（前后端都在 `apps/monitor/` 下，该目录的 `conftest.py` 已把它加进导入路径）。
+接口详解见 [接口文档](../../../docs/apps/monitor/api.md)；性能实测见
+[性能记录](../../../docs/apps/monitor/performance.md)。
 
 回测接口：
 
@@ -45,6 +48,6 @@
 `X-Request-ID` 响应头返回。回测任务状态会区分排队、预检、等待原生锁、运行、取消和终态，
 取消不会强杀原生计算线程，只在阶段或调仓执行段边界生效。
 
-回测结果保存到独立的 `db/backtest.duckdb`，不会修改主行情库。内置策略在
+回测结果保存到独立的 `data/databases/backtest.duckdb`，不会修改主行情库。内置策略在
 `GET /api/strategies` 时幂等写入策略表，与用户新建的策略共用同一条运行路径。
-接口详解见 `docs/backtest/api.md`；浏览器验收脚本为 `tools/monitor/backtest_check.py`。
+接口详解见 [回测接口](../../../docs/trading/backtest/api.md)；浏览器验收脚本为 `tools/monitor/backtest_check.py`。
