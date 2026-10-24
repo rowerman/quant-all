@@ -2,6 +2,7 @@
 
 from calculate.errors import CalculateError, EvalFactorError
 from backtest.errors import BacktestError, RunConflictError, RunNotFoundError
+from mining.errors import MiningError
 
 
 class MonitorError(Exception):
@@ -27,6 +28,8 @@ def error_payload(error, request_id):
         status, code, message = 409, error.code, error.message
     elif isinstance(error, BacktestError):
         status, code, message = 400, error.code, error.message
+    elif isinstance(error, MiningError):
+        status, code, message = error.status, error.code, error.message
     else:
         status, code, message = 500, 'MONITOR-104', '计算失败，请用请求编号查看服务日志'
     return status, {'code': code, 'message': message, 'request_id': request_id}
