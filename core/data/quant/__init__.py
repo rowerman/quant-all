@@ -1,0 +1,57 @@
+"""量化研究读取层：代码归一、DuckDB 连接与数据加载。"""
+
+from quant.codes import board_of, infer_exchange, normalize_code
+from quant.loaders import (
+    load_calendar,
+    load_corporate_actions,
+    load_financial,
+    load_financial_manifest,
+    load_financial_panel,
+    load_index_constituents,
+    load_index_basic,
+    load_index_daily,
+    load_index_weight,
+    load_label,
+    load_label_wide,
+    load_members,
+    load_panel,
+    load_panel_wide,
+    load_stock_basic,
+    load_suspend_segments,
+    load_sw_industry_member,
+    load_sw_index_daily,
+)
+from quant.loaders_factors import (
+    built_families,
+    load_factor_list,
+    load_factor_panel,
+    load_factor_wide,
+)
+
+__all__ = [
+    "board_of",
+    "infer_exchange",
+    "normalize_code",
+    "built_families",
+    "load_calendar",
+    "load_corporate_actions",
+    "load_factor_list",
+    "load_factor_panel",
+    "load_factor_wide",
+    "load_financial",
+    "load_financial_manifest",
+    "load_financial_panel",
+    "load_index_constituents",
+    "load_index_basic",
+    "load_index_daily",
+    "load_index_weight",
+    "load_label",
+    "load_label_wide",
+    "load_members",
+    "load_panel",
+    "load_panel_wide",
+    "load_stock_basic",
+    "load_suspend_segments",
+    "load_sw_industry_member",
+    "load_sw_index_daily",
+]

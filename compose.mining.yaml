@@ -1,0 +1,42 @@
+services:
+  mining-worker:
+    build:
+      context: .
+      dockerfile: research/mining_worker/Dockerfile
+    image: quant-mining-worker:s4
+    restart: unless-stopped
+    user: "${MINING_WORKER_UID:-1000}:${MINING_WORKER_GID:-1000}"
+    read_only: true
+    ports:
+      - "127.0.0.1:8790:8790"
+    environment:
+      DEEPSEEK_API_KEY: ${FACTOR_DEEPSEEK_API:?FACTOR_DEEPSEEK_API is required}
+      CHAT_MODEL: ${MINING_WORKER_MODEL:-deepseek/deepseek-chat}
+      MINING_WORKER_STATE_DIR: /state
+      MINING_WORKER_JOB_TIMEOUT: ${MINING_WORKER_JOB_TIMEOUT:-300}
+      MINING_WORKER_CONFIG_FILE: /app/configs/mining/worker.json
+      LOG_LLM_CHAT_CONTENT: "false"
+      LOG_TRACE_PATH: /tmp/rdagent-log
+      MINING_WORKER_LOG_DIR: /logs
+      HOME: /tmp
+    volumes:
+      - ./data/mining_worker:/state
+      - ./logs/research/mining:/logs
+    tmpfs:
+      - /tmp
+    secrets:
+      - mining_worker_token
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+secrets:
+  mining_worker_token:
+    file: ./data/mining_worker/token

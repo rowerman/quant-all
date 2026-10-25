@@ -1,0 +1,20 @@
+# 回测、取数、计算与 Web 服务的直接依赖。
+# 完整传递依赖见 requirements.lock。
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==25.0.1
+duckdb==1.5.5
+scipy==1.18.1
+numba==0.61.2
+joblib==1.6.0
+scikit-learn==1.9.1
+lightgbm==4.7.0
+vectorbt==0.28.5
+tushare==1.4.29
+requests==2.34.2
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn==0.53.0
+plotly==5.24.1
+httpx==0.28.1
+pytest==9.1.1

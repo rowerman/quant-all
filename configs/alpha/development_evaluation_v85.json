@@ -1,0 +1,146 @@
+{
+  "schema_version": "alpha_model_evaluation_plan_v3",
+  "reference": "RIDGE_RAW",
+  "gate": {
+    "expected_years": [2018, 2019, 2020, 2021, 2022, 2023],
+    "required_improvements": 2,
+    "turnover_multiple_limit": 2.0
+  },
+  "risk_gate": {
+    "rolling_weeks": 13,
+    "min_periods": 8,
+    "max_size_abs_exposure": 2.0,
+    "max_liquidity_abs_exposure": 2.0,
+    "max_industry_active_weight": 0.35
+  },
+  "selection_metrics": [
+    "annual_return",
+    "sharpe",
+    "max_drawdown",
+    "turnover_two_way_annual"
+  ],
+  "candidates": [
+    {
+      "name": "RIDGE_RAW",
+      "source": {
+        "kind": "model",
+        "id": "ridge_label_rank_aaff2cb2fbcf"
+      },
+      "score_policy": {"kind": "raw", "smoothing_weeks": 1},
+      "holding_policy": {"kind": "top_n", "top_n": 30},
+      "priority": 0,
+      "selectable": true
+    },
+    {
+      "name": "LIGHTGBM_RAW",
+      "source": {
+        "kind": "model",
+        "id": "lightgbm_ensemble_label_rank_6aea5c9299d5"
+      },
+      "score_policy": {"kind": "raw", "smoothing_weeks": 1},
+      "holding_policy": {"kind": "top_n", "top_n": 30},
+      "priority": 0,
+      "selectable": true
+    },
+    {
+      "name": "RIDGE_SMOOTH_4W",
+      "source": {
+        "kind": "model",
+        "id": "ridge_label_rank_aaff2cb2fbcf"
+      },
+      "score_policy": {"kind": "smooth_rank", "smoothing_weeks": 4},
+      "holding_policy": {"kind": "top_n", "top_n": 30},
+      "priority": 2,
+      "selectable": true
+    },
+    {
+      "name": "LIGHTGBM_SMOOTH_4W",
+      "source": {
+        "kind": "model",
+        "id": "lightgbm_ensemble_label_rank_6aea5c9299d5"
+      },
+      "score_policy": {"kind": "smooth_rank", "smoothing_weeks": 4},
+      "holding_policy": {"kind": "top_n", "top_n": 30},
+      "priority": 2,
+      "selectable": true
+    },
+    {
+      "name": "SKLEARN_HIST_RAW",
+      "source": {
+        "kind": "model",
+        "id": "sklearn_hist_gbdt_label_rank_83e1200e554f"
+      },
+      "score_policy": {"kind": "raw", "smoothing_weeks": 1},
+      "holding_policy": {"kind": "top_n", "top_n": 30},
+      "priority": 0,
+      "selectable": true
+    },
+    {
+      "name": "SKLEARN_HIST_SMOOTH_4W",
+      "source": {
+        "kind": "model",
+        "id": "sklearn_hist_gbdt_label_rank_83e1200e554f"
+      },
+      "score_policy": {"kind": "smooth_rank", "smoothing_weeks": 4},
+      "holding_policy": {"kind": "top_n", "top_n": 30},
+      "priority": 2,
+      "selectable": true
+    },
+    {
+      "name": "RIDGE_BUFFER_45",
+      "source": {
+        "kind": "model",
+        "id": "ridge_label_rank_aaff2cb2fbcf"
+      },
+      "score_policy": {"kind": "raw", "smoothing_weeks": 1},
+      "holding_policy": {
+        "kind": "rank_buffer",
+        "top_n": 30,
+        "buffer_rank": 45
+      },
+      "priority": 1,
+      "selectable": true
+    },
+    {
+      "name": "LIGHTGBM_BUFFER_45",
+      "source": {
+        "kind": "model",
+        "id": "lightgbm_ensemble_label_rank_6aea5c9299d5"
+      },
+      "score_policy": {"kind": "raw", "smoothing_weeks": 1},
+      "holding_policy": {
+        "kind": "rank_buffer",
+        "top_n": 30,
+        "buffer_rank": 45
+      },
+      "priority": 1,
+      "selectable": true
+    },
+    {
+      "name": "LIGHTGBM_RIDGE_BLEND_50_50",
+      "source": {
+        "kind": "blend",
+        "id": "LIGHTGBM_RIDGE_BLEND_50_50",
+        "members": [
+          "lightgbm_ensemble_label_rank_6aea5c9299d5",
+          "ridge_label_rank_aaff2cb2fbcf"
+        ],
+        "weights": [0.5, 0.5]
+      },
+      "score_policy": {"kind": "raw", "smoothing_weeks": 1},
+      "holding_policy": {"kind": "top_n", "top_n": 30},
+      "priority": 3,
+      "selectable": false
+    }
+  ],
+  "controls": [
+    {
+      "name": "B4_ALL_RANK",
+      "source": {"kind": "baseline", "id": "B4_ALL_RANK"},
+      "score_policy": {"kind": "raw", "smoothing_weeks": 1},
+      "holding_policy": {"kind": "top_n", "top_n": 30},
+      "priority": 99,
+      "selectable": false
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": "mining_quality_v1",
+  "forward_look_samples": 3,
+  "forward_look_relative_tolerance": 0.00001,
+  "max_flat_day_share": 0.01,
+  "correlation_sample_days": 100,
+  "correlation_min_stocks": 5,
+  "correlation_min_days": 20,
+  "correlation_max_absolute": 0.9,
+  "quick_min_valid_days": 20,
+  "warning_rank_ic": 0.02,
+  "warning_icir": 0.2,
+  "warning_year_sign_ratio": 0.6
+}

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-monorepo"
+version = "0.0.0"
+description = "A 股数据、因子、模型、评估、回测与监测综合项目"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[tool.setuptools]
+packages = [
+  "common",
+  "quant",
+  "factors",
+  "scripts",
+  "scripts.build_alpha",
+  "scripts.build_db",
+  "scripts.build_factors",
+  "scripts.clean",
+  "scripts.sources",
+  "alpha",
+  "alpha.modeling",
+  "alpha.modeling.backends",
+  "calculate",
+  "calculate.metrics",
+  "backtest",
+  "backtest.strategies",
+  "backend",
+  "mining",
+  "mining_worker",
+]
+package-dir = {common = "core/common", quant = "core/data/quant", scripts = "core/data/scripts", factors = "core/factors", alpha = "research/modeling/alpha", calculate = "research/evaluation/calculate", backtest = "trading/backtest", backend = "apps/monitor/backend", mining = "research/mining", mining_worker = "research/mining_worker"}
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.pytest.ini_options]
+testpaths = [
+  "tests",
+  "research/evaluation/calculate/tests",
+  "trading/backtest/tests",
+  "apps/monitor/backend/tests",
+]
+

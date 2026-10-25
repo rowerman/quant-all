@@ -1,0 +1,293 @@
+# 自动因子挖掘模块
+
+当前实现覆盖 S2～S9：领域契约、运行与候选状态机、独立候选存储、幂等、并发锁、
+中断恢复、日志、错误码、字段算子目录、受控 DSL、候选评估、独立 RD-Agent Worker、
+挖掘编排、Web 人工审核和批量正式发布。S9 已由用户确认交付，当前结果见
+[综合验收记录](acceptance.md)。
+
+## 启动与停止
+
+以下命令都从项目根目录 `/home/hanwen/quant` 执行。挖掘功能由 RD-Agent Worker
+和监测站主服务两个进程组成；只启动监测站时页面可以打开，但提交研究假设会返回
+`MINING-119`。
+
+### 1. 准备
+
+确认自带的 Python 环境已安装项目包：
+
+```bash
+cd /home/hanwen/quant
+.venv/bin/python -m pip install -e . --no-deps
+```
+
+Worker 使用本地 Token 鉴权。首次启动前生成 Token，已有文件会直接复用，文件权限
+应为 `0600`：
+
+```bash
+.venv/bin/python -c \
+  'from common.paths import DATA_DIR; from mining.worker_client import ensure_worker_token; ensure_worker_token(DATA_DIR / "mining_worker" / "token")'
+```
+
+`.env` 只由 Compose 读取，至少需要提供 `FACTOR_DEEPSEEK_API`。该 Key 只映射到 Worker
+容器，不传给监测站主服务，也不要导出到当前 shell。
+
+### 2. 启动 Worker
+
+```bash
+docker compose --env-file .env -f compose.mining.yaml up -d --build
+docker compose --env-file .env -f compose.mining.yaml ps
+curl --fail --silent http://127.0.0.1:8790/health
+```
+
+健康接口应返回 `status=ready`、`mode=rdagent`、`rdagent_version=1.0.0` 和当前模型。
+Worker 作业库与 Token 位于 `data/mining_worker/`，运行日志位于
+`logs/research/mining/mining_worker_service/`。Worker 同时只执行一个作业。
+
+### 3. 启动监测站
+
+在两个不同终端中分别运行 Worker 和监测站。启动监测站前，必须在同一终端显式设置
+Worker 地址：
+
+```bash
+cd /home/hanwen/quant
+export MINING_WORKER_URL=http://127.0.0.1:8790
+bash tools/monitor/serve.sh
+```
+
+监测站是前台服务，打开 http://127.0.0.1:8800/#/mining 进入挖掘页面。首次启动会创建
+独立候选库 `data/databases/factor_mining.duckdb` 和 `data/factor_mining/`；只有人工批准
+并执行正式发布后，才会写入 `mined` 正式因子。
+
+设置 `MONITOR_PORT` 可以修改监测站端口，例如：
+
+```bash
+MONITOR_PORT=8801 bash tools/monitor/serve.sh
+```
+
+### 4. 验证
+
+Worker 健康后，再检查监测站是否能读到挖掘入口：
+
+```bash
+curl --fail --silent http://127.0.0.1:8800/api/mining/options
+```
+
+返回结果中的 `worker_configured` 应为 `true`。页面提交失败时先检查：
+
+| 错误码 | 常见原因 | 检查方式 |
+|---|---|---|
+| `MINING-119` | 未设置 `MINING_WORKER_URL`、Token 不一致或 Worker Key 未配置 | 检查主服务环境、Token 文件权限和 Worker `/health` |
+| `MINING-103` | Worker 不可达或响应失败 | 检查容器状态、8790 端口和 Worker 日志 |
+| `MINING-102` | Worker 已有作业在运行 | 等待当前作业结束，不要启动第二个 Worker |
+
+生产路径不会回退到 Mock。Worker 不可用时应修复启动配置，不要用测试夹具代替真实挖掘。
+
+### 5. 停止
+
+监测站运行在前台，在对应终端按 `Ctrl+C` 停止。Worker 不再使用时执行：
+
+```bash
+docker compose --env-file .env -f compose.mining.yaml stop
+```
+
+需要同时移除 Compose 创建的容器和网络时执行：
+
+```bash
+docker compose --env-file .env -f compose.mining.yaml down
+```
+
+`down` 不会删除挂载的 Worker Token、作业库、候选数据或正式因子。
+
+## 模块边界
+
+```text
+监测站 Web（S7）
+  -> backend.mining_service 预算、运行视图、人工审批和发布入口
+  -> mining.orchestrator   生成、筛选、完整评估、冻结和测试段编排
+  -> mining.worker_client    Worker 作业调用与候选 S3 二次校验
+       -> mining_worker      Python 3.11 独立 Worker 的纯协议和本地 HTTP 服务
+  -> mining.contracts       请求、冻结上下文、候选、评估、审批和发布对象
+  -> mining.catalog         字段、算子、时点与目录 schema 核对
+  -> mining.expression_*    解析、安全校验、规范化、稳定命名和 SQL 分层
+  -> mining.evaluate_candidate 候选物化、门禁、快速筛选与可选完整评估
+  -> mining.states          运行、候选和发布状态机
+  -> mining.storage         MiningStore 公共存储入口
+       -> storage_runs      运行、冻结上下文、中断与恢复
+       -> storage_candidates 候选定义、去重与状态迁移
+       -> storage_evidence  评估报告与技术门禁
+       -> storage_review    审批、测试段和发布记录
+       -> storage_publications 发布批次、逐候选关联与状态收口
+       -> storage_events    不可变事件与临时目录清理
+       -> storage_schema    DuckDB schema 与版本
+```
+
+`mining.orchestrator` 组合研究与测试阶段。S8 由独立
+`MiningPublicationService` 重建并原子提交正式 `mined` 族，详见
+[正式入库](publication.md)。S6 的详细流程和恢复规则见
+[挖掘编排](orchestration.md)，Web 路由、事件流和审批规则见 [挖掘 Web](web.md)。
+
+字段和算子的冻结配置位于 `configs/mining/catalog.json`。完整字段、单位和可用时点见
+[字段与算子目录](catalog.md)，DSL 语法、编译和安全边界见 [受控 DSL](dsl.md)。
+
+## 数据位置
+
+```text
+候选元数据   data/databases/factor_mining.duckdb
+候选运行目录 data/factor_mining/runs/<run_id>/
+候选缓存     data/factor_mining/cache/
+候选因子值   data/factor_mining/runs/<run_id>/<candidate_id>/factor/year=YYYY/part.parquet
+评估报告     data/factor_mining/runs/<run_id>/<candidate_id>/evaluations/
+模块日志     logs/research/mining/<module>/
+
+正式 mined（仅 S8 临时验收或用户确认发布时写）
+data/factors/mined -> .mined-versions/<batch_id>
+data/factors/.mined-versions/<batch_id>/
+data/databases/factors.duckdb
+data/databases/quant.duckdb
+```
+
+候选库的 schema 版本为 `mining_v1`。发现未知版本时直接拒绝启动，不做静默迁移。
+
+## 基本用法
+
+```python
+from mining import FrozenContext, MiningRunRequest, MiningStore
+
+store = MiningStore()
+request = MiningRunRequest(
+    idempotency_key="client-run-20261024-001",
+    hypothesis="短期价格反转可能带来超额收益",
+)
+context = FrozenContext(data_fingerprint="<64位数据快照哈希>")
+run = store.create_run(request, context)
+
+store.transition_run(
+    run["run_id"],
+    "generating",
+    event_key="generation_started",
+    stage="generating",
+)
+```
+
+同一 `idempotency_key` 和相同请求再次提交会返回 `reused=True` 的原运行；键相同但请求
+或冻结上下文不同会返回 `MINING-105`。页面通过 `/api/mining/*` 的 S7 服务访问候选，
+不得直接访问候选 DuckDB 表。HTTP 契约见 [监测站 API](../../apps/monitor/api.md)。
+
+受控 DSL 的基本用法：
+
+```python
+from mining import validate_expression
+
+validated = validate_expression("rank(mean(ret, 20))", direction=1)
+candidate = validated.to_candidate(
+    mechanism="短期反转",
+    description="二十日收益的截面排名",
+    steps=("计算二十日平均收益", "按交易日做截面排名"),
+    discovery_round=1,
+    discovery_index=1,
+)
+```
+
+校验失败直接抛出 `MINING-114`，不会执行 SQL 或写入候选库。目录和行情库 schema 不一致
+时抛出 `MINING-115`。
+
+候选评估用法：
+
+```python
+from mining import CandidateEvaluationInput, evaluate_candidate
+
+result = evaluate_candidate(
+    CandidateEvaluationInput(
+        run_id=run["run_id"],
+        candidate_id=candidate["candidate_id"],
+        candidate=definition,
+        context=context,
+        candidate_root=candidate_root,
+        run_full=False,
+    )
+)
+assert result.technical.stage == "technical"
+```
+
+快速筛选只计算研究期轻量 RankIC；完整评估只在 `run_full=True`、技术门禁和快速筛选
+都通过时执行。`evaluate_candidate` 只返回报告和门禁对象，不修改候选状态，也不写候选
+元数据库；S6 使用 `evaluate_full_candidate()` 和 `evaluate_holdout_candidate()`
+补充单阶段入口，并通过 S2 存储接口推进状态。详细契约见
+[候选评估与质量门禁](evaluation.md)。
+
+Worker 用法与部署命令见 [独立 RD-Agent Worker](worker.md)。主服务只接受 Worker 返回的
+未信任表达式草稿，稳定名称、依赖、回看窗口、语义哈希和候选 ID 均由 S3 重新计算。
+
+编排用法：
+
+```python
+from mining import MiningOrchestrator
+
+orchestrator = MiningOrchestrator()
+run = orchestrator.create_run(request)
+progress = orchestrator.progress(run["run_id"])
+```
+
+默认后台执行；Worker 不可用时明确失败，不切换到 Mock。候选失败率达到 75% 且至少检查
+4 个候选后停止研究和完整评估，测试段不会打开。
+
+## 写入规则
+
+- 所有状态写入都经过模块文件锁、DuckDB 事务和条件更新，不允许直接执行 SQL 跳状态。
+- 运行首次进入 `generating` 时占用唯一执行槽；其他运行保持 `queued`。
+- 进程重启后调用 `interrupt_active_runs()`，只把活动运行和候选标为 `interrupted`；
+  用户显式调用 `resume_run()` 后才回到各自中断前阶段。
+- 同运行内相同候选内容重复写入是幂等操作；语义相同但展示内容不同会冲突。
+- 模块测试段由 `claim_holdout()` 唯一领取，同批次同证据重复调用幂等。
+- 编排器只在入围候选冻结后领取测试段；测试段结果不反馈给 Worker 或用于候选重排。
+- 数据、目录或正式因子清单变化时，运行和全部未终态候选原子进入 `stale`。
+- 审批必须绑定当前候选内容、冻结上下文、通过的技术门禁、通过的测试段报告和证据哈希。
+- 正式发布必须整批覆盖运行内全部已批准候选，批准和发布是两个独立动作。
+- 发布先重建完整 `mined` 族并全量校验，再通过版本目录和原子链接切换；失败恢复旧版本。
+- 普通源码因子构建不会覆盖 `mined`；已发布定义由 `definitions.json` 和因子目录库共同保存。
+
+## 日志与错误
+
+日志只写运行 ID、候选 ID、阶段、状态、错误码和哈希，不写 Key、完整假设或原始公式。
+共享日志处理器按 128MB 轮转，文件名记录该段首末消息时间。
+
+| 错误码 | 含义 | HTTP |
+|---|---|---:|
+| `MINING-100` | 未分类挖掘错误兜底 | 400 |
+| `MINING-101` | 契约或参数非法 | 400 |
+| `MINING-102` | 已有运行占用执行槽 | 429 |
+| `MINING-103` | Worker 不可用 | 503 |
+| `MINING-104` | 候选非法 | 400 |
+| `MINING-105` | 幂等键或候选重复冲突 | 409 |
+| `MINING-106` | 评估失败 | 422 |
+| `MINING-107` | 测试段状态冲突 | 409 |
+| `MINING-108` | 审批依据变化或冲突 | 409 |
+| `MINING-109` | 发布失败 | 500 |
+| `MINING-110` | 记录不存在 | 404 |
+| `MINING-111` | 状态或并发冲突 | 409 |
+| `MINING-112` | 候选存储不可用 | 503 |
+| `MINING-113` | 中断运行不能恢复 | 409 |
+| `MINING-114` | 表达式语法、字段、算子或安全规则非法 | 400 |
+| `MINING-115` | 字段目录损坏或与实际 schema 漂移 | 500 |
+| `MINING-116` | Worker 作业超时 | 504 |
+| `MINING-117` | Worker 作业取消或重启中断 | 409 |
+| `MINING-118` | Worker 响应或本地请求协议非法 | 502 |
+| `MINING-119` | Worker 鉴权、Key 或模型配置不可用 | 503 |
+| `MINING-120` | 数据、目录或正式因子快照已过期 | 409 |
+| `MINING-121` | 发布资格、批次或并发冲突 | 409 |
+| `MINING-122` | 正式因子全量校验失败 | 422 |
+| `MINING-123` | 发布提交、回滚或恢复失败 | 503 |
+
+候选评估执行错误使用 `MINING-106`。门禁不通过是正常业务结论，通过
+`TechnicalGate.passed=false` 和逐项 `checks` 表达，不伪装成系统异常。
+
+## 修改注意
+
+1. 修改任一契约字段前先评估哈希、数据库 schema 和已有审批失效规则。
+2. 不得把正式因子路径加入候选存储，也不得从归档原型直接复制未验收实现。
+3. 新增状态时必须同步状态表、测试、日志阶段和文档；新增字段或算子必须先改目录并重新核对。
+4. 候选大产物默认保留到人工清理，只有中断运行的超期临时目录允许自动清理。
+5. 详细字段与哈希口径见 [契约与状态机](contracts.md)，表达式规则见 [受控 DSL](dsl.md)。
+6. 修改评估阈值必须升级 `mining_quality_v1` 并同步配置、测试和文档；阈值全文进入
+   `input_hash`，变化后不得复用旧评估结论。
+7. 编排预算和失败阈值修改后必须同步 `orchestrator.json`、契约测试和恢复说明。

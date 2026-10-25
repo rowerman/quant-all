@@ -1,0 +1,10 @@
+{
+  "schema_version": "mining_worker_v1",
+  "rdagent_version": "1.0.0",
+  "python_version": "3.11",
+  "default_model": "deepseek/deepseek-chat",
+  "job_timeout_seconds": 300,
+  "client_timeout_seconds": 330,
+  "poll_interval_seconds": 0.25,
+  "max_candidates_per_round": 4
+}
