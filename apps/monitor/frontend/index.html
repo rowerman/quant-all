@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>因子质量监测</title><link rel="stylesheet" href="/style.css">
+  <script defer src="/vendor/echarts.min.js"></script><script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header><a class="brand" href="#/factors">因子质量监测</a><nav><a href="#/factors">因子列表</a><a href="#/compare">因子对比</a><a href="#/backtest">回测</a></nav><span>研究与回测 · A 股</span></header>
+  <main id="app" aria-live="polite"><p>正在读取因子目录…</p></main>
+  <footer>股票池：可买入收盘、非 ST、上市满 60 个自然日；指数池取上一个已结束月份的月末快照。IC = 日度 Pearson，默认截面 3×MAD 去极值；RankIC = 有限配对内平均并列排名的 Spearman，ICIR = 日度均值 / 样本标准差。多空为最高分位 − 最低分位，忽略 T+1、融券及费用；净值固定用 1 日前瞻收益。行业默认关闭：当前行业为静态分类、退市股缺失，无法保证时点一致。Barra 风格是近似口径，增量 IC 差值不代表可加贡献。完整分析限 2400 交易日 / 800 万行，全历史请选择轻量 IC。</footer>
+</body>
+</html>
