@@ -12,6 +12,15 @@
 47 个已实现因子，
 行集与日线库一致，另有 100+ 条待实现因子的公式清单（见 `docs/core/factors/catalog.md`）。
 
+## Git 仓库
+
+项目根目录是单一 Git 仓库，`apps/monitor/`、`research/evaluation/calculate/`、
+`research/modeling/alpha/` 和 `trading/backtest/` 的原提交历史已并入对应路径，
+不再作为嵌套仓库或子模块维护。
+
+运行数据、日志、虚拟环境、缓存和 `AiRecord/` 只保留在本地，不进入 Git。远程地址为
+`https://github.com/rowerman/quant-all.git`。
+
 ## 目录
 
 | 路径 | 内容 |

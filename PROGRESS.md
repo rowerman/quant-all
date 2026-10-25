@@ -420,3 +420,7 @@ full、holdout 四阶段并进入 `review_ready`。S6 已于 2026-10-24 由用�
 2026-10-25（V99）：清理 `logs/` 下 1,159 个历史日志，仅保留当前 Worker 活跃日志；
 在 `docs/research/mining/README.md` 补充 Worker、监测站、验证、排错和停止步骤。
 本次不改变 S0～S9 的业务实现和验收状态，详见 `AiRecord/progress/V99.md`。
+
+2026-10-25（V100）：将四个子仓库完整历史合并到根目录单一 Git 仓库，恢复当前未提交
+工作区，统一忽略运行数据、日志、缓存、密钥和 AI 修改记录。四个原 HEAD 均保留为
+总仓库祖先，详见 `AiRecord/progress/V100.md`。
