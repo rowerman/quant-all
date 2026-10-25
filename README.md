@@ -1,348 +1,572 @@
-# A 股量化数据项目
+# A 股量化研究与交易一体化项目
 
-从 Tushare 取全 A 股日线行情与辅助数据，清洗、入库，再用 `quant` 读取层或 DuckDB SQL 取用。
+本项目覆盖 A 股研究的完整链路：Tushare 取数和公司行动补全、清洗与入库、因子构建、
+因子质量评估、RD-Agent 自动因子挖掘、ML 模型训练与监控、日频组合回测，以及统一的
+Web 监测和人工审核界面。
 
-数据链路：`data/source/`（Tushare 与复权事件源数据） → `data/clean/`（清洗产物） → `data/databases/quant.duckdb`（入库结果，日常只读这一层）。
+所有代码、配置、测试和文档位于单一 Git 仓库。行情数据库、因子值、模型产物、日志和
+`AiRecord/` 只保留在本地，不进入远程仓库。
 
-当前数据版本 `tushare_fullA_20000104_20261015`，2026-10-18 增量加入公司行动表（26 张表，约 7.3 GB）：
-日线覆盖 2000-01-04 ~ 2026-10-15 共 6488 个交易日、5913 只股票，
-另有 60 个指数与 31 个申万一级行业的日线行情，以及未来收益标签表。
+## 全链路
 
-在其上另建了因子库 `data/factors/` + `data/databases/factors.duckdb`：十一个内置因子族、
-47 个已实现因子，
-行集与日线库一致，另有 100+ 条待实现因子的公式清单（见 `docs/core/factors/catalog.md`）。
+```mermaid
+flowchart LR
+  A[Tushare + gbbq] --> B[原始分片 data/source]
+  B --> C[清洗 data/clean]
+  C --> D[行情主库 quant.duckdb]
+  D --> E[内置因子 data/factors]
+  E --> F[因子评估 calculate]
+  E --> G[ML 模型 alpha]
+  F --> H[监测站]
+  G --> H
+  G --> I[日频回测]
+  F --> I
+  J[RD-Agent Worker] --> K[自动挖掘候选]
+  K --> F
+  K --> H
+  H --> L[人工审批]
+  L --> E
+```
 
-## Git 仓库
+核心原则：
 
-项目根目录是单一 Git 仓库，`apps/monitor/`、`research/evaluation/calculate/`、
-`research/modeling/alpha/` 和 `trading/backtest/` 的原提交历史已并入对应路径，
-不再作为嵌套仓库或子模块维护。
+- 信号在交易日收盘生成，下一交易日开盘执行，不使用未来数据。
+- 因子和标签使用后复权价；回测成交使用原始价，公司行动由账本单独处理。
+- 指数成分使用上一个已结束月份的月末快照；全 A 池保留历史退市股票。
+- 研究、评估、模型和回测都记录数据快照或配置哈希，避免结果无法追溯。
+- 自动挖掘候选与正式因子严格隔离，只有人工批准和原子发布后才能进入正式因子库。
 
-运行数据、日志、虚拟环境、缓存和 `AiRecord/` 只保留在本地，不进入 Git。远程地址为
-`https://github.com/rowerman/quant-all.git`。
+## 当前能力
+
+| 层 | 当前能力 |
+|---|---|
+| 数据 | 2000-01-04～2026-10-15，6,488 个交易日、5,913 只股票、17,999,882 行；26 张表，约 7.3 GB |
+| 辅助数据 | 60 个指数、31 个申万一级行业、历史成分权重、财务三表、财务指标、停牌、涨跌停、公司行动 |
+| 因子 | 11 个族、47 个已实现因子、139 个规划因子；构建、自检、公式文档和手工复现 SQL |
+| 因子评估 | IC/RankIC、分位收益、净值、多空、换手、多周期衰减、风格暴露、增量 IC、相关性 |
+| 自动挖掘 | 受控 DSL、RD-Agent Worker、技术门禁、快速/完整评估、模块测试段、Web 审批和正式发布 |
+| 模型 | Ridge/ElasticNet、LightGBM、直方图 GBDT；周频数据集、purged walk-forward、评估、账本、监控和生命周期 |
+| 回测 | 因子 Top-N、目标权重提供者、原始价账本、公司行动、A 股交易规则、成本、分块回测和运行对比 |
+| 应用 | 因子监测、自动挖掘审核、策略创建、回测详情和运行对比，统一由本地 FastAPI 服务提供 |
+
+当前数据版本：`tushare_fullA_20000104_20261015`。
 
 ## 目录
 
-| 路径 | 内容 |
+| 路径 | 职责 |
 |---|---|
-| `core/` | 数据读取、取数/清洗/建库脚本、因子定义与公共路径 |
-| `research/` | ML 模型与因子评估计算包 |
-| `trading/` | 交易与回测模块 |
-| `apps/monitor/` | 因子监测后端与前端 |
-| `data/` | 原始源数据、清洗结果、因子值、模型产物与 DuckDB |
-| `data/source/tushare/*.parquet` | 一次性参照表：交易日历、股票基础表、曾用名、停牌记录、指数权重 |
-| `data/source/tushare/raw/<接口>/year=YYYY/month=MM.parquet` | 按交易日批量拉取的行情分片 |
-| `data/clean/daily/year=YYYY/part.parquet` | 清洗后的日线长表（27 年） |
-| `data/clean/{calendar,suspend_segments,anomalies}.parquet`、`data/clean/manifest.json` | 衍生表与产物清单 |
-| `data/databases/quant.duckdb` | DuckDB 单文件数据库，日常取数入口 |
-| `core/factors/` | 因子定义：算子库、注册表、十一个因子族、100+ 因子规划清单 |
-| `data/factors/<族>/year=YYYY/part.parquet` | 因子值，一年一族一个文件 |
-| `data/databases/factors.duckdb` | 因子目录库：定义、覆盖率、自检结论、构建记录与按族视图 |
-| `core/data/scripts/build_factors/` | 因子构建、自检与文档生成脚本 |
-| `demo.py` | 数据读写库用法速查：25 块覆盖全部读取接口与组合示例，可逐块复制进 ipynb |
-| `core/data/quant/` | 读取层代码 |
-| `core/data/scripts/` | 取数、清洗、建库脚本 |
-| `tests/` | 单元测试 |
-| `docs/` | 各模块文档 |
-| `logs/` | 按模块分目录的运行日志 |
-| `tools/v5/` | 取数/清洗/建库的串联脚本、看板与诊断脚本 |
-| `research/evaluation/calculate/`、`apps/monitor/backend/`、`apps/monitor/frontend/` | 因子质量监测项目：计算包 / 后端接口 / 前端页面 |
+| `core/common/` | 项目路径和共享日志 |
+| `core/data/` | 取数、清洗、建库脚本和 `quant` 读取层 |
+| `core/factors/` | 因子定义、算子、注册表和内置因子族 |
+| `research/evaluation/calculate/` | 因子评估计算包 |
+| `research/mining/` | 自动因子挖掘契约、DSL、编排、存储和发布 |
+| `research/mining_worker/` | Python 3.11 RD-Agent Worker |
+| `research/modeling/alpha/` | ML 模型和模型生命周期 |
+| `trading/backtest/` | A 股日频回测、账本、成本和结果存储 |
+| `apps/monitor/backend/` | FastAPI、SSE、任务调度和挖掘服务 |
+| `apps/monitor/frontend/` | 因子、挖掘和回测页面 |
+| `configs/` | 挖掘、模型训练和评估配置 |
+| `tests/` | 根级单元、联合和真实数据测试 |
+| `tools/` | 运维、审计、浏览器验收和性能工具 |
+| `docs/` | 按业务域组织的模块文档 |
+| `data/` | 本地运行数据，不进入 Git |
+| `logs/` | 本地运行日志，不进入 Git |
+| `AiRecord/` | 本地计划、变更、差异和版本记录，不进入 Git |
 
-## 快速上手
+四个原独立模块的提交历史已经并入当前单仓库，不再作为嵌套仓库或 Git submodule 使用。
 
-在项目根目录用自带的虚拟环境：
+## 安装
+
+项目固定使用 Python 3.12；自动挖掘 Worker 单独使用 Python 3.11 Docker 镜像。
 
 ```bash
 cd /home/hanwen/quant
-.venv/bin/python -m pip install -r requirements.txt
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.lock
 .venv/bin/python -m pip install -e . --no-deps
-.venv/bin/python
+.venv/bin/pip check
 ```
+
+运行依赖和锁定方式见 [依赖说明](docs/core/ops/dependencies.md)。
+
+在项目根目录创建本地 `.env`，至少配置：
+
+```text
+TUSHARE_TOKEN=<本地 Tushare Token>
+TUSHARE_HTTP_URL=http://jiaoch.site
+FACTOR_DEEPSEEK_API=<仅自动挖掘 Worker 使用的 DeepSeek Key>
+```
+
+`.env` 已被 Git 忽略，不要打印、提交或复制到日志。
+
+检查当前环境和项目布局：
+
+```bash
+.venv/bin/python -m pytest --collect-only -q
+.venv/bin/python demo.py
+```
+
+`demo.py` 和 `demo.ipynb` 提供数据读取接口和常见组合示例，可以逐块运行。
+
+## 数据链路
+
+### 已有 `data/` 时
+
+日常研究直接使用现有数据库和因子产物，不需要重新取数：
+
+```bash
+.venv/bin/python -m scripts.sources.fetch_all status
+```
+
+检查主库：
 
 ```python
-import quant
+import duckdb
 
-# 长表：一次取一批字段。adjust 取 raw / hfq / qfq
-df = quant.load_panel(
-    start="2020-01-01", end="2020-12-31",
-    fields=["open", "high", "low", "close", "ret", "limit_up", "is_limit_up", "status"],
-    adjust="hfq",                # 做收益、因子研究用 hfq；看成交价用 raw
-    stocks=["SH600000"],         # 不传就是全市场
-    drop_suspended=True,         # 剔除停牌行
-)
-
-# 宽表：交易日 × 股票，方便做横截面运算
-close = quant.load_panel_wide("close", start="2020-01-01", end="2020-12-31", adjust="hfq")
-
-# 辅助表
-quant.load_calendar(start="2026-01-01")
-quant.load_stock_basic(status="listed")            # 或 "delisted"
-quant.load_suspend_segments()
-quant.load_index_weight("000300.SH", start="2026-01-01")   # 月末快照，带归一后的 stock_code
-quant.load_index_daily("000300.SH", start="2026-01-01")    # 指数日线行情（60 个指数）
-quant.load_sw_index_daily("801010.SI")                     # 申万一级行业日线（31 个行业）
-quant.load_index_basic(market="CSI", category="规模指数")   # 指数目录
-
-# 未来收益标签：N 取 1/3/5/10/15/20，price 取 close 或 open
-lab = quant.load_label(start="2024-01-01", end="2024-12-31",
-                       horizons=[1, 5, 20], price="close")
-fwd5 = quant.load_label_wide(5, start="2024-01-01", end="2024-12-31", price="close")
-
-# 需要写 SQL 时
-from quant.db import query
-query("select trade_date, close from md.daily_hfq where stock_code = 'SH600000' order by 1")
+conn = duckdb.connect("data/databases/quant.duckdb", read_only=True)
+print(conn.execute("SELECT * FROM meta.manifest").fetchall())
 ```
 
-逐块探索用根目录 `demo.py`：25 块覆盖全部读取接口、元数据与常用组合用法，
-每块以 `# %%` 开头，可单独粘进 ipynb，变量名互不覆盖。
+### 从原始数据完整重建
 
-## 数据库表清单
+完整链路是：
 
-| schema.table | 行数 | 说明 |
-|---|---|---|
-| `md.daily_bar` / `md.daily_hfq` / `md.daily_qfq` | 各 17,999,882 | 三张同构日线表，键为 `stock_code` + `trade_date` |
-| `md.fwd_return` | 17,999,882 | 未来 1/3/5/10/15/20 日收益标签，收盘与开盘两套成交通道 |
-| `md.index_daily` | 291,110 | 60 个指数日线，含沪深300/中证500全收益指数 |
-| `md.sw_index_daily` | 104,777 | 31 个申万一级行业指数日线，含行业估值与市值 |
-| `md.calendar` | 6,480 | 交易日历 |
-| `md.suspend_segment` | 71,319 | 停牌区间，含持续天数与是否长停牌 |
-| `ref.stock_basic` | 5,907 | 股票基础表，含退市股的上市日与退市日 |
-| `ref.namechange` | 14,215 | 证券简称变更历史，可推 ST 与退市整理期 |
-| `ref.index_weight` | 984,140 | 12 个宽基的历史成分权重，月末快照；`con_code` 为 Tushare 原写法，join 请用 `stock_code` |
-| `ref.index_basic` | 10,609 | 指数目录：来源、类别、发布日 |
-| `ref.corporate_action` | 64,618 | 分红、送转、配股与可识别拆并的除权日账本 |
-| `evt.suspend_daily` | 234,916 | 官方停牌记录明细 |
-| `meta.manifest` | 1 | 数据版本与生成时间 |
-| `meta.anomaly` | 57,157 | 清洗阶段标出的异常明细，`kind` 分四类 |
-| `meta.data_dictionary` | 66 | 字段单位与口径说明 |
-
-## 读取接口
-
-| 接口 | 说明 |
-|---|---|
-| `load_panel(start, end, fields, adjust, stocks, drop_suspended)` | 日线长表，按 `trade_date`、`stock_code` 排序；`stock_code`/`trade_date` 始终返回 |
-| `load_panel_wide(field, start, end, adjust)` | 把单个字段透视成「交易日 × 股票」宽表 |
-| `load_calendar(start, end)` | 交易日历 |
-| `load_stock_basic(status)` | `status` 支持 `"listed"` / `"delisted"`，也接受 Tushare 的 `"L"` / `"D"` / `"P"`，`None` 为全部 |
-| `load_suspend_segments()` | 停牌区间表 |
-| `load_index_weight(index_code, start, end)` | 指数历史成分权重，如 `"000300.SH"` |
-| `load_index_daily(index_code, start, end)` | 指数日线行情（`md.index_daily`） |
-| `load_sw_index_daily(index_code, start, end)` | 申万一级行业日线（`md.sw_index_daily`） |
-| `load_index_basic(index_code, market, category)` | 指数目录（`ref.index_basic`） |
-| `load_label(start, end, horizons, price, stocks)` | 未来收益标签长表；`price` 取 `close` / `open`，`horizons` 取 1/3/5/10/15/20 |
-| `load_label_wide(horizon, start, end, price)` | 把某一档标签透视成「交易日 × 股票」宽表 |
-| `load_members(table, name)` | 板块/概念成分，依赖的表本次未入库，调用会抛出带「可用表清单」的错误 |
-| `load_financial(stock_code, table)` | 财务报表，依赖的 `fin` schema 本次未入库，同上 |
-| `load_factor_panel(start, end, names, families, stocks)` | 因子长表，键 + 指定因子列 |
-| `load_factor_wide(name, start, end)` | 单因子宽表（交易日 × 股票） |
-| `load_factor_list(family, status)` | 因子清单：族、状态、方向、公式、白话步骤、实现表达式、覆盖率 |
-| `built_families()` | 已落盘的因子族 |
-
-## 因子库
-
-因子层建在日线库之上：因子定义写在 `core/factors/` 包里，构建脚本算出因子值落成 Parquet，
-目录库 `data/databases/factors.duckdb` 记下定义与覆盖率，读取走 `quant`。
-
-**十一个因子族**：`momentum` 动量反转、`volatility` 波动风险、`liquidity` 流动性、
-`volume_price` 量价关系、`technical` 技术形态、`valuation` 估值规模、`fundamental`
-财务质量、`cn_special` A 股特色、`market` 市场相对强度、`alpha101` 与 `gtja191` 公式复现。
-
-已实现 47 个因子（覆盖全部因子族），清单里另有待实现的公式，
-照 `docs/core/factors/README.md` 的三步就能补：写 `define(...)` → 跑构建 → 跑自检与文档生成。
-
-**每个因子都带公式和白话步骤**，想知道某个数是怎么算出来的：
+```text
+reference -> daily -> extra -> index -> core -> gbbq
+-> clean -> build_db -> build_factors -> build_factors.validate
+```
 
 ```bash
-# 公式 + 分步说明 + 一条可以直接跑的手工复现 SQL
-.venv/bin/python -m scripts.build_factors.catalog --explain RSI_14
-```
+cd /home/hanwen/quant
 
-```python
-import quant
-quant.load_factor_list(family="momentum")[["name", "formula", "steps", "expr"]]
-```
-
-- `docs/core/factors/formulas.md`：47 个已实现因子的「公式 → 步骤 → 真实 SQL」；
-- `docs/core/factors/cookbook.md`：入门教程，从一只股票用 pandas / SQL 手算并和库值对照
-  （实测 MOM_20 最大差 3.7e-09，RSI_14 最大差 3.8e-06，都是 float32 的正常精度）。
-
-```bash
-# 构建（全历史、逐族逐年，可反复重跑；只建某族或某段年份都可以）
-.venv/bin/python -m scripts.build_factors.build
-.venv/bin/python -m scripts.build_factors.build --families momentum --start 2024-01-01 --end 2024-12-31
-
-# 自检：行集、取值、前视偏差、方向（Rank IC / ICIR）
-.venv/bin/python -m scripts.build_factors.validate
-
-# 重新生成因子清单文档
-.venv/bin/python -m scripts.build_factors.catalog --write-docs
-```
-
-```python
-import quant
-
-# 长表
-df = quant.load_factor_panel(start="2024-01-01", end="2024-12-31",
-                             names=["MOM_20", "EP_TTM", "PV_CORR_20"])
-# 宽表
-mom20 = quant.load_factor_wide("MOM_20", start="2024-01-01", end="2024-12-31")
-# 清单
-quant.load_factor_list(family="momentum")          # status="planned" 看还没实现的
-```
-
-口径要点：
-
-1. 因子文件的行集与 `md.daily_hfq` **完全一致**，含停牌行与退市股；**停牌行的因子值为空**，
-   与标签口径一致，下游按 `can_buy_close` 这些标记过滤；
-2. 计算时先筛 `status='trading'`，窗口按有效交易日推进，算完再左连接回完整行集；
-3. 价格类因子一律用后复权价；换手率、估值、市值直接用库内列；
-4. 每年构建时往前多读该族最长回看窗口的交易日，所以 1 月初的长窗口因子也有值；
-5. 因子值落 float32，落盘前把 `NaN` / `inf` 统一置空；
-6. 只存原始值，截面标准化、排序、中性化在读取时现算。
-
-## ML 模型层
-
-`research/modeling/alpha/` 是模型层，已完成研究契约、周频数据集、purged walk-forward、模型训练、
-通用评估、完整账本、监控和生命周期接入。当前可用后端包括 Ridge/ElasticNet、
-LightGBM 和 Scikit-learn 直方图 GBDT。
-
-新后端放入 `research/modeling/alpha/modeling/backends/` 后会自动发现并注册；训练命令完成后会自动
-重建模型索引。模型索引同时汇总相关评估、账本、监控、生命周期和最终留出。
-
-```bash
-# P0 特征审计与基线
-.venv/bin/python -m scripts.build_alpha.audit_features \
-  --start 2012-01-01 --end 2023-12-31
-.venv/bin/python -m scripts.build_alpha.run_baselines \
-  --baseline B4_ALL_RANK --start 2012-01-01 --end 2023-12-31 --engine weekly
-
-# P1 数据集与切分
-.venv/bin/python -m scripts.build_alpha.build_dataset \
-  --start 2012-01-01 --end 2023-12-31
-.venv/bin/python -m scripts.build_alpha.build_folds
-
-# 通用模型训练与索引查询
-.venv/bin/python -m scripts.build_alpha.train \
-  --dataset-id 6a59680fd71c50a8 \
-  --spec configs/alpha/train_sklearn_hist_gbdt.json
-.venv/bin/python -m scripts.build_alpha.registry --rebuild
-```
-
-研究契约见 `docs/research/modeling/alpha/research_contract.md`，基线结论见 `docs/research/modeling/alpha/feature_audit.md`。
-2024-01-01～2026-10-15 已消耗并封存；下一留出窗口
-2026-10-16～2027-10-15 已登记，需等数据和标签完整后执行。
-
-## 字段口径
-
-**代码格式**统一为 `SH600000` / `SZ000001` / `BJ920000`（交易所前缀 + 6 位数字）。
-原始数据里的 `600000.SH`、`sh.600000`、`T600018.SH` 等写法已在入库时归一，各表 join 不用再转换。
-
-**三张日线表结构完全一致，只有四价与 `vwap` 的口径不同**：
-
-| `adjust` | 表 | 价格口径 |
-|---|---|---|
-| `raw` | `md.daily_bar` | 未复权原始价 |
-| `hfq` | `md.daily_hfq` | 后复权价 = 原始价 × `factor` |
-| `qfq` | `md.daily_qfq` | 前复权价 = 原始价 × `factor` / `factor_T`，`factor_T` 取该股最后一个有效交易日的因子 |
-
-`factor`、`change`、`pre_close`、`ret`、`status`、涨跌停标记、可交易性标记这些列三张表内容一致。
-
-**单位**（完整口径见 `meta.data_dictionary` 表）：
-
-| 字段 | 单位 |
-|---|---|
-| 四价 / 涨跌停价 / `vwap` / `pre_close` / `change` | 元 |
-| `volume_share` | 股 |
-| `amount_cny` | 元 |
-| `total_mv` / `circ_mv` | 万元 |
-| `turnover_rate` / `dv_ttm` | % |
-| `factor` | 无量纲 |
-
-`status` 只有两个取值：`trading`、`suspended`。
-
-## 取用时要注意
-
-1. `qfq` 的基准是每只股票**最后一个有效交易日的因子**，所以同一只股票在不同时间取 `qfq`，数值会变；
-   回测执行已改用原始价账本，公司行动单独入账；`qfq` 仍用于研究型因子和复权价格读取。
-   回测运行会记录 `metadata.snapshot_id` 与分项摘要，复现时先比较快照而不是只看版本标签。
-2. 只落 `[list_date, delist_date]` 区间内的行，上市前与退市后没有空行；要区分「停牌」和「未上市」看 `status` 与 `list_date`。
-3. 涨跌停价优先用官方 `stk_limit`，缺失时才按「板块 + 日期 + ST + 退市整理期」推算，可用 `pre_close_source` 区分来源。
-4. 读连接默认 `read_only=True`，可以和其它进程并存；写库要显式传 `read_only=False`。
-5. 日线表没有索引，按日期区间取数时务必带 `start`/`end`，否则会把整表读进内存。
-6. 股票代码是 `SH600000`，**指数代码保留 Tushare 写法** `000300.SH`，两套并存；
-   `ref.index_weight` 里 join 日线表要用归一后的 `stock_code`。
-7. `md.index_daily` 里 `399925.SZ` 基本面50（到 2019-01-25）与 `399984.SZ` 300等权
-   （到 2015-04-29）**已经停编**，只有历史行情，别拿它们当基准。
-8. 中证2000（`932000.CSI`）的成分权重覆盖率不足，未纳入 `ref.index_weight`；
-   它的**日线是完整的**，可以直接用。
-9. 申万行业日线从 2010-04-13 起，比中证系指数短，这是服务端限制。
-
-## 重新生成数据
-
-```bash
-# 一次性参照数据（交易日历、股票基础表、曾用名）
+# 1. 一次性参照数据
 .venv/bin/python -m scripts.sources.fetch_all reference
 
-# 按交易日拉四个行情接口：daily / adj_factor / stk_limit / daily_basic
-.venv/bin/python -m scripts.sources.fetch_all daily --start 20000101 --end 20261015
+# 2. 四个日线接口：daily / adj_factor / stk_limit / daily_basic
+.venv/bin/python -m scripts.sources.fetch_all daily \
+  --start 20000101 --end 20261015
 
-# 停牌记录 + 指数历史成分权重
-.venv/bin/python -m scripts.sources.fetch_all extra
-
-# 指数数据：含沪深300/中证500全收益指数
+# 3. 停牌、指数权重和核心研究资源
+.venv/bin/python -m scripts.sources.fetch_all extra --end 20261015
 .venv/bin/python -m scripts.sources.fetch_all index --end 20261015
-
-# 财务、事件、分红与申万历史行业成员原始数据（可断点续跑）
 .venv/bin/python -m scripts.sources.fetch_all core --end 20261015
+
+# 4. 固定版本公司行动辅助文件
 .venv/bin/python -m scripts.sources.fetch_all gbbq
 
-# 清洗，按年处理
+# 5. 清洗、建库
 .venv/bin/python -m scripts.clean.pipeline
-
-# 建库，每次删库重建
 .venv/bin/python -m scripts.build_db.build
 
-# 因子：构建 + 自检 + 生成清单文档
+# 6. 构建并自检全部因子
 .venv/bin/python -m scripts.build_factors.build
 .venv/bin/python -m scripts.build_factors.validate
-.venv/bin/python -m scripts.build_factors.catalog --write-docs
-
-# 全量测试
-.venv/bin/python -m pytest -q
 ```
 
-取数有硬约束：**全局并发上限 2 个请求**，只能「单进程 + 2 线程」，同一时刻不要跑第二个取数进程。
-四个接口全量约 3~4 小时。整条链路幂等可续跑，中断后重跑同样命令即可，已完成的会跳过。
+取数硬约束：
 
-## 相关文档
+- 全局最多 2 个并发请求，只能单进程、2 线程运行。
+- 同一时间不要启动第二个取数进程。
+- 四个行情接口全量通常需要数小时；分片按年/月落盘，中断后可重跑续传。
+- 清洗按年处理，建库会删除并重建 `data/databases/quant.duckdb`。
+- 执行完整重建前确认磁盘空间，不要手工修改数据库或 Parquet。
 
-| 文档 | 内容 |
-|---|---|
-| `demo.py` | 数据读写库用法速查：25 块覆盖全部读取接口、元数据与组合示例，可逐块粘进 ipynb |
-| `docs/core/data/sources.md` | 取数模块 |
-| `docs/core/data/cleaning.md` | 清洗模块 |
-| `docs/core/data/database.md` | 数据库结构与访问方式 |
-| `docs/core/data/label.md` | 未来收益标签的口径、缺失规则与校验方式 |
-| `docs/core/factors/README.md` | 因子库：构建、读取、扩展因子的操作步骤 |
-| `docs/core/factors/cookbook.md` | 入门教程：手算因子并与库值对照 |
-| `docs/core/factors/formulas.md` | 已实现因子的公式、白话步骤与真实 SQL（自动生成） |
-| `docs/core/factors/catalog.md` | 全部因子清单（自动生成）：状态、方向、公式、说明 |
-| `docs/core/factors/conventions.md` | 因子口径、算子语义、已知限制与多层写法 |
-| `docs/core/factors/missing_data.md` | 补哪些数据能做基本面与资金类因子 |
-| `docs/core/ops/v5_runbook.md` | 串联脚本与运行手册 |
-| `docs/trading/backtest/README.md` | VectorBT 回测模块：执行口径、股票池、资源上限与实测规模 |
-| `docs/trading/backtest/api.md` | 回测接口与 SSE 流事件 |
-| `docs/trading/backtest/todo.md` | 回测模块的待办清单、已知限制与建议顺序 |
-| `AiRecord/version.md` | 需求与迭代记录 |
+`tools/v5/` 提供历史串联和诊断脚本。串联脚本内可能保留旧截止日期，正式补数时应先核对
+参数；分阶段命令以上面的显式日期为准。详细失败门槛见
+[数据运行手册](docs/core/ops/v5_runbook.md)。
 
-## 因子质量监测（V11）
+### 只刷新最近数据
+
+```bash
+.venv/bin/python -m scripts.sources.fetch_all daily \
+  --start <YYYYMMDD> --end <YYYYMMDD>
+.venv/bin/python -m scripts.sources.fetch_all index-daily \
+  --codes H00300.CSI,H00905.CSI --start <YYYYMMDD> --end <YYYYMMDD>
+.venv/bin/python -m scripts.sources.fetch_all industry --end <YYYYMMDD>
+
+.venv/bin/python -m scripts.clean.pipeline
+.venv/bin/python -m scripts.build_db.build
+.venv/bin/python -m scripts.build_factors.build
+.venv/bin/python -m scripts.build_factors.validate
+```
+
+## 数据读取
+
+公开读取入口是 `quant`：
+
+```python
+import quant
+
+# 日线长表：raw / hfq / qfq
+bars = quant.load_panel(
+    start="2024-01-01",
+    end="2024-12-31",
+    fields=["open", "high", "low", "close", "ret", "status", "can_buy_close"],
+    adjust="hfq",
+    stocks=["SH600000"],
+    drop_suspended=True,
+)
+
+# 交易日 × 股票宽表
+close = quant.load_panel_wide(
+    "close", start="2024-01-01", end="2024-12-31", adjust="hfq"
+)
+
+# 未来收益标签
+labels = quant.load_label(
+    start="2024-01-01",
+    end="2024-12-31",
+    horizons=[1, 5, 20],
+    price="open",
+)
+
+# 指数、行业、财务和公司行动
+quant.load_index_daily("000300.SH", start="2024-01-01")
+quant.load_sw_industry_member(start="2024-01-01", end="2024-12-31")
+quant.load_financial("SH600000", table="fina_indicator")
+quant.load_corporate_actions(start="2024-01-01", end="2024-12-31")
+
+# 因子长表、宽表和清单
+factors = quant.load_factor_panel(
+    start="2024-01-01",
+    end="2024-12-31",
+    names=["MOM_20", "EP_TTM", "PV_CORR_20"],
+)
+mom20 = quant.load_factor_wide("MOM_20", start="2024-01-01", end="2024-12-31")
+catalog = quant.load_factor_list(family="momentum")
+```
+
+直接 SQL：
+
+```python
+from quant.db import query
+
+query(
+    "SELECT trade_date, close FROM md.daily_hfq "
+    "WHERE stock_code = 'SH600000' ORDER BY trade_date"
+)
+```
+
+完整表、字段、单位和读取接口见
+[数据库与读取接口](docs/core/data/database.md)。
+
+## 因子构建与评估
+
+### 构建与自检
+
+```bash
+# 全部因子
+.venv/bin/python -m scripts.build_factors.build
+.venv/bin/python -m scripts.build_factors.validate
+
+# 单族或单区间
+.venv/bin/python -m scripts.build_factors.build \
+  --families momentum,valuation --start 2024-01-01 --end 2024-12-31
+.venv/bin/python -m scripts.build_factors.validate --families momentum
+
+# 更新公式和清单文档
+.venv/bin/python -m scripts.build_factors.catalog --write-docs
+
+# 查看单因子的公式、白话步骤和手工复现 SQL
+.venv/bin/python -m scripts.build_factors.catalog --explain MOM_20
+```
+
+新增因子按照 `define(...)` → 构建 → 自检 → 文档生成的顺序完成，详见
+[因子库使用说明](docs/core/factors/README.md)。
+
+### Python 调评估
+
+```python
+from calculate import EvalParams, evaluate
+
+params = EvalParams(
+    factor="MOM_20",
+    start="2024-01-01",
+    end="2024-12-31",
+    universe="all_a",
+    horizon=5,
+    price="close",
+    quantiles=10,
+    winsorize=True,
+)
+
+for stage, payload in evaluate("MOM_20", params):
+    print(stage, payload.keys())
+```
+
+全历史轻量 IC 不会构建完整面板：
+
+```python
+from calculate import EvalParams, load_daily_ic
+
+history = load_daily_ic(
+    EvalParams(factor="MOM_20", start="2000-01-04", end="2026-10-15")
+)
+print(history.head())
+```
+
+指标定义和接口见
+[评估计算包](research/evaluation/calculate/README.md)与
+[评估指标](docs/research/evaluation/README.md)。
+
+## 监测站
+
+监测站同时提供因子评估、自动挖掘审核和回测页面：
 
 ```bash
 bash tools/monitor/serve.sh
 ```
 
-浏览器打开 http://127.0.0.1:8800，查看因子列表、单因子详情或最多4因子对比。
-纯HTML/JS+本地ECharts，指标由calculate计算，行情/因子数据只读，结果不落库。
-完整分析默认最近3年；全历史请选择轻量IC。完整分析保留2400交易日/800万行保护。
-运行与口径见 [监测手册](docs/apps/monitor/README.md)，实测资源见
-[性能记录](docs/apps/monitor/performance.md)，计算函数见 [calculate](research/evaluation/calculate/README.md)。
+打开 http://127.0.0.1:8800：
+
+| 页面 | 用途 |
+|---|---|
+| `#/factors` | 因子列表和搜索 |
+| `#/factor/MOM_20` | 单因子完整分析或轻量 IC |
+| `#/compare` | 2～4 个因子对比 |
+| `#/mining` | 自动挖掘运行、候选和审批 |
+| `#/backtest` | 历史回测与对比 |
+| `#/backtest/new` | 新建因子或提供者策略 |
+
+服务只绑定 localhost，必须单进程单 worker。完整因子分析默认最近 3 年；全历史使用轻量 IC。
+因子评估与回测共享原生计算锁，大区间任务建议串行运行。
+
+HTTP 与 SSE 接口见 [监测站 API](docs/apps/monitor/api.md)。
+
+## 自动因子挖掘
+
+自动挖掘需要 RD-Agent Worker 和监测站两个进程。
+
+### 1. 生成 Token
+
+```bash
+.venv/bin/python -c \
+  'from common.paths import DATA_DIR; from mining.worker_client import ensure_worker_token; ensure_worker_token(DATA_DIR / "mining_worker" / "token")'
+```
+
+### 2. 启动 Worker
+
+```bash
+docker compose --env-file .env -f compose.mining.yaml up -d --build
+curl --fail --silent http://127.0.0.1:8790/health
+```
+
+健康接口应返回 `status=ready`、`mode=rdagent` 和 `rdagent_version=1.0.0`。
+DeepSeek Key 只进入 Worker 容器，不传给监测站。
+
+### 3. 启动监测站
+
+在另一个终端中：
+
+```bash
+cd /home/hanwen/quant
+export MINING_WORKER_URL=http://127.0.0.1:8790
+bash tools/monitor/serve.sh
+```
+
+打开 http://127.0.0.1:8800/#/mining，提交研究假设并等待候选进入人工审核。
+
+运行流程：
+
+```text
+研究假设
+  -> Worker 生成受控表达式
+  -> DSL 白名单校验
+  -> 技术门禁和快速筛选
+  -> 完整评估
+  -> 冻结候选并一次性使用模块测试段
+  -> 人工批准或拒绝
+  -> 整批全量构建、校验和原子发布
+```
+
+候选原因为以下情况时不会进入正式因子库：字段/算子不合法、覆盖率不足、存在前视、
+与已有因子高度相关、完整评估失败或测试段失败。
+
+详细启动、排错和停止步骤见
+[自动因子挖掘模块](docs/research/mining/README.md)。
+
+## ML 模型
+
+模型层把多个因子转换为预测分数或截面排序，再由策略层决定 Top-N、权重、风险约束和执行。
+
+### 研究到训练
+
+```bash
+# P0 特征审计和基线
+.venv/bin/python -m scripts.build_alpha.audit_features \
+  --start 2012-01-01 --end 2023-12-31
+.venv/bin/python -m scripts.build_alpha.run_baselines \
+  --baseline B4_ALL_RANK --start 2012-01-01 --end 2023-12-31 --engine weekly
+
+# 周频数据集和 purged walk-forward 切分
+.venv/bin/python -m scripts.build_alpha.build_dataset \
+  --start 2012-01-01 --end 2023-12-31
+.venv/bin/python -m scripts.build_alpha.build_folds
+
+# 使用已有 dataset_id 训练
+.venv/bin/python -m scripts.build_alpha.train \
+  --dataset-id <dataset_id> \
+  --spec configs/alpha/train_sklearn_hist_gbdt.json
+
+# 重放预测、评估并更新模型索引
+.venv/bin/python -m scripts.build_alpha.predict \
+  --model-id <model_id> --start 2018-01-12 --end 2023-12-29
+.venv/bin/python -m scripts.build_alpha.evaluate --model-id <model_id>
+.venv/bin/python -m scripts.build_alpha.registry --rebuild
+```
+
+当前可训练后端配置位于 `configs/alpha/`。新后端放入
+`research/modeling/alpha/modeling/backends/` 并注册，不需要修改共享训练循环。
+
+### 监控和最终留出
+
+```bash
+.venv/bin/python -m scripts.build_alpha.monitor --model-id <model_id>
+.venv/bin/python -m scripts.build_alpha.lifecycle
+.venv/bin/python -m scripts.build_alpha.final_holdout --window-id <window_id>
+```
+
+2024-01-01～2026-10-15 已消耗并封存；下一次留出窗口为
+2026-10-16～2027-10-15。最终留出只能在模型、特征、门槛和配置冻结后运行，不能根据结果
+回头调参。
+
+模型现状、训练结果、监控和生命周期见
+[Alpha 模型层](docs/research/modeling/alpha/README.md)与
+[模型产物清单](docs/research/modeling/alpha/model_inventory.md)。
+
+## 日频回测
+
+### 命令行
+
+```bash
+# 内置 MOM_20 策略
+.venv/bin/python -m backtest \
+  --strategy mom20 --start 2024-01-01 --end 2026-10-15
+
+# 内置多因子策略，指定指数池和全收益基准
+.venv/bin/python -m backtest \
+  --strategy multifactor \
+  --start 2016-01-01 --end 2026-10-15 \
+  --universe index:000905.SH \
+  --benchmark H00905.CSI
+
+# 运行已保存的具体策略版本
+.venv/bin/python -m backtest \
+  --strategy-id <strategy_id> --version <version> \
+  --start 2024-01-01 --end 2026-10-15
+```
+
+回测遵循：
+
+- 信号日收盘生成目标，下一交易日开盘执行。
+- 使用原始价成交，公司行动由账本处理。
+- 支持停牌和涨跌停拒单、每日重试、板块申报单位、T+1、现金缓冲和成交额参与率。
+- 默认基准为 `H00300.CSI`，中证500池通常使用 `H00905.CSI`。
+- 输入行情、因子、公司行动、行业、基准、规则和提供者源码都进入运行快照。
+
+结果写入 `data/databases/backtest.duckdb`，不会修改行情主库。
+
+### Web 页面
+
+启动监测站后打开：
+
+- `#/backtest/new`：创建因子 Top-N 或目标权重提供者策略；
+- `#/backtest`：查看历史运行；
+- `#/backtest/{run_id}`：查看净值、回撤、超额、成交、持仓、拒单和成本归因；
+- `#/backtest/compare?run_ids=...`：对比 2～4 次成功运行。
+
+将已训练模型接入回测时，使用已保存的 `ml_rank` 目标权重提供者策略；模型版本、预测
+哈希和提供者源码会进入运行快照。
+
+执行口径、策略配置和接口见
+[回测模块](docs/trading/backtest/README.md)、
+[策略配置](docs/trading/backtest/strategy_spec.md)与
+[回测 API](docs/trading/backtest/api.md)。
+
+## 测试与验收
+
+在项目根目录运行：
+
+```bash
+# 全量测试
+.venv/bin/python -m pytest -q
+
+# 分模块
+.venv/bin/python -m pytest tests -q
+.venv/bin/python -m pytest research/evaluation/calculate/tests -q
+.venv/bin/python -m pytest trading/backtest/tests -q
+.venv/bin/python -m pytest apps/monitor/backend/tests -q
+```
+
+可选运维检查：
+
+```bash
+# 因子数据自检
+.venv/bin/python -m scripts.build_factors.validate
+
+# 最近一次回测执行审计
+.venv/bin/python tools/monitor/backtest_audit.py
+
+# 浏览器验收
+.venv/bin/python tools/monitor/browser_check.py
+.venv/bin/python tools/monitor/mining_check.py --output /tmp/mining-check
+.venv/bin/python tools/monitor/backtest_check.py
+```
+
+日志按模块写入 `logs/`，超过 128 MB 自动轮转；日志文件名记录该段首末消息时间。
+常见故障先看 `data/databases/*.duckdb` 是否存在、接口错误码、对应模块日志和
+`tools/monitor` 下的预检工具。
+
+## 数据口径与已知限制
+
+### 代码与价格
+
+- 股票代码统一为 `SH600000`、`SZ000001`、`BJ920000`。
+- 指数代码保留 Tushare 形式，如 `000300.SH`。
+- `md.daily_bar`：原始价；`md.daily_hfq`：后复权；`md.daily_qfq`：前复权。
+- 因子计算用后复权价；成交和公司行动账本用原始价。
+- 停牌行保留在数据库中，因子和标签为空；研究时按可交易标记过滤。
+
+### 时间和标签
+
+- 主标签之一为 `fwd_ret_open_5`：t 日收盘生成信号，t+1 开盘起算未来 5 个交易日。
+- 财务字段使用公告日次一交易日起可见的时点口径。
+- 指数成分使用上一个已结束月份的月末快照，避免当月前视。
+
+### 已知限制
+
+- 自动挖掘的模块测试段与既有模型最终留出存在历史重叠，不能宣称独立样本发现。
+- 回测未精确建模并购重组换股、北交所转板和退市对价；长区间持仓撞上这些事件时需复核。
+- 回测现金余额不计息；高现金仓位的长期择时策略会低估收益。
+- 回测是日频近似，不支持分钟撮合、T+0、融资融券、做空、ETF 和可转债。
+- 模块测试段按设计只能被一个候选批次领取；继续研究需要新的数据快照和留出窗口。
+
+完整回测边界见[完整性评估](docs/trading/backtest/completeness.md)和
+[待办](docs/trading/backtest/todo.md)。
+
+## Git 与文档
+
+```bash
+git status
+git add <files>
+git commit -m "<说明>"
+git push
+```
+
+不要删除根 `.git`，也不要在任何子目录重新执行 `git init`。远程地址：
+https://github.com/rowerman/quant-all.git
+
+建议阅读顺序：
+
+| 文档 | 内容 |
+|---|---|
+| [项目文档索引](docs/README.md) | 全部模块文档入口 |
+| [取数](docs/core/data/sources.md) | Tushare 接口、分片和断点续跑 |
+| [清洗](docs/core/data/cleaning.md) | 复权、停牌、涨跌停和校验 |
+| [数据库](docs/core/data/database.md) | 表结构、字段和读取接口 |
+| [因子库](docs/core/factors/README.md) | 构建、读取和新增因子 |
+| [因子评估](research/evaluation/calculate/README.md) | 评估参数、指标和扩展方式 |
+| [自动挖掘](docs/research/mining/README.md) | Worker、编排、Web 审核和发布 |
+| [模型层](docs/research/modeling/alpha/README.md) | 数据集、训练、评估、监控和留出 |
+| [回测](docs/trading/backtest/README.md) | 执行、账本、成本、结果和已知边界 |
+| [监测站](docs/apps/monitor/README.md) | 启动、页面、性能和验收 |
