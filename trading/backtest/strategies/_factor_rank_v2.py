@@ -61,7 +61,7 @@ class FactorRankV2Provider(FactorRankProvider):
             raise SpecError("factor_rank.params.top_n 必须是正整数")
         names = params.get("factor_names")
         if names is None:
-            names = tuple(spec.name for spec in factors.all_factors())
+            names = tuple(spec.name for spec in factors.available_specs())
         if not isinstance(names, (list, tuple)) or not names:
             raise SpecError("factor_rank.params.factor_names 必须是非空序列")
         if any(not isinstance(name, str) or not name for name in names):

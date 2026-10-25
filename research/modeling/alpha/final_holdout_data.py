@@ -25,6 +25,7 @@ from alpha.holdout import (
 from alpha.modeling.forecast import predict_model_rows
 from alpha.predict import load_model_manifest
 from alpha.preprocess import PreprocessConfig, transform
+from common.paths import FACTOR_DIR
 
 FINAL_HOLDOUT_SCHEMA_VERSION = "alpha_final_holdout_v1"
 PREDICTION_NAMES = ("lightgbm", "ridge", "b4")
@@ -301,6 +302,7 @@ def _score_b4(
     data: pd.DataFrame,
     dates: pd.DatetimeIndex,
     factor_names: tuple[str, ...],
+    factor_dir: Path | str = FACTOR_DIR,
 ) -> pd.DataFrame:
     """按 P0 口径生成全因子方向调整 rank 基线。"""
 
@@ -320,7 +322,7 @@ def _score_b4(
     for name in factor_names:
         values = pd.to_numeric(work[name], errors="coerce")
         rank = values.groupby(dates_series).rank(pct=True, method="average")
-        direction = int(factors.get(name).direction)
+        direction = int(factors.resolve(name, factor_dir).direction)
         total = total.add(rank * direction, fill_value=0.0)
         count = count.add(rank.notna().astype("float64"), fill_value=0.0)
     frame = work.loc[:, ["trade_date", "stock_code"]].copy()
@@ -336,6 +338,7 @@ def score_frozen_holdout(
     spec: FinalHoldoutSpec,
     *,
     root: Path | None = None,
+    factor_dir: Path | str = FACTOR_DIR,
 ) -> tuple[dict[str, pd.DataFrame], dict]:
     """生成主模型、Ridge 和 B4 的冻结留出预测。"""
 
@@ -378,7 +381,12 @@ def score_frozen_holdout(
         ),
     }
     factor_names = tuple(dataset_manifest.get("features") or [])
-    predictions["b4"] = _score_b4(data, dates, factor_names)
+    predictions["b4"] = _score_b4(
+        data,
+        dates,
+        factor_names,
+        factor_dir,
+    )
     metadata = {
         "frozen_fold_id": spec.frozen_fold_id,
         "primary_model_id": primary_model_id,

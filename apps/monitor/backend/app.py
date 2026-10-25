@@ -16,18 +16,26 @@ from starlette.background import BackgroundTask
 from backend import service
 from backend import backtest_service
 from backend.errors import error_payload, MonitorError
+from backend.mining_routes import build_mining_router
+from backend.mining_service import MiningWebService
 from backtest.errors import BacktestError
 from backend.logging_conf import get_logger
 from backend.scheduler import Scheduler
 from calculate.jsonutil import json_safe
+from mining.errors import MiningError
 
 logger = get_logger('backend.app')
 
 
-def create_app():
-    """构造独立应用实例，调度器在lifespan内启动和关闭。"""
+def create_app(*, mining_service=None):
+    """构造独立应用实例；计算与挖掘运行时在 lifespan 内启动和关闭。"""
+    mining_holder = {"service": mining_service}
+
     @asynccontextmanager
     async def lifespan(app):
+        current_mining = mining_holder["service"] or MiningWebService()
+        mining_holder["service"] = current_mining
+        app.state.mining_service = current_mining
         app.state.scheduler = Scheduler()
         # 回测单次占 2~3GB，默认串行；需要并发时用环境变量放宽
         app.state.backtest_scheduler = Scheduler(
@@ -35,12 +43,23 @@ def create_app():
             waiting=int(os.environ.get('BACKTEST_WAITING', 2)),
         )
         try:
+            await asyncio.to_thread(current_mining.initialize)
+        except BaseException:
+            await asyncio.to_thread(app.state.scheduler.close)
+            await asyncio.to_thread(app.state.backtest_scheduler.close)
+            await asyncio.to_thread(current_mining.close)
+            raise
+        try:
             yield
         finally:
             await asyncio.to_thread(app.state.scheduler.close)
             await asyncio.to_thread(app.state.backtest_scheduler.close)
+            await asyncio.to_thread(current_mining.close)
 
     app = FastAPI(title='因子质量监测', lifespan=lifespan)
+    app.include_router(
+        build_mining_router(lambda: mining_holder["service"])
+    )
 
     @app.exception_handler(Exception)
     async def handle_error(request, error):
@@ -52,7 +71,7 @@ def create_app():
 
     # 预期异常注册独立处理器，避免Starlette在测试/中间件中重抛。
     from calculate.errors import CalculateError
-    for kind in (MonitorError, CalculateError, FileNotFoundError):
+    for kind in (MonitorError, CalculateError, MiningError, FileNotFoundError):
         app.add_exception_handler(kind, handle_error)
     app.add_exception_handler(BacktestError, handle_error)
 

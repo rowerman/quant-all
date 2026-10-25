@@ -17,14 +17,23 @@ logger = get_logger('calculate.correlation')
 def available_factors(factor_dir: Path | str = FACTOR_DIR) -> dict[str, tuple[str, ...]]:
     """列出已注册且已落盘的因子，参数 factor_dir 为因子数据根目录。"""
     result = {}
-    for family in factors.FAMILIES:
+    for family in factors.ALL_FAMILIES:
         files = sorted(Path(factor_dir).joinpath(family).glob('year=*/part.parquet'))
         if not files:
             continue
         with duckdb.connect() as conn:
             columns = {item[0] for item in conn.execute('SELECT * FROM read_parquet(?) LIMIT 0',
                                                        [str(files[-1])]).description}
-        names = tuple(spec.name for spec in factors.family_factors(family) if spec.name in columns)
+        specs = (
+            tuple(
+                item
+                for item in factors.available_specs(factor_dir)
+                if item.family == family
+            )
+            if family == "mined"
+            else factors.family_factors(family)
+        )
+        names = tuple(spec.name for spec in specs if spec.name in columns)
         if names:
             result[family] = names
     return result

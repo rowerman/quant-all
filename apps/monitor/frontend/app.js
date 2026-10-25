@@ -1,5 +1,6 @@
 import {backtestChart,disposeCharts,esc,fmt,table,renderMetric} from './charts.js';
 import {consumeStream} from './stream.js';
+import {disposeMining,miningRoute} from './mining.js';
 
 const app=document.querySelector('#app');let options,factors,controller=null;let routeVersion=0;
 const labels={start:'开始日期',end:'结束日期',universe:'股票池',horizon:'标签周期',price:'价格通道',quantiles:'分位数',mode:'分析模式'};
@@ -25,10 +26,14 @@ function controls(){
 
 // 路由切换停止旧请求并清理图表。
 async function route(){
-  const version=++routeVersion;controller?.abort();controller=null;disposeCharts();
+  const version=++routeVersion;controller?.abort();controller=null;disposeCharts();disposeMining();
   const hash=location.hash||'#/factors';
+  document.body.classList.toggle('mining-page',hash==='#/mining'||hash.startsWith('#/mining/'));
+  window.scrollTo(0,0);
   try{
-    if(hash==='#/backtest'||hash.startsWith('#/backtest/')){
+    if(hash==='#/mining'||hash.startsWith('#/mining/')){
+      await miningRoute(hash,()=>version===routeVersion);
+    }else if(hash==='#/backtest'||hash.startsWith('#/backtest/')){
       await backtestRoute(hash,version);
     }else if(hash.startsWith('#/factor/')){
       const name=decodeURIComponent(hash.slice(9));const detail=await get('/api/factors/'+encodeURIComponent(name));if(version!==routeVersion)return;

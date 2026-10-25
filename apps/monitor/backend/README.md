@@ -7,7 +7,9 @@
 
 | 模块 | 职责与调用关系 | 修改注意事项 |
 |---|---|---|
-| app | FastAPI 路由、SSE；调用 service/scheduler；提供 frontend 静态文件 | HTTP 错误须在开流前返回；流内错误使用 error 事件 |
+| app | FastAPI 路由、SSE；调用 service/scheduler/mining_service；提供 frontend 静态文件 | HTTP 错误须在开流前返回；流内错误使用 error 事件 |
+| mining_service | 挖掘预算、运行视图、候选证据、人工审批和发布批次入口 | 只调用 mining 公开接口；批准和发布必须分开，发布不得绕过整批资格 |
+| mining_routes | `/api/mining/*` REST 与可续传 SSE | 断流不能取消运行；事件序号必须可重放 |
 | service | 目录与参数预检；调用 quant 元数据读取及 calculate 指标 | 不在这里重写指标公式；保留只读与已有资源限制 |
 | scheduler | 调度名额、背压、状态、锁等待与取消；由 app 持有 | Future 真正结束才释放容量，不共享数据库连接；原生计算阶段由 `calculate.native` 串行保护，同步和流式回测共用同一调度路径 |
 | errors | MONITOR 错误和 EVAL 错误映射 | 不把内部堆栈发送页面 |
@@ -51,3 +53,10 @@
 回测结果保存到独立的 `data/databases/backtest.duckdb`，不会修改主行情库。内置策略在
 `GET /api/strategies` 时幂等写入策略表，与用户新建的策略共用同一条运行路径。
 接口详解见 [回测接口](../../../docs/trading/backtest/api.md)；浏览器验收脚本为 `tools/monitor/backtest_check.py`。
+
+挖掘 Web 使用独立候选库 `data/databases/factor_mining.duckdb`。监测站启动时只把遗留活动
+运行标为中断，不自动恢复；关闭时等待编排器退出。Worker 未显式配置时创建任务返回
+`MINING-119`，不启用 Mock 回退。路由、事件流和审批边界见
+[挖掘 Web](../../../docs/research/mining/web.md)。审批后发布由
+`MiningPublicationService` 在后台执行，失败会恢复旧正式版本；规则见
+[正式入库](../../../docs/research/mining/publication.md)。

@@ -62,7 +62,7 @@ def rank_composite(
             raise DataAlignmentError(f"factor_rank 缺少因子 {name}")
         panel = factor_panels[name].astype("float64")
         rank = panel.where(eligible).rank(axis=1, pct=True)
-        direction = int(factors.get(name).direction)
+        direction = int(factors.resolve(name).direction)
         total = total.add(rank * direction, fill_value=0.0)
         count = count.add(rank.notna().astype("float64"), fill_value=0.0)
     return total.div(count.replace(0.0, np.nan))
@@ -99,7 +99,7 @@ class FactorRankProvider:
             raise SpecError("factor_rank.params.top_n 必须是正整数")
         names = params.get("factor_names")
         if names is None:
-            names = tuple(spec.name for spec in factors.all_factors())
+            names = tuple(spec.name for spec in factors.available_specs())
         if not isinstance(names, (list, tuple)) or not names:
             raise SpecError("factor_rank.params.factor_names 必须是非空序列")
         if any(not isinstance(name, str) or not name for name in names):

@@ -113,7 +113,7 @@ def resolve_factor(name: str, factor_dir: Path | str = FACTOR_DIR) -> "FactorVie
         factor_dir: 因子数据根目录。
     """
     # 先在注册表里查名字：这样就不必依赖数据项目的异常类型，未知因子直接报 EVAL-104
-    registered = {item.name: item for item in factors.all_factors()}
+    registered = {item.name: item for item in factors.available_specs(factor_dir)}
     spec = registered.get(name)
     if spec is None:
         raise EvalFactorError(

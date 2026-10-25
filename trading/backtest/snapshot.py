@@ -295,10 +295,13 @@ def _industry_columns() -> tuple[tuple[str, str, str], ...]:
     )
 
 
-def _factor_family(name: str) -> tuple[str, str]:
+def _factor_family(
+    name: str,
+    factor_dir: Path | str = FACTOR_DIR,
+) -> tuple[str, str]:
     """返回因子所属族和定义摘要。"""
     try:
-        spec = factors.get(name)
+        spec = factors.resolve(name, factor_dir)
     except Exception as error:
         raise DataAlignmentError(f"未知因子 {name}：{error}") from error
     definition = {
@@ -321,7 +324,7 @@ def _factor_component(
     factor_dir: Path | str,
 ) -> dict[str, Any]:
     """对单个因子在运行范围内的值生成摘要。"""
-    family, definition_digest = _factor_family(name)
+    family, definition_digest = _factor_family(name, factor_dir)
     root = Path(factor_dir) / family / "year=*" / "part.parquet"
     if not list(Path(factor_dir).glob(f"{family}/year=*/part.parquet")):
         raise DataAlignmentError(
