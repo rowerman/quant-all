@@ -4,6 +4,7 @@
 
 ## 当前文档
 
+- [项目全链路深度导读](project-guide/README.md)
 - [数据与因子基础层](core/README.md)
 - [研究模块](research/README.md)
 - [交易与回测](trading/backtest/README.md)

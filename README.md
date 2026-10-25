@@ -544,6 +544,25 @@ bash tools/monitor/serve.sh
 完整回测边界见[完整性评估](docs/trading/backtest/completeness.md)和
 [待办](docs/trading/backtest/todo.md)。
 
+## 项目深度导读
+
+[项目深度导读](docs/project-guide/README.md)是一套按当前代码编写的工程手册，
+覆盖各业务域的技术栈、功能、使用方式、内部结构、数据流和维护边界。
+
+| 章节 | 内容 |
+|---|---|
+| [全链路总览](docs/project-guide/README.md) | 模块地图、技术栈、产物目录和术语 |
+| [共享基础与数据层](docs/project-guide/01-foundation-and-data.md) | 路径、日志、取数、清洗、建库和读取 |
+| [因子库](docs/project-guide/02-factor-library.md) | 因子定义、算子、构建、自检和目录 |
+| [因子评估](docs/project-guide/03-factor-evaluation.md) | 评估面板、指标注册、stage 和前后端链路 |
+| [因子评估指标](docs/project-guide/04-factor-evaluation-metrics.md) | 页面 13 个指标的计算方式、意义和边界 |
+| [自动因子挖掘](docs/project-guide/05-factor-mining.md) | DSL、状态机、门禁、审批和发布 |
+| [Agent 编排与 RD-Agent](docs/project-guide/06-agent-orchestration.md) | 基座项目、二次开发和 Agent 调度 |
+| [ML 模型层](docs/project-guide/07-ml-modeling.md) | 数据、训练、指标、分析、监控和留出 |
+| [回测](docs/project-guide/08-backtest.md) | VectorBT 边界、自定义账本和完整数据流 |
+| [监测站](docs/project-guide/09-monitor-web.md) | FastAPI、SSE、调度器和前端 |
+| [工程支撑](docs/project-guide/10-engineering-support.md) | 配置、脚本、测试、日志和运维 |
+
 ## Git 与文档
 
 ```bash
