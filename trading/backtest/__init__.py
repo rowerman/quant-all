@@ -1,0 +1,109 @@
+"""A 股日频回测：原始价执行账本与现有风险/分配机制。"""
+
+from backtest.builtin import BUILTINS, MOM20_ID, MULTIFACTOR_ID
+from backtest.data import MarketData, load_market_data
+from backtest.engine import BacktestResult, run_backtest
+from backtest.errors import (
+    BacktestError,
+    DataAlignmentError,
+    ExecutionError,
+    ResourceLimitError,
+    RunCancelled,
+    SnapshotConflictError,
+    SpecError,
+)
+from backtest.execution_state import PositionSnapshot, ProviderState
+from backtest.metrics import summarize
+from backtest.orders import (
+    OrderPlan,
+    build_order_plan,
+    execution_targets,
+    liquidation_cells,
+    writeoff_cells,
+)
+from backtest.pipeline import RunRequest, iter_run, run
+from backtest.providers import (
+    TargetWeightProvider,
+    get_provider,
+    list_providers,
+    register_provider,
+)
+from backtest.signals import (
+    build_signal_targets,
+    build_target_weights,
+    eligible_mask,
+    rebalance_mask,
+)
+from backtest.snapshot import (
+    InputSnapshot,
+    build_data_snapshot,
+    build_input_snapshot,
+)
+from backtest.specs import (
+    BacktestParams,
+    BenchmarkSpec,
+    CostSpec,
+    ExecutionSpec,
+    PortfolioSpec,
+    ProviderSpec,
+    RebalanceSpec,
+    RiskSpec,
+    SignalSpec,
+    StrategySpec,
+)
+from backtest.store import BacktestStore
+from backtest.universe import list_universes, membership_frame, resolve_universe
+
+__all__ = [
+    "BUILTINS",
+    "MOM20_ID",
+    "MULTIFACTOR_ID",
+    "BacktestError",
+    "BacktestParams",
+    "BacktestResult",
+    "BacktestStore",
+    "BenchmarkSpec",
+    "CostSpec",
+    "DataAlignmentError",
+    "ExecutionError",
+    "ExecutionSpec",
+    "MarketData",
+    "OrderPlan",
+    "PortfolioSpec",
+    "PositionSnapshot",
+    "ProviderState",
+    "ProviderSpec",
+    "RebalanceSpec",
+    "RiskSpec",
+    "ResourceLimitError",
+    "RunCancelled",
+    "RunRequest",
+    "SnapshotConflictError",
+    "SignalSpec",
+    "SpecError",
+    "StrategySpec",
+    "TargetWeightProvider",
+    "InputSnapshot",
+    "build_data_snapshot",
+    "build_input_snapshot",
+    "build_order_plan",
+    "build_signal_targets",
+    "build_target_weights",
+    "eligible_mask",
+    "execution_targets",
+    "iter_run",
+    "get_provider",
+    "liquidation_cells",
+    "writeoff_cells",
+    "list_universes",
+    "list_providers",
+    "load_market_data",
+    "membership_frame",
+    "rebalance_mask",
+    "register_provider",
+    "resolve_universe",
+    "run",
+    "run_backtest",
+    "summarize",
+]
+
