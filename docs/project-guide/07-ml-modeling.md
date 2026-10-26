@@ -1,241 +1,431 @@
 # ML 模型层
 
-ML 模型层把 t 日收盘可获得的因子和上下文特征转换成未来收益的截面排序分数。它不负责
-组合约束或成交执行，模型分数通过标准预测产物交给评估计划和回测 provider。
+阅读目标：理解模型层如何把当前可见的因子和上下文特征转换成未来收益的截面分数，
+以及数据集、切分、训练、产物、评估、登记、监控和最终留出如何衔接。本文描述当前
+实现，不把历史模型卡中的阶段结论当成永久结论。
 
-核心代码位于 [research/modeling/alpha](../../research/modeling/alpha)，训练和运行
-入口位于 [core/data/scripts/build_alpha](../../core/data/scripts/build_alpha)。
+一句话职责：模型层负责建立可复现的周频研究数据集，训练截面排序模型，写出可校验的
+样本外预测，并为下游评估、完整回测和生命周期提供稳定输入。它不负责生成因子、执行
+交易、处理涨跌停成交或构造完整投资组合账本。
 
-## 1. 技术栈
+## 1. 全链路位置
 
-| 技术 | 用途 |
+```mermaid
+flowchart TD
+  DB[(quant.duckdb)] --> DS[alpha.dataset]
+  FQ[data/factors] --> DS
+  FD[(factors.duckdb)] --> DS
+  DS --> DP[dataset parquet + manifest]
+  DP --> PP[alpha.preprocess]
+  PP --> PIPE[modeling.pipeline]
+  PIPE --> MB[ModelBackend]
+  MB --> MP[fold models]
+  PIPE --> PRED[standard predictions]
+  PRED --> EVAL[EvaluationPlan executor]
+  EVAL --> LEDGER[complete ledger]
+  PRED --> REG[model registry]
+  LEDGER --> MON[monitor]
+  MON --> LIFE[lifecycle]
+  EVAL --> HOLDOUT[final holdout]
+  HOLDOUT --> REPORT[sealed validation result]
+```
+
+模型分数只表示同一信号日内股票未来收益排名的相对高低。分数通过 Top-N、平滑、回滚或
+暂停等策略变成目标权重后，仍需由回测层执行 T+1、停牌、涨跌停、成本、资金和公司行动。
+因此 RankIC、分位收益和周频研究模拟器的改善不能直接解释成可获得的实盘收益。
+
+核心代码：
+
+- 模型包：[research/modeling/alpha](../../research/modeling/alpha)
+- 通用训练契约：[research/modeling/alpha/modeling/contracts.py](../../research/modeling/alpha/modeling/contracts.py)
+- 通用训练流水线：[research/modeling/alpha/modeling/pipeline.py](../../research/modeling/alpha/modeling/pipeline.py)
+- 注册后端：[research/modeling/alpha/modeling/backends](../../research/modeling/alpha/modeling/backends)
+- CLI 包装：[core/data/scripts/build_alpha](../../core/data/scripts/build_alpha)
+- 配置：[configs/alpha](../../configs/alpha)
+
+## 2. 当前快照
+
+以下为 2026-10-26 对当前工作区只读核对的结果。源码和产物变化后应重新生成，不能把
+这些数字当成固定常量。
+
+| 项目 | 当前结果 |
 |---|---|
-| pandas / NumPy | 周频数据集、截面预处理、分数和指标 |
-| scikit-learn | Ridge、ElasticNet、直方图 GBDT |
-| LightGBM | 单模型、多种子 rank 集成和 TreeSHAP |
-| joblib / npz / txt | 模型持久化 |
-| DuckDB | 读取因子、标签、行情和行业数据 |
-| Parquet | 数据集、预测、分数和评估产物 |
-| pytest | 训练、预测、注册、监控和留出验证 |
+| 正式开发数据集 | `6a59680fd71c50a8` |
+| 数据区间 | 2012-01-06～2023-12-29 |
+| 周频样本 | 2,138,239 行、613 个日期、5,500 只股票 |
+| 数据版本 | `tushare_fullA_20000104_20261015` |
+| 因子版本与数量 | `factors_v1`，47 个已实现因子 |
+| 上下文特征 | `log_mv`、`turnover_rate`、`listed_days` |
+| 训练特征 | 50 个根特征加 50 个缺失指示，共 100 个 |
+| 默认开发折 | `wf_2018`～`wf_2023` 六折 |
+| 正式样本外预测 | 1,194,198 行、300 个周频日期 |
+| 模型索引 | `alpha_model_registry_v3` |
+| 登记模型 | 4 个，其中 3 个活跃、1 个归档 |
+| 下游运行链接 | 28 条 |
+| 当前最终留出 | `final_holdout_2ba777e855f5`，`fail_final_holdout` |
 
-## 2. 提供功能
+当前模型：
 
-- 构建周频、可交易的训练和样本外数据集。
-- 生成原始收益和截面百分位标签。
-- 提供按日 rank、z-score、去极值、缺失指示和中性化预处理。
-- 支持 Ridge、ElasticNet、LightGBM 和直方图 GBDT。
-- 支持 purged walk-forward、验证集选参、重拟合和多种子 rank 集成。
-- 写出带哈希的标准预测、模型、配置、指标和 manifest。
-- 评估模型、基线和融合候选，执行经济门和风险门。
-- 支持特征重要性、消融、暴露分析、模型登记、监控和生命周期。
-- 使用独立最终留出入口执行一次性样本外验证。
-
-## 3. 研究任务与固定口径
-
-当前第一版研究契约由
-[research/modeling/alpha/config.py](../../research/modeling/alpha/config.py) 的
-`ResearchContract` 定义：
-
-| 项目 | 当前口径 |
-|---|---|
-| 标签 | `fwd_ret_open_5` |
-| 决策时点 | 每周最后交易日收盘 |
-| 执行时点 | 下一交易日开盘 |
-| 股票池 | 全 A 可交易 |
-| 组合 | Top-30 等权、只做多 |
-| 基准 | `H00300.CSI` 沪深 300 全收益 |
-| 开发期 | 2012-01-01～2023-12-31 |
-| 最终留出 | 2024-01-01～2026-10-15 |
-| purge / embargo | 各 6 个交易日 |
-
-模型只输出分数，不决定行业约束、资金分配、涨跌停处理或成交价格。
-
-## 4. 从原始数据到模型数据的全过程
-
-### 4.1 数据选择
-
-模型数据由以下来源组成：
-
-| 数据 | 来源 | 用途 |
+| 模型 ID | 类型 | 当前用途 |
 |---|---|---|
-| 因子值 | `data/factors` 的已实现和已发布因子 | 原始特征 |
-| 行情与交易状态 | `md.daily_hfq` | 可交易、ST、停牌、市值、换手和上市天数 |
-| 未来收益 | `md.fwd_return` | 标签 `fwd_ret_open_5` |
-| 交易日历 | `md.calendar` | 周最后交易日 |
-| 申万行业 | `ref.sw_industry_member` | 可选行业中性化和暴露分析 |
+| `lightgbm_ensemble_label_rank_6aea5c9299d5` | 五种子 LightGBM rank 集成 | 实验主模型、监控和生命周期主模型 |
+| `ridge_label_rank_aaff2cb2fbcf` | Ridge | 线性参照、生命周期回退模型 |
+| `sklearn_hist_gbdt_label_rank_83e1200e554f` | Scikit-learn 直方图 GBDT | 新挑战者，已有开发期评估、账本、监控和生命周期 |
+| `lightgbm_label_rank_aaae94773921` | 单种子 LightGBM | 已归档历史对照 |
+
+模型 manifest 的 `status` 只表示训练状态。评估、完整账本、监控、生命周期和最终留出
+的完成情况应读取 `data/models/index.json` 中的 `downstream`，不能从
+`status=trained/evaluated` 推断整个研究生命周期。
+
+## 3. 固定研究口径
+
+[research/modeling/alpha/config.py](../../research/modeling/alpha/config.py) 中的
+`ResearchContract` 约束第一版研究：
+
+| 字段 | 当前值 | 含义 |
+|---|---|---|
+| `label` | `fwd_ret_open_5` | 未来 5 个交易日开盘到开盘收益 |
+| `horizon` | 5 | 标签周期 |
+| `price` | `open` | 标签使用开盘价格通道 |
+| `universe` | `all_a` | 全 A 可交易股票池 |
+| `rebalance` | `weekly` | 每周最后交易日生成信号 |
+| `top_n` | 30 | 研究组合持仓数 |
+| `weighting` | `equal` | 等权 |
+| `benchmark` | `H00300.CSI` | 沪深 300 全收益 |
+| `dev_start/dev_end` | 2012-01-01～2023-12-31 | 开发期 |
+| `holdout_start/holdout_end` | 2024-01-01～2026-10-15 | 已消耗的最终留出窗口 |
+| `min_listed_days` | 60 | 上市满 60 个自然日 |
+| `purge_days/embargo_days` | 6 / 6 | 5 日标签之外的交易日隔离 |
+
+契约会拒绝标签和时间粒度不匹配、最终留出与开发期重叠、`purge` 或 `embargo` 小于
+`horizon + 1` 等配置。普通数据集和预测入口默认拒绝跨入 2024-01-01；只有最终留出
+入口能使用注册窗口打开对应区间。
+
+## 4. 公共接口与数据结构
+
+### 4.1 数据集
+
+`DatasetSpec` 的默认字段：
+
+| 字段 | 默认值或规则 |
+|---|---|
+| `name` | `weekly_fwd_open_5_v1` |
+| `start/end` | 研究契约开发期 |
+| `features` | `None` 表示因子目录中的全部 implemented 因子 |
+| `label` | 仅支持 `fwd_ret_open_5` |
+| `universe` | 仅支持 `all_a` |
+| `min_listed_days` | 60，必须为非负整数 |
+| `allow_holdout` | `False`，最终留出构建时显式设为 `True` |
+
+`build_dataset()` 返回 `DatasetArtifact`；`load_dataset(dataset_id)` 返回
+`(DataFrame, manifest)`。数据集主键是 `stock_code + trade_date`，结果按二者排序。
+
+### 4.2 训练
+
+`TrainingSpec` 是与算法无关的训练规格：
+
+| 字段 | 作用 |
+|---|---|
+| `backend` | `linear`、`lightgbm` 或 `sklearn_hist_gbdt` |
+| `config` | 后端专属 JSON 参数 |
+| `target` | 当前固定为 `label_rank` |
+| `seeds` | 非空时形成多种子集成；必须严格递增、不重复且至少两个 |
+| `model_type` | 可选，决定 manifest 中的模型类型 |
+| `top_n/quantiles` | 下游研究口径和分位评估参数 |
+| `preprocess` | rank/z-score、缺失指示、去极值和中性化配置 |
+
+`ModelBackend` 协议只处理单折算法：
+
+```text
+build_config
+config_dict
+with_seed
+fit_fold
+refit
+predict
+save_model
+load_model
+manifest_metadata
+```
+
+新增后端放在
+[research/modeling/alpha/modeling/backends](../../research/modeling/alpha/modeling/backends)
+并在模块导入时注册。后端目录会自动发现，不需要修改共享折循环或固定后端清单。
+后端不得自行改变股票池、标签、组合规则或最终验收口径。
+
+### 4.3 评估
+
+`EvaluationPlan` 描述候选、参照、控制、评分规则、持仓规则和门槛：
+
+| 类型 | 作用 |
+|---|---|
+| `ResearchContract` | 固定研究口径 |
+| `DatasetSpec` | 数据集构建范围与特征 |
+| `TrainingSpec` | 一次模型训练 |
+| `ModelArtifact` | 训练产物索引 |
+| `EvaluationPlan` | 候选比较与选择 |
+| `SourceSpec` | `model`、`baseline` 或 `blend` 分数来源 |
+| `ScorePolicy` | 原始分数或因果 rank 平滑 |
+| `RiskGatePolicy` | 组合级市值、流动性和行业暴露门槛 |
+| `MonitorPolicy/LifecyclePolicy` | 监控与生命周期状态机 |
+| `FinalHoldoutSpec` | 一次性留出窗口和数据门槛 |
+
+### 4.4 预测接口
+
+```python
+from alpha.predict import load_predictions, model_artifact_snapshot, predict
+
+folder, manifest, frame = load_predictions(
+    model_id,
+    start="2018-01-12",
+    end="2023-12-29",
+)
+replayed = predict(model_id, "2018-01-12", "2023-12-29")
+snapshot = model_artifact_snapshot(model_id)
+```
+
+- `load_predictions()` 读取已落盘分片，完整校验后再按闭区间截取。
+- `predict()` 加载训练数据集和模型文件，重新计算样本外预测；请求覆盖完整预测区间时
+  还核对合并 SHA256。普通调用不能跨入最终留出。
+- `model_artifact_snapshot()` 汇总模型文件、训练数据集和预测内容哈希，供回测输入快照。
+- 标准预测固定为 `trade_date`、`stock_code`、`score`，分数必须是有限值，键不能重复。
+
+## 5. 从原始数据到周频数据集
+
+### 5.1 数据来源
+
+| 数据 | 当前入口或表 | 用途 |
+|---|---|---|
+| 因子 | `quant.load_factor_panel()`、`data/factors` | 模型特征 |
+| 日行情与状态 | `quant.load_panel()`、`md.daily_hfq` | 可交易、ST、停牌、市值、换手、上市日 |
+| 标签 | `quant.load_label()`、`md.fwd_return` | `fwd_ret_open_5` |
+| 交易日历 | `quant.load_calendar()`、`md.calendar` | 每周最后交易日 |
+| 申万行业 | `ref.sw_industry_member` | 时点行业和可选中性化 |
 | 因子目录 | `factors.duckdb` | 已实现因子清单和版本 |
 
-### 4.2 已有清洗与模型层清洗边界
+因子和标签使用后复权口径，回测成交使用原始价。模型层不重新生成复权价，也不改变数据层
+的停牌、涨跌停和公司行动处理。
 
-原始取数、复权、停牌、ST、涨跌停和生命周期由数据层完成。模型层不重复猜测行情清洗
-规则，但会做二次约束：
+### 5.2 构建顺序
 
-- 只保留周最后交易日。
-- 把 `inf` 和非数值转换为空值。
-- 用 `eligible` 标记可训练、可预测股票。
-- 标签只在可交易股票截面内排百分位。
-- 禁止把 `label*`、`fwd_*`、`ret` 和保留列作为特征。
-- 数据集主键 `stock_code + trade_date` 必须唯一。
+`build_dataset()` 的真实顺序如下：
 
-### 4.3 可交易股票池
+1. 读取因子目录中的已实现因子；若传入 `features`，先拒绝保留列、未来列和重复上下文列。
+2. 读取行情库和因子库 manifest，得到数据版本、因子版本、因子行数等版本指纹。
+3. 按自然年切分读取范围，每次读取因子面板、日线状态、5 日标签和交易日历。
+4. 先用完整区间交易日历计算每周最后交易日，再把每个周频日期分配到对应年份。
+5. 将因子、日线状态和标签按 `stock_code + trade_date` 左连接；行业按信号日时点连接。
+6. 计算 `eligible`、上下文特征、`label_raw`、`label_rank` 和 `sample_weight`。
+7. 合并年度结果，检查主键唯一，写出 `data.parquet` 和 `manifest.json`。
+
+数据集 ID 由 `DatasetSpec`、特征清单、数据版本、因子版本和数据集代码 SHA256 生成。
+相同输入应得到相同 ID；任何一项变化都可能生成新目录。
+
+### 5.3 可交易股票池
+
+当前代码的可交易条件为：
 
 ```text
 eligible =
     can_buy_close
-    且非停牌
-    且非 ST
-    且非退市整理期
-    且上市满 60 个自然日
+    and not is_suspended
+    and not is_st
+    and not is_delisting
+    and listed_days >= 60
 ```
 
-历史退市股票保留在数据中；上市前、退市后和停牌日不进入信号池。
+`listed_days` 是信号日与上市日之间的自然日差。不可交易股票仍保留在数据集中，方便检查
+生命周期和历史覆盖，但 `sample_weight=0`，不会进入模型拟合。
 
-### 4.4 周频信号日
+这些条件只是研究池代理。它们不能保证次日开盘一定可以成交，也没有处理卖出侧的跌停、
+流动性、冲击成本和资金约束；这些属于完整回测层。
 
-按完整交易日历取每周最后交易日，不能按自然年分别取“每年最后一天”，也不能把区间末尾
-不完整周随意补齐。每个信号日对应下一交易日开盘执行。
+### 5.4 周频信号日和标签
 
-### 4.5 标签构造
+周频信号日取完整交易日历中每周最后一个开市日，不按自然年分别补造“年末最后一天”。
+信号日在收盘后确定，下一交易日开盘是研究契约中的执行时点。
 
-数据集同时保留：
+标签同时保留：
 
-| 列 | 含义 |
+| 列 | 定义 |
 |---|---|
 | `label_raw` | 未来 5 日开盘通道收益 |
-| `label_rank` | 当日可交易且标签有效股票中的百分位 |
-| `sample_weight` | 可交易且标签有效时为 1，否则为 0 |
+| `label_rank` | 当日可交易且标签有效股票中的百分位，平均秩处理并列 |
+| `sample_weight` | 可交易且 `label_rank` 非空时为 1，否则为 0 |
 
-排序模型拟合 `label_rank`，用 `sample_weight` 排除不可训练样本。
+模型拟合的是截面百分位标签，不是原始收益。这样降低极端收益对平方损失的支配，但也意味着
+模型优化的是排序目标；分数本身不是预期收益，不能直接按分数大小解释收益幅度。
 
-### 4.6 上下文特征
+### 5.5 上下文特征
 
-除了因子目录中的特征，每个样本还构造：
+| 特征 | 计算 | 注意点 |
+|---|---|---|
+| `log_mv` | `ln(total_mv)` | 市值必须为正，否则为空 |
+| `turnover_rate` | 日行情换手率 | 保持数据层单位 |
+| `listed_days` | 信号日与上市日自然日差 | 不按交易日计算 |
 
-- `log_mv = ln(total_mv)`，市值必须为正。
-- `turnover_rate`，当日换手率。
-- `listed_days`，从上市日到信号日的自然日数。
+上下文特征和因子一起参与预处理，也会生成 `__missing` 指示列。因此当前正式数据集有
+47 个因子、3 个上下文根特征和 50 个缺失指示，共 100 个模型输入。
 
-### 4.7 数据集产物
+### 5.6 数据集 manifest
 
-`DatasetSpec`、特征清单、数据版本和代码哈希共同生成 `dataset_id`。产物：
+`data/models/datasets/<dataset_id>/` 当前包含：
 
 ```text
-data/models/datasets/<dataset_id>/
-  data.parquet
-  manifest.json
+data.parquet
+manifest.json
 ```
 
-manifest 记录行数、日期数、股票数、可用样本、标签覆盖率、缺失率、年度行数和数据版本。
+manifest 记录数据集 ID、规格、原始特征、上下文特征、数据与因子版本、行数、日期数、
+股票数、日期范围、可用行数、标签覆盖率、逐特征缺失率、年度行数和代码哈希。
 
-## 5. 预处理
+`data.parquet` 通过临时文件替换写入，但 manifest 在其后直接覆盖，两者不是一个跨文件
+事务。`load_dataset()` 校验目录 ID 与 manifest ID，不重新核对 Parquet 内容哈希。
+需要完整输入快照时，应使用 `model_artifact_snapshot()` 或回测输入快照。
+
+## 6. 截面预处理
 
 预处理实现位于
-[research/modeling/alpha/preprocess.py](../../research/modeling/alpha/preprocess.py)。
+[research/modeling/alpha/preprocess.py](../../research/modeling/alpha/preprocess.py)，
+每个特征按 `trade_date` 独立处理，不使用全样本均值或未来日期。
 
-### 5.1 默认 rank
+### 6.1 实际顺序
 
-每个交易日、每个因子独立计算百分位 rank，缺失值填 `0.5`。这样可以降低不同因子量纲和
-长尾对模型的影响。
+对每个根特征依次执行：
 
-### 5.2 z-score
+1. 转为数值，把 `inf/-inf` 转换为空值。
+2. 只在 `eligible=True` 的股票上保留原值。
+3. 可选按日做 1% / 99% winsorize。
+4. `rank` 模式按日计算百分位，缺失填 `0.5`；`zscore` 模式按日使用总体标准差，
+   缺失填 `0`。
+5. 可选行业中性化，再可选按日对 `log_mv` 做一元回归并保留残差。
+6. `zscore` 模式最后按 `clip_z` 截断；默认配置为 5。
+7. 生成由原始特征到空值的 `<name>__missing` 指示列。
 
-配置为 `method="zscore"` 时，按交易日计算均值和总体标准差，缺失值填 `0`，可配置
-`clip_z` 截断。
+默认训练规格使用 rank、开启缺失指示、关闭 winsorize、行业/市值中性化和额外截断。
+注意中性化发生在 rank 之后；行业残差或市值残差不会再重新 rank。
 
-### 5.3 去极值
+### 6.2 中性化边界
 
-可选 `winsorize=true`，每个交易日把特征压缩到 1% 和 99% 分位。默认模型配置使用
-rank 且不额外去极值。
+- 行业中性化使用信号日可见的申万一级行业，缺失行业归入 `UNKNOWN` 组。
+- 市值中性化只在当日可交易股票上估计一元回归，并返回残差。
+- 所有统计都按日计算，改变未来日期不会改变过去样本的变换结果。
+- 行业组均值在缺失填充后计算，当前实现没有再次把不可交易行排除；不可交易行可能以
+  填充值参与行业截距。默认模型不启用行业中性化，正式行业中性化实验应单独审计。
+- 行业区分支、历史行业修订和极端小样本仍可能影响稳健性。当前默认模型不中性化，
+  所以这些风险主要影响显式开启中性化的实验。
 
-### 5.4 缺失指示
+缺失指示列让模型区分“真实低值”和“缺失后填充值”。但缺失本身可能与数据质量、公司类型
+或未来生存状态相关，加入指示列不能自动消除选择偏差。
 
-`missing_indicator=true` 时为每个原始特征生成 `<name>__missing`，在可交易股票中标记
-原值是否缺失。指示列与处理后的特征一起进入模型。
+## 7. Purged walk-forward
 
-### 5.5 中性化
+### 7.1 当前六折
 
-可配置：
+当前正式折表来自 `data/models/splits/walk_forward_v1.csv`：
 
-- `industry`：按交易日 × 时点申万一级行业去组均值。
-- `log_mv`：按交易日对 `log_mv` 做一元回归，保留残差。
+| 折 | 训练期 | 验证期 | 测试期 |
+|---|---|---|---|
+| `wf_2018` | 2012-01-04～2016-12-22 | 2017-01-03～2017-12-29 | 2018-01-10～2018-12-28 |
+| `wf_2019` | 2012-01-04～2017-12-21 | 2018-01-02～2018-12-28 | 2019-01-10～2019-12-31 |
+| `wf_2020` | 2012-01-04～2018-12-20 | 2019-01-02～2019-12-31 | 2020-01-10～2020-12-31 |
+| `wf_2021` | 2012-01-04～2019-12-23 | 2020-01-02～2020-12-31 | 2021-01-12～2021-12-31 |
+| `wf_2022` | 2012-01-04～2020-12-23 | 2021-01-04～2021-12-31 | 2022-01-12～2022-12-30 |
+| `wf_2023` | 2012-01-04～2021-12-23 | 2022-01-04～2022-12-30 | 2023-01-11～2023-12-29 |
 
-默认训练配置不中性化。任何全样本统计都不允许进入截面预处理，避免未来信息泄漏。
+默认模式是扩展窗口：每折训练起点固定，验证期是测试年前一完整自然年，测试期是该自然年。
+`purge` 和 `embargo` 各 6 个交易日。测试起始日晚于自然年首日，因为这些日期被
+embargo 隔离；六折合并后得到 300 个有效周频预测日，而不是完整六个自然年的全部周末。
 
-## 6. 训练流程
+### 7.2 为什么需要 purge 和 embargo
 
-### 6.1 通用训练规格
+`fwd_ret_open_5` 的标签使用未来 5 个交易日价格。若训练样本的标签窗口跨入验证期，
+或验证样本的标签跨入测试期，模型选择会间接看到后面时间段的信息。
 
-[research/modeling/alpha/modeling/contracts.py](../../research/modeling/alpha/modeling/contracts.py)
-的 `TrainingSpec` 定义：
+代码要求隔离长度至少为 `horizon + 1` 个交易日，并在生成切分表时调用
+`validate_label_gap()` 检查训练/验证、验证/测试边界。当前训练入口读取 CSV 后只重新
+检查测试段没有进入最终留出，没有再次验证 CSV 中的标签间隔；因此切分表本身应按受控
+脚本生成并版本化，不能手工编辑。
 
-- `backend`：`linear`、`lightgbm` 或 `sklearn_hist_gbdt`。
-- `config`：算法参数。
-- `target`：默认 `label_rank`。
-- `seeds`：可选多种子集成。
-- `preprocess`：预处理配置。
-- `top_n` 和 `quantiles`：下游研究口径。
+### 7.3 数据窥探边界
 
-### 6.2 Purged walk-forward
+六折测试预测拼接后才形成整体样本外指标。超参数选择使用每折验证集，最终模型使用
+train+valid 重拟合，再预测该折 test。模型筛选、分数平滑、Top-N 和 buffer 比较仍在
+开发期内进行，必须视为研究迭代，不能把开发期结果当作独立未来证据。
 
-默认六折测试年份为 2018～2023。每折：
+## 8. 模型训练
 
-```text
-expanding train: 2012 起点到验证年前
-purge:           训练和验证之间 6 个交易日
-valid:           测试年前一完整自然年
-embargo:         验证和测试之间 6 个交易日
-test:            当年样本外
-```
-
-验证集用于选参或早停；最终模型在 train+valid 上重拟合，并对当年 test 生成样本外预测。
-标签跨过切分点会通过 `validate_label_gap()` 直接失败。
-
-### 6.3 线性后端
-
-`LinearBackend` 支持 Ridge 和 ElasticNet：
-
-1. 在训练集上拟合 `alpha_grid` 中的每个候选。
-2. 用验证集 RankIC 选 alpha。
-3. 在 train+valid 上按选中 alpha 重拟合。
-4. 对 test 生成分数。
-
-### 6.4 LightGBM 后端
-
-`LightGbmBackend`：
-
-1. 在训练集拟合。
-2. 只使用验证集 RankIC 早停。
-3. 取最佳迭代轮数。
-4. 在 train+valid 上重拟合。
-5. 对 test 生成分数。
-
-### 6.5 直方图 GBDT 后端
-
-`SklearnHistGbdtBackend` 使用固定的
-`HistGradientBoostingRegressor` 配置，在训练集内部划出验证比例早停，再按最佳迭代数在
-train+valid 上关闭早停重拟合。
-
-### 6.6 多种子 rank 集成
-
-LightGBM 五种子配置使用 `seed 0..4`。每个种子独立训练，在每个信号日把成员分数转换为
-截面百分位 rank，再等权平均。成员预测和稳定性报告全部保留，不能根据样本外表现事后删种。
-
-### 6.7 模型无关流水线
+### 8.1 通用折循环
 
 [research/modeling/alpha/modeling/pipeline.py](../../research/modeling/alpha/modeling/pipeline.py)
-统一处理：
+按测试起始日排序折，并执行：
 
-- 折循环。
-- 训练、验证、重拟合和预测。
-- 多种子集成。
-- 模型文件保存。
-- 标准预测分片。
-- 指标、manifest、features、config 和实验索引。
-- 断点复用与哈希校验。
+1. 对全数据集按 manifest 的特征和预处理配置做截面转换。
+2. 每折只取该日期的 train、valid、train+valid 和 test 行。
+3. 训练数据要求 `sample_weight > 0` 且目标非空；测试只要求 `eligible=True`。
+4. 对每个种子调用 `fit_fold()`，用验证集选参或早停。
+5. 用 train+valid 和选定轮数/正则参数重拟合。
+6. 对 test 生成分数；多种子时在每个日期截面内转 rank 后等权平均。
+7. 保存成员模型、主预测、指标、配置、特征和 manifest。
 
-新增算法只需实现 `ModelBackend` 并注册，不修改共享折循环。
+如果一个折的训练、验证、重拟合或测试样本为空，流水线直接失败，不跳过该折。
 
-## 7. 训练产物
+### 8.2 线性后端
+
+`linear` 支持 Ridge 和 ElasticNet：
+
+- 在 `alpha_grid` 中逐个拟合训练集。
+- 用验证集 RankIC 均值选择 `alpha`；并列时选较大的 `alpha`。
+- 在 train+valid 上用选中的参数重拟合。
+- 单折模型保存为 `.npz` 模型包。
+
+正则化降低小样本和高相关特征下的系数不稳定，但不会修复标签泄漏、错误股票池或错误的
+数据可用日。因子高度相关时，线性系数也不能直接当作经济贡献。
+
+### 8.3 LightGBM 后端
+
+`lightgbm` 使用验证集每日 RankIC 早停：
+
+1. 在训练集上拟合 LightGBM。
+2. 以验证集排序表现决定最佳迭代轮数。
+3. 在 train+valid 上按最佳轮数关闭早停重拟合。
+4. 单折模型保存为文本 `.txt`。
+
+默认五种子集成使用固定种子 `0..4`。每个种子独立训练，在每个信号日把成员分数转为
+截面百分位 rank 后等权平均。全部成员预测和稳定性报告保留，不能根据样本外表现事后
+挑选种子。
+
+### 8.4 Scikit-learn 直方图 GBDT 后端
+
+`sklearn_hist_gbdt` 使用固定的
+`HistGradientBoostingRegressor` 配置：
+
+1. 在训练集内部按固定比例划出早期停止样本。
+2. 按验证损失选择迭代轮数，并另用正式验证年计算 RankIC 记录。
+3. 在 train+valid 上按选定轮数关闭早停重拟合。
+4. 单折模型保存为 `.joblib`。
+
+该后端的内部早期停止不是按时间顺序切训练集，但其样本都位于该折训练期内；正式验证年
+仍由共享流水线隔离。新增后端如果使用内部验证，必须明确它是否依赖时间顺序。
+
+### 8.5 模型 ID 与恢复
+
+模型 ID 由数据集 ID、数据版本、数据集代码哈希、折、训练规格、后端及相关源码哈希组成，
+格式为 `<model_type>_<target>_<12位摘要>`。
+
+训练前若同 ID 目录已有 `manifest.json` 和 `metrics.json`，并且未使用 `--force`：
+
+1. 校验 manifest 和 metrics 的模型 ID。
+2. 校验全部折模型文件是否存在且 SHA256 一致。
+3. 读取并完整校验已落盘预测，再核对行数。
+4. 全部通过才复用，否则失败；`--force` 才会重建同一目录。
+
+恢复检查不重新计算数据集内容哈希。数据集损坏但主键和 manifest 仍可读时，不一定能在
+训练恢复前被发现；发现训练数据质量问题时，应保留旧产物并用修正确认后的输入生成新 ID。
+
+## 9. 模型产物
+
+### 9.1 目录
 
 ```text
 data/models/models/<model_id>/
@@ -249,220 +439,336 @@ data/models/models/<model_id>/
   member_predictions/seed=N/year=YYYY/part.parquet
 ```
 
-manifest 通常包含：
+单模型不一定有 `member_predictions`；集成模型每个种子都保留成员预测。训练指标最初只
+包含验证信息和样本外成交/IC 模型层指标，`metrics.json` 中的 `evaluated=false` 表示尚未
+运行组合研究评估，不表示模型文件不可用。
 
-- 数据集、标签、股票池、基准和模型类型。
-- 原始特征、上下文特征和转换后特征。
-- 每个折的日期、样本数、模型文件和选择结果。
-- 模型文件、预测文件和训练代码哈希。
-- 预测行数、日期数、起止日期和合并 SHA256。
+### 9.2 manifest 主要字段
 
-模型 ID 由数据集、折、规格、预处理、后端源码和模型类型确定，因此相同输入得到稳定 ID。
-
-## 8. 输出指标与结果分析
-
-### 8.1 模型层指标
-
-- RankIC 均值。
-- RankIC 标准差。
-- ICIR。
-- t 值。
-- RankIC 正值比例。
-- 有效交易日。
-- 分年度 RankIC。
-- 10 分位平均收益、单调性和最高减最低。
-- 分数一周自相关。
-
-### 8.2 组合层指标
-
-完整账本或周频研究模拟器输出：
-
-- 年化收益。
-- 年化净超额。
-- Sharpe。
-- 最大回撤。
-- 单边/双边换手。
-- 总成本。
-- 分年度收益和超额。
-
-### 8.3 解释与消融
-
-`alpha.explain` 和 `scripts.build_alpha.explain_model` 支持：
-
-- LightGBM gain 重要性。
-- TreeSHAP 特征贡献。
-- 按因子族聚合重要性。
-- 删除因子族的重训消融。
-- 交易日截面内单因子置换。
-- 根特征相关性和高相关簇。
-- Top-30 组合的风格与行业暴露。
-
-### 8.4 研究结论示例
-
-当前正式主模型是五种子 LightGBM 集成，Ridge 是回退模型，直方图 GBDT 是后加入的
-挑战者。2024-2026 最终留出已完成一次验证，状态为 `fail_final_holdout`：主候选相对
-Ridge 只有年化净收益改善，RankIC、ICIR、Sharpe 和最大回撤仍然较差，完整账本也落后
-简单 B4 全因子 rank 基线。该失败结论必须保留，不能在同一留出集重新调参后宣称成功。
-
-## 9. 模型评估计划
-
-[configs/alpha/development_evaluation_v85.json](../../configs/alpha/development_evaluation_v85.json)
-描述候选、参照、评分规则、持仓规则和经济/风险门槛。
-
-来源类型：
-
-| 类型 | 含义 |
+| 字段 | 含义 |
 |---|---|
-| `model` | 按 `model_id` 读取标准预测 |
-| `baseline` | 从数据集重新计算 B1-B4 基线分数 |
-| `blend` | 多个模型按日 rank 加权融合 |
+| `schema_version` | 当前新模型为 `alpha_model_v2`；历史模型可为 v1 |
+| `model_id/model_type/backend` | 模型身份和后端来源 |
+| `dataset_id/data_versions` | 训练数据及其版本 |
+| `label/target/universe` | 标签与研究池 |
+| `raw_features/context_features/features` | 根特征和预处理后特征 |
+| `preprocess` | 重放时必须恢复的变换配置 |
+| `folds/fold_models` | 日期边界、样本数、模型文件和选择结果 |
+| `member_predictions` | 集成成员预测元数据 |
+| `prediction_files/prediction_sha256` | 年度分片和合并预测哈希 |
+| `code_sha256/model_sha256` | 代码和模型集合摘要 |
 
-执行器读取已经落盘的评估分数，不识别具体模型类型。候选可配置：
+历史 v1 manifest 通过
+[research/modeling/alpha/modeling/manifests.py](../../research/modeling/alpha/modeling/manifests.py)
+归一化读取，不原地改写。新增字段时应同时检查训练写出、历史读取、预测重放和登记校验。
 
-- 原始 rank。
-- 4 周 rank 平滑。
-- Top-30。
-- Top-30 加 rank buffer。
+### 9.3 预测校验
 
-经济门和质量门通过后，才允许进入完整账本。
+`load_predictions()` 的完整校验顺序：
 
-## 10. 预测读取与回测接入
+1. 模型目录名与 manifest 的 `model_id` 一致。
+2. 年度键是四位数字，分片存在且日期属于对应年份。
+3. 三列齐全，日期和股票代码非空，分数全部有限。
+4. 分片及合并结果都没有重复键。
+5. 每个分片哈希和合并哈希与 manifest 一致。
+6. 行数、日期数、起止日期与 manifest 一致。
+7. 全部通过后才按请求区间截取，空区间抛 `ALPHA-401`。
 
-下游有两个不同接口：
+模型目录和预测按年度分片写入时使用单文件临时替换，但整个模型目录不是事务提交。
+写入中断可能留下不完整目录；恢复必须依靠 manifest 和哈希失败关闭，不能把目录存在
+当作训练成功。
 
-| 接口 | 行为 |
-|---|---|
-| `alpha.predict.predict()` | 加载数据集和模型，重新计算并核对预测哈希 |
-| `alpha.predict.load_predictions()` | 读取已落盘样本外预测并校验 |
+## 10. 模型评估计划与完整账本入口
 
-标准预测固定为：
+### 10.1 评估计划
 
-```text
-trade_date | stock_code | score
-```
+当前正式计划是
+[configs/alpha/development_evaluation_v85.json](../../configs/alpha/development_evaluation_v85.json)。
+它包含 9 个候选和 1 个 B4 控制：
 
-`load_predictions()` 会校验年度文件、列、唯一键、有限值、SHA256、行数和日期范围。
-回测 provider `ml_rank` 通过这个接口取得分数，再把分数平滑、排序并转成 Top-N 等权目标。
+- Ridge、LightGBM 集成和直方图 GBDT 的原始或 4 周 rank 平滑；
+- Ridge/LightGBM 的 45 名 buffer；
+- LightGBM 与 Ridge 的 50/50 rank 融合；
+- 不可选择的 B4 全因子 rank 控制。
 
-## 11. 监控与生命周期
+当前正式评估为 `evaluation_d57dd9e6e750`，状态 `pass_evaluation`，选中
+`LIGHTGBM_SMOOTH_4W`。评估产物包含 47 个有哈希的文件，包括计划、候选表、决策、
+逐周结果、订单、年度表和每个候选的规范化分数。
 
-### 11.1 监控
+### 10.2 P3 经济门
 
-`alpha.monitor` 读取模型、预测、标签、完整账本和暴露产物，输出：
+默认门槛要求候选相对 Ridge：
 
-- 分数分布与缺失率。
-- 滚动 RankIC。
-- 净超额、换手和回撤。
-- 风格与行业暴露。
-- Warning/Alert 和衰减演练。
+- RankIC、ICIR、年化净收益、最大回撤至少两项严格改善；
+- 双边年化换手不超过 Ridge 的 2 倍；
+- 2018～2023 每一年 RankIC 和净超额都为正。
 
-监控不训练模型、不重跑回测，也不读取封存的最终留出。
+所有候选未通过时保留 Ridge。通过候选再按年化收益、Sharpe、最大回撤、换手、优先级和
+名称排序。门槛是研究规则，不是统计显著性检验。
 
-### 11.2 生命周期
+### 10.3 组合风险门
 
-`alpha.lifecycle` 把监控结果转换为状态：
+v3 计划在进入完整账本前检查目标持仓的 13 周滚动绝对暴露，至少需要 8 个有效观测：
 
-| 状态 | 动作 |
-|---|---|
-| `normal` | 主模型满仓 |
-| `reduced` | 主模型半仓 |
-| `rollback` | 切换到 Ridge |
-| `paused` | 清仓 |
+| 维度 | 上限 |
+|---|---:|
+| SIZE 绝对暴露 | 2.0 |
+| LIQUIDITY 绝对暴露 | 2.0 |
+| 行业最大主动权重 | 0.35 |
 
-状态在信号日收盘生成，下一交易日开盘执行。未来 5 日标签形成的监控 RankIC 只能使用上一
-信号日已完成的观测，不能使用当日尚未结束的标签。
+风险门通过不代表交易可执行。它只约束研究目标组合的风格和行业集中度，不验证成交量、
+冲击成本或停牌后的补单。
 
-年度重训到期只记录 `retrain_due`，不会自动训练或晋升挑战者。新模型必须重新通过完整
-样本外验证。
+### 10.4 下游消费
 
-## 12. 如何使用
+`evaluation_executor` 把每个候选的平滑后分数写成不可变 Parquet。完整账本入口
+`accept_plan` 按评估 ID 和候选名读取并校验这些分数，再交给回测层执行。它不会在
+账本阶段重新平滑、融合或根据结果替换候选。
 
-### 12.1 构建数据集与折
+评估目录复用时会核对计划、来源、数据集、代码和全部声明输出哈希。任一产物损坏时
+失败关闭；只有显式 `--force` 才重建。完整账本细节由回测模块文档负责。
+
+## 11. 登记、监控和生命周期
+
+### 11.1 模型登记
+
+[research/modeling/alpha/registry.py](../../research/modeling/alpha/registry.py)
+扫描活跃和归档模型目录，校验 manifest、config、features、metrics、模型文件、预测分片、
+训练数据集和运行 manifest，然后原子重建 `data/models/index.json`。
+
+索引是派生入口，不是事实来源。当前 v3 索引区分：
+
+- `status_scope=training`：模型 manifest 的训练状态；
+- `downstream.evaluations`：评估计划运行；
+- `downstream.acceptances`：完整账本验收；
+- `downstream.monitoring`：监控包；
+- `downstream.lifecycles`：生命周期包；
+- `downstream.final_holdouts`：最终留出运行。
+
+模型目录或预测损坏时，登记重建失败并保留旧索引。`ALPHA-401` 表示产物损坏，
+`ALPHA-402` 表示索引结构、目录身份或登记冲突。
+
+### 11.2 监控
+
+`alpha.monitor` 读取现有模型、预测、标签、完整账本和目标持仓暴露，生成滚动监控。
+它不训练模型、不重跑回测，也不读取封存的最终留出。
+
+固定窗口为 13 个周频信号日，至少 8 个有效观测：
+
+| 指标 | Warning | Alert |
+|---|---:|---:|
+| 滚动部署 RankIC | 低于 0 | 连续 2 周低于 0 |
+| 滚动净超额 | 低于 0 | 不高于 -10% |
+| 当前回撤 | 不高于 -28% | 不高于 -35% |
+| 双边年化换手 | 基准的 1.5 倍 | 基准的 2.0 倍 |
+| 可交易股票分数缺失率 | 高于 1% | 高于 5% |
+| 最大绝对风格暴露 | 高于 1.5 | 高于 2.0 |
+| 最大行业主动权重 | 高于 25% | 高于 35% |
+
+监控包位于 `data/models/models/<model_id>/monitoring/<monitor_id>/`，包含时序、告警、
+衰减演练、机器/人工报告、manifest 和完成标记。输入或代码变化应生成新 ID，不覆盖历史包。
+
+### 11.3 生命周期
+
+`alpha.lifecycle` 把监控观测转换成因果状态：
+
+| 状态 | 活动模型 | 仓位乘数 |
+|---|---|---:|
+| `normal` | 主模型 | 1.0 |
+| `reduced` | 主模型 | 0.5 |
+| `rollback` | Ridge 回退模型 | 1.0 |
+| `paused` | 无 | 0.0 |
+
+默认规则为：连续 4 期 warning/alert 降权，连续 2 期 alert 回滚，连续 4 期 alert
+暂停，缺失率超过 5% 立即暂停，连续 4 期 `ok` 恢复。所有决策状态在信号日收盘生成，
+下一交易日开盘执行。
+
+当日监控的 5 日标签尚未完整，因此生命周期使用上一信号日可观察到的滚动 RankIC，
+超额、回撤、换手、缺失和暴露仍使用信号日已可知数据。未来监控变化不能改变之前状态。
+
+年度重训日程从固定训练起点生成，每年首个信号日记录 `retrain_due`。该事件只表示重训
+到期，不会自动训练或晋升挑战者；新模型仍需完整样本外验证。
+
+### 11.4 最终留出
+
+`alpha.final_holdout` 使用注册窗口执行冻结模型的一次性验证，不训练、不调参、不按结果
+替换候选。窗口配置见
+[configs/alpha/holdout_windows.json](../../configs/alpha/holdout_windows.json)：
+
+| 窗口 | 区间 | 状态 |
+|---|---|---|
+| `holdout_2024_2026` | 2024-01-01～2026-10-15 | 已消耗、封存、只读 |
+| `holdout_2026_2027` | 2026-10-16～2027-10-15 | 待使用，当前数据不足 |
+
+当前验证 ID 为 `final_holdout_2ba777e855f5`：
+
+- 模型评估有 142 个 5 日标签完整的周频日；
+- 完整账本从 2024-01-05 运行到 2026-10-15；
+- 主候选相对 Ridge 只有年化净收益一项改善；
+- 2024 年主候选净超额为 -31.46%；
+- 预注册 P3 门失败，状态为 `fail_final_holdout`。
+
+失败是经济效果失败，不是执行结构失败。不得在同一窗口重新调参并宣称获得独立成功；
+后续研究应使用新模型和新的未来窗口。
+
+## 12. 常用命令
+
+### 12.1 数据集与折
 
 ```bash
 .venv/bin/python -m scripts.build_alpha.build_dataset \
   --start 2012-01-01 --end 2023-12-31
-.venv/bin/python -m scripts.build_alpha.build_folds
+.venv/bin/python -m scripts.build_alpha.build_folds \
+  --start 2012-01-01 --end 2023-12-31
 ```
 
-### 12.2 训练
+`build_dataset --features MOM_20,EP_TTM` 可以构建显式特征集；
+`--force` 会重建同 ID 数据集。`build_folds` 还支持 `--mode expanding|rolling`
+和 `--window-years`。这些命令会写正式 `data/models`，验证文档时不要无目的执行长任务。
+
+### 12.2 训练与预测
 
 ```bash
 .venv/bin/python -m scripts.build_alpha.train \
-  --dataset-id <dataset_id> \
+  --dataset-id 6a59680fd71c50a8 \
   --spec configs/alpha/train_lightgbm_ensemble.json
-```
 
-训练成功后自动更新模型索引。
-
-### 12.3 重放预测与评估
-
-```bash
 .venv/bin/python -m scripts.build_alpha.predict \
-  --model-id <model_id> --start 2018-01-12 --end 2023-12-29
-.venv/bin/python -m scripts.build_alpha.evaluate --model-id <model_id>
+  --model-id lightgbm_ensemble_label_rank_6aea5c9299d5 \
+  --start 2018-01-12 --end 2023-12-29
 ```
 
-### 12.4 通用评估计划
+训练成功后命令自动重建模型索引；若训练产物未进入索引，命令失败退出。预测命令按
+请求区间与各折样本外测试期的交集重放模型；交集内没有任何可重放样本时失败。
+
+### 12.3 评估、登记、监控与生命周期
 
 ```bash
 .venv/bin/python -m scripts.build_alpha.evaluate_plan \
   --plan configs/alpha/development_evaluation_v85.json
-```
-
-### 12.5 注册、监控和生命周期
-
-```bash
 .venv/bin/python -m scripts.build_alpha.registry --rebuild
 .venv/bin/python -m scripts.build_alpha.monitor
 .venv/bin/python -m scripts.build_alpha.lifecycle
 ```
 
-## 13. 内部数据流
+历史最终留出只读加载：
 
-```mermaid
-flowchart TD
-  Q[(quant.duckdb)] --> DS[alpha.dataset]
-  F[data/factors] --> DS
-  FC[(factors.duckdb)] --> DS
-  DS --> DART[dataset parquet + manifest]
-  DART --> PRE[alpha.preprocess]
-  PRE --> PIPE[modeling.pipeline]
-  PIPE --> BE[ModelBackend]
-  BE --> MODEL[fold models]
-  PIPE --> PRED[standard predictions]
-  PRED --> EVAL[alpha.evaluate / evaluation plan]
-  EVAL --> BT[backtest provider]
-  BT --> LEDGER[full ledger]
-  LEDGER --> MON[alpha.monitor]
-  MON --> LIFE[alpha.lifecycle]
-  PIPE --> REG[alpha.registry]
-  EVAL --> REG
-  MON --> REG
-  LIFE --> REG
+```bash
+.venv/bin/python -m scripts.build_alpha.final_holdout \
+  --load final_holdout_2ba777e855f5
 ```
 
-## 14. 错误与日志
+新窗口必须显式提供 `--window-id` 和冻结的 `--plan`，并满足数据、标签覆盖和最少信号日
+要求。不要用默认未来窗口直接启动未准备的数据验证。
 
-日志写入 `logs/research/modeling/`。主要错误语义：
+## 13. 最小只读核验
 
-| 错误码 | 含义 |
+不训练模型时，可以检查当前登记和标准预测：
+
+```python
+from alpha.predict import load_predictions
+from alpha.registry import get_registered_model
+
+model_id = "lightgbm_ensemble_label_rank_6aea5c9299d5"
+record = get_registered_model(model_id)
+_, manifest, predictions = load_predictions(
+    model_id,
+    start="2023-12-01",
+    end="2023-12-29",
+)
+print(record["window"])
+print(manifest["prediction_dates"], len(predictions))
+print(predictions.head())
+```
+
+该示例只读取正式产物，不重新训练、不覆盖预测，也不触碰封存留出。
+
+## 14. 日志、错误与排障
+
+### 14.1 日志
+
+模型层日志根目录为 `logs/research/modeling/`，每个 logger 写入自己的子目录。例如：
+
+```text
+logs/research/modeling/alpha_dataset/
+logs/research/modeling/alpha_registry/
+logs/research/modeling/alpha_monitor/
+logs/research/modeling/alpha_lifecycle/
+logs/research/modeling/scripts_build_alpha_train/
+logs/research/modeling/scripts_build_alpha_build_dataset/
+logs/research/modeling/scripts_build_alpha_evaluate/
+```
+
+日志文件名包含首末信息时间；单文件达到 128 MB 后创建新文件，目录与模块职责对应。
+模型层不额外捕获并吞掉异常，算法和产物错误会继续向上抛出。
+
+### 14.2 错误码
+
+| 错误码 | 错误类 | 主要场景 |
+|---|---|---|
+| `ALPHA-101` | `AlphaConfigError` | 研究契约、日期或配置非法 |
+| `ALPHA-102` | `AlphaDataError` | 数据读取、行集或标签对齐失败 |
+| `ALPHA-201` | `AlphaSplitError` | 切分、purge、embargo 或日期边界非法 |
+| `ALPHA-202` | `AlphaPreprocessError` | 预处理配置或输入结构非法 |
+| `ALPHA-301` | `AlphaModelError` | 训练、后端、模型保存或预测失败 |
+| `ALPHA-302` | `AlphaEvaluationError` | 评估输入、计划、指标或风险门槛失败 |
+| `ALPHA-401` | `AlphaArtifactError` | 数据集、模型、预测或元数据缺失/损坏 |
+| `ALPHA-402` | `AlphaRegistryError` | 模型索引、目录身份或登记冲突 |
+| `ALPHA-403` | `AlphaMonitorError` | 监控来源、阈值或监控产物非法 |
+| `ALPHA-404` | `AlphaLifecycleError` | 生命周期来源、状态或产物非法 |
+| `ALPHA-405` | `AlphaFinalHoldoutError` | 留出窗口、冻结输入或结果非法 |
+
+排障顺序：先看最新日志中的错误码和路径，再用 `manifest.json`、`features.json` 和
+`metrics.json` 核对模型身份，随后运行 `load_predictions()` 检查分片、键和哈希，
+最后检查训练数据集 manifest 与登记索引。不要在未确认来源前用 `--force` 覆盖产物。
+
+## 15. 量化知识边界
+
+- 截面 rank 让模型学习排序，但不把分数转换为预期收益；Top-N 等权仍需回测解释收益。
+- 日频因子经过周频采样后，5 日标签逐周重叠，普通独立样本 t 值偏乐观。
+- purge 和 embargo 防的是标签窗口跨界泄漏，不解决特征本身使用不可用数据的问题。
+- 财务标签泄漏通常来自公告可用日而非命名；模型层只消费数据层已经对齐的特征。
+- 行业和市值中性化改变的是截面暴露，不等于消除风险；默认模型不中性化。
+- LightGBM 可以学习非线性，但容量、树深、叶节点样本和正则参数仍需固定验证流程。
+- 多种子 rank 集成主要降低随机训练波动，不产生新信息，也不保证样本外稳定。
+- IC、分位收益、研究模拟器和完整账本回答不同问题；只有完整账本能处理交易约束。
+- 最终留出是一次性消费的样本。看到结果后再改模型或门槛，会把独立验证变成调参集。
+
+## 16. 测试映射
+
+当前模型相关测试共 192 个（包括正式产物只读检查）。主要映射：
+
+| 主题 | 测试文件 |
 |---|---|
-| `ALPHA-1xx` | 配置或研究契约 |
-| `ALPHA-2xx` | 数据、预处理或切分 |
-| `ALPHA-3xx` | 训练、评估或模型产物 |
-| `ALPHA-401` | 模型、预测、数据集或元数据损坏 |
-| `ALPHA-402` | 模型索引或登记冲突 |
-| `ALPHA-404` | 生命周期来源或状态非法 |
+| 契约、数据集和标签 | [test_alpha_config.py](../../tests/test_alpha_config.py)、[test_alpha_dataset.py](../../tests/test_alpha_dataset.py) |
+| 预处理因果性 | [test_alpha_preprocess.py](../../tests/test_alpha_preprocess.py) |
+| 切分、purge 和 embargo | [test_alpha_split.py](../../tests/test_alpha_split.py) |
+| 周频面板与基线 | [test_alpha_panel.py](../../tests/test_alpha_panel.py)、[test_alpha_baselines.py](../../tests/test_alpha_baselines.py) |
+| 模型后端 | [test_alpha_linear.py](../../tests/test_alpha_linear.py)、[test_alpha_gbdt.py](../../tests/test_alpha_gbdt.py)、[test_alpha_sklearn_hist_gbdt.py](../../tests/test_alpha_sklearn_hist_gbdt.py)、[test_alpha_ensemble.py](../../tests/test_alpha_ensemble.py) |
+| 训练和重放 | [test_alpha_train.py](../../tests/test_alpha_train.py)、[test_alpha_modeling.py](../../tests/test_alpha_modeling.py) |
+| 预测哈希与快照 | [test_alpha_predict.py](../../tests/test_alpha_predict.py) |
+| 指标、计划和风险 | [test_alpha_evaluate.py](../../tests/test_alpha_evaluate.py)、[test_alpha_evaluation_plan.py](../../tests/test_alpha_evaluation_plan.py)、[test_alpha_risk.py](../../tests/test_alpha_risk.py) |
+| 模型解释与暴露 | [test_alpha_explain.py](../../tests/test_alpha_explain.py)、[test_alpha_exposure.py](../../tests/test_alpha_exposure.py)、[test_alpha_audit.py](../../tests/test_alpha_audit.py) |
+| 登记与历史产物 | [test_alpha_registry.py](../../tests/test_alpha_registry.py)、[test_alpha_model_card.py](../../tests/test_alpha_model_card.py) |
+| 监控和生命周期 | [test_alpha_monitor.py](../../tests/test_alpha_monitor.py)、[test_alpha_lifecycle.py](../../tests/test_alpha_lifecycle.py)、[test_alpha_lifecycle_accept.py](../../tests/test_alpha_lifecycle_accept.py) |
+| 完整账本接入 | [test_alpha_ledger_acceptance.py](../../tests/test_alpha_ledger_acceptance.py)、[test_alpha_backtest_accept.py](../../tests/test_alpha_backtest_accept.py) |
+| 留出窗口 | [test_alpha_holdout.py](../../tests/test_alpha_holdout.py)、[test_alpha_final_holdout.py](../../tests/test_alpha_final_holdout.py) |
+| 联合因果流水线 | [test_alpha_integration.py](../../tests/test_alpha_integration.py) |
 
-## 15. 修改注意事项
+文档验证不运行长训练、真实回测、付费调用或新的最终留出实验。优先运行受影响的单元测试；
+只有改动跨数据集、训练和下游接入时才增加联合测试。
 
-1. 标签、股票池、调仓、组合、成本或基准改变都形成新的研究版本。
-2. 最终测试集只能使用一次；普通训练、预测和监控接口必须继续拒绝跨入留出。
-3. 新模型实现 `ModelBackend`，不要在共享流水线加入模型类型分支。
-4. 所有模型输出统一为 `trade_date + stock_code + score`。
-5. 不覆盖历史模型、预测、监控和生命周期 ID。
-6. 历史模型 manifest 只做读取归一化，不原地升级。
-7. 回测只读取评估计划生成并校验过的不可变分数，不能自行重新平滑或换候选。
-8. 任何输入、阈值或代码变化都要产生新 ID，并让旧审批/验收失效。
+## 17. 修改检查清单
 
+1. 标签、决策时点、股票池、调仓、Top-N、成本或基准改变时建立新研究版本。
+2. 任何会改变过去样本取值的全样本统计都不能进入截面预处理。
+3. 新模型先实现 `ModelBackend` 并注册，不在共享流水线加入模型类型分支。
+4. 新模型必须输出标准三列预测，并保留有限值、唯一键和哈希校验。
+5. 不覆盖历史模型、预测、评估、监控、生命周期或留出结果；相同问题使用新 ID 和新版本。
+6. 最终留出只能通过显式窗口入口读取；普通训练、预测、监控和生命周期仍拒绝跨入。
+7. 回测统一通过 `load_predictions()` 或评估产物读取分数，不另写无校验的分片读取。
+8. 新增配置字段时同步更新训练 manifest、重放解析、模型 ID、登记索引和测试。
+9. 模型 manifest 的 `status` 与下游运行状态分开解释，不从训练状态推断经济结论。
+10. 修改评估或风险门槛前固定新计划并重新生成分析 ID；不要改写旧决策。
+11. 最终留出失败结论保留，不在同一窗口重调参后改写为成功。
+12. 文档中的命令、路径、错误码、产物数字和链接应随当前实现重新核对。
