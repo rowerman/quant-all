@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
+from typing import TYPE_CHECKING
 
 import duckdb
 import numpy as np
@@ -11,6 +13,9 @@ import factors
 from calculate.config import FACTOR_DIR
 from calculate.errors import MetricError
 from calculate.logging_conf import get_logger
+
+if TYPE_CHECKING:
+    from kernels import BackendSelection, NativeKernelBackend
 
 logger = get_logger('calculate.correlation')
 
@@ -40,11 +45,60 @@ def available_factors(factor_dir: Path | str = FACTOR_DIR) -> dict[str, tuple[st
     return result
 
 
-def accumulate_correlations(frame: pd.DataFrame, names: list[str],
-                            sums: np.ndarray, days: np.ndarray) -> None:
+def _backend_selection(
+    backend: "NativeKernelBackend | None" = None,
+) -> "BackendSelection":
+    """返回带选择信息的后端，兼容调用方直接传入后端实例。"""
+
+    from kernels import BackendSelection, get_backend
+
+    if backend is None:
+        return get_backend()
+    if isinstance(backend, BackendSelection):
+        return backend
+    return BackendSelection(backend, backend.name, None)
+
+
+def _kernel_spearman(
+    values: np.ndarray,
+    *,
+    target_index: int | None,
+    backend: "NativeKernelBackend | None" = None,
+) -> np.ndarray:
+    """调用批量核计算单个交易日的完整矩阵或目标行。"""
+
+    if values.ndim != 2:
+        raise MetricError('相关性输入必须是股票×因子二维数组')
+    if target_index is not None and (
+        type(target_index) is not int or not 0 <= target_index < values.shape[1]
+    ):
+        raise MetricError('目标因子位置超出相关性矩阵范围')
+    array = np.ascontiguousarray(values, dtype=np.float64)
+    selection = _backend_selection(backend)
+    offsets = np.array([0, array.shape[0]], dtype=np.int64)
+    correlation, _ = selection.backend.pairwise_spearman(
+        array,
+        offsets,
+        5,
+        target_index,
+    )
+    return correlation[0]
+
+
+def accumulate_correlations(
+    frame: pd.DataFrame,
+    names: list[str],
+    sums: np.ndarray,
+    days: np.ndarray,
+    backend: "NativeKernelBackend | None" = None,
+) -> None:
     """累计每天成对有效截面的秩相关；参数为月表、列名及原地更新的和与计数矩阵。"""
+
     for _, daily in frame.groupby('trade_date', sort=False):
-        matrix = daily_spearman_matrix(daily[names].to_numpy(dtype='float64'))
+        matrix = daily_spearman_matrix(
+            daily[names].to_numpy(dtype='float64'),
+            backend=backend,
+        )
         valid = np.isfinite(matrix)
         sums += np.where(valid, matrix, 0)
         days += valid
@@ -234,14 +288,25 @@ def _daily_spearman(values: np.ndarray, target_index: int | None = None) -> np.n
     return result
 
 
-def daily_spearman_matrix(values: np.ndarray) -> np.ndarray:
-    """按相同缺失掩码分组复用排名；参数values为股票×因子矩阵，成对最少5只。"""
-    return _daily_spearman(values)
+def daily_spearman_matrix(
+    values: np.ndarray,
+    *,
+    target_index: int | None = None,
+    backend: "NativeKernelBackend | None" = None,
+) -> np.ndarray:
+    """按配置后端计算完整 Spearman 矩阵或单目标行；成对最少 5 只。"""
+
+    return _kernel_spearman(values, target_index=target_index, backend=backend)
 
 
-def _accumulate_target_correlations(frame: pd.DataFrame, names: list[str],
-                                    target: str, sums: np.ndarray,
-                                    days: np.ndarray) -> None:
+def _accumulate_target_correlations(
+    frame: pd.DataFrame,
+    names: list[str],
+    target: str,
+    sums: np.ndarray,
+    days: np.ndarray,
+    backend: "NativeKernelBackend | None" = None,
+) -> None:
     """只累计目标因子行和列；参数为月表、列名、目标名及原地累计矩阵。"""
 
     if target not in names:
@@ -249,9 +314,10 @@ def _accumulate_target_correlations(frame: pd.DataFrame, names: list[str],
     position = names.index(target)
     peers = np.arange(len(names)) != position
     for _, daily in frame.groupby('trade_date', sort=False):
-        matrix = _daily_spearman(
+        matrix = daily_spearman_matrix(
             daily[names].to_numpy(dtype='float64'),
             target_index=position,
+            backend=backend,
         )
         row = matrix[position]
         valid = peers & np.isfinite(row)
@@ -288,8 +354,15 @@ def compute_correlation(context, options) -> dict:
     """读取上下文所在数据目录的所有因子，按月对齐池内键并计算相关性。"""
     if type(options['top_n']) is not int or not 1 <= options['top_n'] <= 100:
         raise MetricError('top_n 必须是 1～100 的整数')
+    selection = _backend_selection()
     if not getattr(getattr(context, "spec", None), "formal", True):
-        return compute_target_correlation(context, options)
+        return compute_target_correlation(context, options, backend=selection)
+    from kernels import native_threads
+
+    started = time.perf_counter()
+    rows = 0
+    groups = 0
+    threads = native_threads() if selection.name == "native" else 1
     grouped = available_factors(context.factor_dir)
     names = [name for family_names in grouped.values() for name in family_names]
     if context.params.factor not in names:
@@ -313,16 +386,49 @@ def compute_correlation(context, options) -> dict:
                     [path, keys.trade_date.min(), keys.trade_date.max()]).df()
                 frame = frame.merge(month, on=['stock_code', 'trade_date'], how='left',
                                     validate='one_to_one')
-            accumulate_correlations(frame, names, sums, days)
+            accumulate_correlations(frame, names, sums, days, backend=selection)
+            rows += len(frame)
+            groups += int(frame['trade_date'].nunique())
             conn.unregister('pool_keys')
             logger.info('相关性月块完成：factor=%s month=%s rows=%d factors=%d',
                         context.params.factor, month_key, len(frame), len(names))
-    return correlation_result(names, sums, days, context.params.factor, options['top_n'])
+    result = correlation_result(
+        names,
+        sums,
+        days,
+        context.params.factor,
+        options['top_n'],
+    )
+    logger.info(
+        "相关性后端完成 scope=full factor=%s requested=%s backend=%s "
+        "fallback_reason=%s threads=%d rows=%d groups=%d factors=%d elapsed_ms=%.3f",
+        context.params.factor,
+        selection.requested,
+        selection.name,
+        selection.fallback_reason or "none",
+        threads,
+        rows,
+        groups,
+        len(names),
+        (time.perf_counter() - started) * 1000,
+    )
+    return result
 
 
-def compute_target_correlation(context, options) -> dict:
+def compute_target_correlation(
+    context,
+    options,
+    backend: "NativeKernelBackend | None" = None,
+) -> dict:
     """只计算候选对正式因子的相关性，避免构建正式因子两两全矩阵。"""
 
+    selection = _backend_selection(backend)
+    from kernels import native_threads
+
+    started = time.perf_counter()
+    rows = 0
+    groups = 0
+    threads = native_threads() if selection.name == "native" else 1
     grouped = available_factors(context.factor_dir)
     formal_names = [
         name
@@ -369,9 +475,36 @@ def compute_target_correlation(context, options) -> dict:
                     validate='one_to_one',
                 )
             _accumulate_target_correlations(
-                frame, names, context.params.factor, sums, days
+                frame,
+                names,
+                context.params.factor,
+                sums,
+                days,
+                backend=selection,
             )
+            rows += len(frame)
+            groups += int(frame['trade_date'].nunique())
             conn.unregister('pool_keys')
             logger.info('候选相关性月块完成：factor=%s month=%s rows=%d factors=%d',
                         context.params.factor, month_key, len(frame), len(names))
-    return correlation_result(names, sums, days, context.params.factor, options['top_n'])
+    result = correlation_result(
+        names,
+        sums,
+        days,
+        context.params.factor,
+        options['top_n'],
+    )
+    logger.info(
+        "相关性后端完成 scope=target factor=%s requested=%s backend=%s "
+        "fallback_reason=%s threads=%d rows=%d groups=%d factors=%d elapsed_ms=%.3f",
+        context.params.factor,
+        selection.requested,
+        selection.name,
+        selection.fallback_reason or "none",
+        threads,
+        rows,
+        groups,
+        len(names),
+        (time.perf_counter() - started) * 1000,
+    )
+    return result

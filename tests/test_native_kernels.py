@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import numpy as np
 import pandas as pd
 import pytest
 from scipy.stats import pearsonr, spearmanr
 
 import kernels.prototype as prototype_module
-from calculate.correlation import daily_spearman_matrix
+from calculate.correlation import _daily_spearman, daily_spearman_matrix
 from calculate.daily import rank_pct_by_day
 from calculate.exposure import _daily_regression
 from calculate.normalize import winsorize_by_day
@@ -128,6 +130,33 @@ def test_pairwise_spearman_matches_current_and_scipy():
             count[group],
             finite.T.astype(np.int64) @ finite.astype(np.int64),
         )
+
+
+def test_python_backend_target_matches_private_gold_path():
+    """目标行统一接口直接复用 Python 金标准，不重新构造公式。"""
+
+    values = np.array(
+        [
+            [1.0, np.nan, 3.0],
+            [2.0, 2.0, 1.0],
+            [2.0, 3.0, 4.0],
+            [4.0, 4.0, 2.0],
+            [5.0, np.inf, 5.0],
+        ]
+    )
+    offsets = np.array([0, 5], dtype=np.int64)
+    actual, count = PythonKernelBackend().pairwise_spearman(
+        values,
+        offsets,
+        5,
+        0,
+    )
+    expected = _daily_spearman(values, target_index=0)
+    np.testing.assert_allclose(actual[0], expected, equal_nan=True)
+    finite = np.isfinite(values)
+    expected_count = finite.T.astype(np.int64) @ finite.astype(np.int64)
+    np.testing.assert_array_equal(count[0, 0], expected_count[0])
+    np.testing.assert_array_equal(count[0, :, 0], expected_count[:, 0])
 
 
 def test_numba_pairwise_spearman_matches_numpy_for_edge_cases():
@@ -332,24 +361,28 @@ def test_winsorize_parameter_errors(n_mad):
 
 
 def test_environment_backend_selection_and_thread_budget(monkeypatch):
-    """默认 Python、显式 Numba 和线程预算均可稳定选择。"""
+    """默认 auto、显式后端和线程预算均可稳定选择。"""
+
+    native_available = importlib.util.find_spec("quant_native") is not None
 
     monkeypatch.delenv("QUANT_KERNEL_BACKEND", raising=False)
     monkeypatch.setenv("QUANT_NATIVE_THREADS", "2")
     default = get_backend()
-    assert default.name == "python"
-    assert default.fallback_reason == "default_python"
+    assert default.requested == "auto"
+    assert default.name == ("native" if native_available else "python")
+    assert default.fallback_reason == (
+        None if native_available else "cpp_extension_unavailable"
+    )
     assert native_threads() == 2
 
-    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "numba")
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "python")
     selected = get_backend()
-    assert selected.name == "numba"
+    assert selected.name == "python"
     assert selected.fallback_reason is None
 
-    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "auto")
-    with pytest.raises(KernelBackendError) as error:
-        get_backend()
-    assert error.value.code == "KERNEL-004"
+    diagnostic = get_backend("numba")
+    assert diagnostic.name == "numba"
+    assert diagnostic.fallback_reason is None
 
     monkeypatch.setenv("QUANT_NATIVE_THREADS", "0")
     with pytest.raises(KernelBackendError):

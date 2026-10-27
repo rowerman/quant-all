@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -57,7 +58,8 @@ void validate_offsets(
 py::tuple pairwise_spearman(
     const py::array& values,
     const py::array& group_offsets,
-    int min_n
+    int min_n,
+    const py::object& target_index
 ) {
     validate_float_array(values);
     const auto rows = static_cast<std::size_t>(values.shape(0));
@@ -65,6 +67,17 @@ py::tuple pairwise_spearman(
     validate_offsets(group_offsets, rows);
     if (min_n < 5) {
         throw py::value_error("min_n 必须是不小于 5 的整数");
+    }
+    std::optional<std::size_t> target;
+    if (!target_index.is_none()) {
+        if (!PyLong_Check(target_index.ptr()) || PyBool_Check(target_index.ptr())) {
+            throw py::type_error("target_index 必须是非负整数或 None");
+        }
+        const auto parsed = py::cast<std::int64_t>(target_index);
+        if (parsed < 0 || static_cast<std::size_t>(parsed) >= columns) {
+            throw py::value_error("target_index 超出矩阵列范围");
+        }
+        target = static_cast<std::size_t>(parsed);
     }
 
     const auto group_count =
@@ -96,7 +109,8 @@ py::tuple pairwise_spearman(
             min_n,
             threads,
             static_cast<double*>(correlation.mutable_data()),
-            static_cast<std::int64_t*>(count.mutable_data())
+            static_cast<std::int64_t*>(count.mutable_data()),
+            target
         );
     }
     return py::make_tuple(
@@ -115,6 +129,7 @@ PYBIND11_MODULE(quant_native, module) {
         py::arg("values"),
         py::arg("group_offsets"),
         py::arg("min_n") = 5,
-        R"doc(计算按组的完整成对 Spearman 相关矩阵和有效配对数。)doc"
+        py::arg("target_index") = py::none(),
+        R"doc(计算按组的成对 Spearman 相关矩阵；指定 target_index 时只计算目标行。)doc"
     );
 }

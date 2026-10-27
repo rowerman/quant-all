@@ -3,8 +3,8 @@
 - 来源报告：[OPERATOR_CPP_ANALYSIS_REPORT.md](TODO_docs/OPERATOR_CPP_ANALYSIS_REPORT.md)
 - 创建日期：2026-10-27
 - 代码基线：`main` 分支 V112 工作区（P1-01 V111 提交 `4d3943a` 之后）
-- 当前状态：P0-01～P0-06、P1-01、P1-02 已完成；C++ Spearman POC 通过微基准
-  正确性、`1.5x` 加速和 `1.2x` 内存门槛，尚未接入业务，P1-03 待开始。
+- 当前状态：P0-01～P0-06、P1-01～P1-03 已完成；Spearman C++ 已接入正式完整矩阵和
+  候选目标行，默认后端为 `auto`，实际 C++ 替换模块数为 1；P1-04 待开始。
 
 ## 1. 使用规则
 
@@ -600,7 +600,7 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 ### P1-03 将 Spearman 批量核接入评估相关性
 
-- 状态：待开始（P1-02 已通过单核 POC）
+- 状态：已完成（V114，2026-10-27）
 - 依赖：P1-02
 - 建议 session 数：1
 
@@ -618,20 +618,20 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 详细工作：
 
-- [ ] 接入统一 `kernels` 适配层，不直接调用 `quant_native`。
-- [ ] 增加 `native`、`python`、`auto` 三种配置；初始默认仍为 `python`。
-- [ ] 保持 `calculate.native` 的现有锁职责，不把 C++ 核绑定塞进该模块。
-- [ ] 保证现有评估后端锁和 C++ 线程预算不互相叠加。
-- [ ] 记录 backend、fallback reason、线程数、行数、组数和 elapsed_ms。
-- [ ] 保持 `top`、`matrix`、`days`、`names`、`basis` 字段语义。
-- [ ] 对目标行和完整矩阵两种范围分别测量。
+- [x] 接入统一 `kernels` 适配层，不直接调用 `quant_native`。
+- [x] 增加 `native`、`python`、`auto` 三种配置；达标后默认 `auto`。
+- [x] 保持 `calculate.native` 的现有锁职责，不把 C++ 核绑定塞进该模块。
+- [x] 保证现有评估后端锁和 C++ 线程预算不互相叠加。
+- [x] 记录 backend、fallback reason、线程数、行数、组数和 elapsed_ms。
+- [x] 保持 `top`、`matrix`、`days`、`names`、`basis` 字段语义。
+- [x] 对目标行和完整矩阵两种范围分别测量。
 
 测试：
 
-- [ ] native/Python 的完整评估相关性 payload 一致。
-- [ ] HTTP、SSE、取消、慢消费者和并发测试通过。
-- [ ] native 缺失时显式回退。
-- [ ] 目标因子、候选因子和无正式 peer 路径一致。
+- [x] native/Python 的完整评估相关性 payload 一致。
+- [x] HTTP、SSE、取消、慢消费者和并发测试通过。
+- [x] native 缺失时显式回退。
+- [x] 目标因子、候选因子和无正式 peer 路径一致。
 
 验收：
 
@@ -643,9 +643,28 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 - 未达门槛则保持默认 Python，量化核收益留档，不扩展其他评估核。
 
+完成记录：
+
+- 新增 `pairwise_spearman(..., target_index=None)` 目标行模式；完整矩阵仍保持原接口和
+  语义，目标模式只填充目标行、目标列和对角线。
+- `QUANT_KERNEL_BACKEND` 默认 `auto`。扩展不可导入时回退 Python并记录
+  `cpp_extension_unavailable`；运行期原生错误不静默回退。
+- 正式三年 stage：Python 217.770 秒，native 140.460 秒，auto 135.788 秒；native
+  下降 35.5%，auto 下降 37.6%。
+- 候选目标行 stage：Python 137.599 秒，native 118.680 秒，auto 120.995 秒；native
+  加速 1.159x，auto 加速 1.137x。
+- 固定 5,219×47 核微基准：完整矩阵 0.167855 秒降至 0.060035 秒（2.796x）；目标行
+  0.042791 秒降至 0.021802 秒（1.963x）。相关系数 `1e-10` 内一致，有效计数和
+  `NaN` 位置完全一致。
+- 两条路径 RSS 比例为 Python 的 1.0001x 左右，未超过 1.2x 门槛；门禁全部通过。
+- 证据：`AiRecord/benchmarks/V114/p1-03-20261027/`。
+- 实际 C++ 替换模块数由 0 更新为 1，登记模块为“评估相关性 Spearman”。
+- 回退：把默认后端改回 `python`，恢复 `_daily_spearman` 直接路由并删除目标行参数；
+  保留 Python 金标准、业务数据和历史证据。
+
 ### P1-04 接入逐日排名和 Pearson 核
 
-- 状态：等待依赖 P1-03
+- 状态：待开始（P1-03 已完成）
 - 依赖：P1-03
 - 建议 session 数：1
 

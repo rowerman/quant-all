@@ -535,6 +535,8 @@ curl -N --get 'http://127.0.0.1:8800/api/evaluate/stream' \
 
 排障时先用页面公开的 `request_id` 搜索 `backend_app` 和 `backend_scheduler` 日志，再用
 `calculate_panel`、具体指标阶段或 `calculate_history` 日志确认数据规模和计算阶段。
+相关性后端完成日志还包含实际 backend、requested、fallback reason、线程数、面板行数、
+日期组数和阶段耗时；这些诊断字段不写入相关性 API payload。
 
 ## 7. 量化解释与边界
 

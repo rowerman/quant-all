@@ -3,10 +3,10 @@
 计算包入口和全部函数用法以 `research/evaluation/calculate/README.md` 为准；后端只做接口调度，
 前端只展示，数据库与因子parquet均只读，评估结果不落库。
 
-批量数组接口位于 [`kernels`](../../core/kernels/README.md)。它当前只提供 Python 回退和
-Numba 排名/Spearman 验证，没有接入默认评估路径；`calculate.native` 仍只负责并发锁。
-P1-01 按逐日排名 `1.5x` 门禁通过；Spearman Numba 仅 `0.179x`，未达到诊断门槛，
-其真实 stage 收益留给 P1-02 的 C++ POC 验证。
+批量数组接口位于 [`kernels`](../../core/kernels/README.md)。相关性默认使用 `auto`：
+扩展可用时走 C++ Spearman，缺失时回退 Python；其他评估指标仍使用原 Python/NumPy 实现。
+`calculate.native` 仍只负责并发锁。P1-03 的正式三年相关性 stage 由 Python `217.770s`
+降至 native `140.460s`，候选目标行没有退化。
 
 正式因子和自动挖掘候选通过 `FactorView` 指向各自的 Parquet 来源；`evaluate_context()`
 在已构建面板上复用同一套指标。正式入口 `evaluate()` 保持原行为，候选路径不能绕过

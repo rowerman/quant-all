@@ -164,6 +164,7 @@ _SOURCE_PATHS = (
     Path("tools/monitor/baseline_cases.py"),
     Path("tools/monitor/kernel_baseline.py"),
     Path("tools/monitor/native_kernel_baseline.py"),
+    Path("tools/monitor/correlation_native_baseline.py"),
     Path("core/kernels/__init__.py"),
     Path("core/kernels/backend.py"),
     Path("core/kernels/errors.py"),

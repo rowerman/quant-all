@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace quant_native {
 
@@ -14,7 +15,8 @@ void pairwise_spearman(
     int min_n,
     int threads,
     double* correlation,
-    std::int64_t* count
+    std::int64_t* count,
+    std::optional<std::size_t> target_index = std::nullopt
 );
 
 int threads_from_environment();

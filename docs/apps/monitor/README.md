@@ -73,8 +73,15 @@ benchmark另有near_limit/full_ic/compare/concurrent/reject案例。concurrent�
 ```
 
 该工具在独立子进程分别测量 Python/C++ 的 5 次热运行中位数和 RSS。P1-02 结果为
-`2.358x`，C++ 业务尚未接入。P1-01 结果与 C++ 替换状态见
-[批量计算核](../../core/kernels/README.md)。
+`2.358x`。P1-03 已接入评估相关性，并用独立工具验证真实 stage、候选不退化、auto 选择
+和内存：
+
+```bash
+.venv/bin/python -m tools.monitor.correlation_native_baseline
+```
+
+当前 C++ 替换状态和最新证据见 [批量计算核](../../core/kernels/README.md) 与
+[C++ 批量计算扩展](../../native/README.md)。
 
 浏览器验收依赖不进项目环境，需要时临时安装：
 

@@ -8,6 +8,7 @@
 #include <exception>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -275,6 +276,95 @@ void compute_group(
     }
 }
 
+void compute_target_group(
+    const double* values,
+    std::size_t columns,
+    std::size_t start,
+    std::size_t end,
+    int min_n,
+    std::size_t target_column,
+    double* group_correlation,
+    std::int64_t* group_count,
+    const std::vector<std::vector<std::size_t>>& column_orders
+) {
+    const std::size_t group_rows = end - start;
+    std::vector<Mask> masks;
+    masks.reserve(columns);
+    for (std::size_t column = 0; column < columns; ++column) {
+        masks.push_back(
+            column_mask(values, columns, column, start, end)
+        );
+    }
+
+    for (std::size_t peer = 0; peer < columns; ++peer) {
+        const auto sample_count = static_cast<std::int64_t>(
+            mask_count(intersection(masks[target_column], masks[peer]))
+        );
+        group_count[target_column * columns + peer] = sample_count;
+        group_count[peer * columns + target_column] = sample_count;
+    }
+
+    std::map<Mask, std::vector<std::size_t>> mask_groups;
+    for (std::size_t column = 0; column < columns; ++column) {
+        mask_groups[masks[column]].push_back(column);
+    }
+
+    std::map<Mask, MaskWorkspace> workspaces;
+    for (const auto& entry : mask_groups) {
+        const auto& peer_group = entry.second;
+        const Mask key = intersection(masks[target_column], masks[peer_group[0]]);
+        if (static_cast<int>(mask_count(key)) < min_n) {
+            continue;
+        }
+        auto workspace_entry = workspaces.find(key);
+        if (workspace_entry == workspaces.end()) {
+            workspace_entry = workspaces.emplace(
+                key,
+                make_workspace(key, group_rows, start, end)
+            ).first;
+        }
+        MaskWorkspace& workspace = workspace_entry->second;
+        auto ranked = [&](std::size_t column) -> const RankedColumn& {
+            auto found = workspace.ranks.find(column);
+            if (found == workspace.ranks.end()) {
+                found = workspace.ranks.emplace(
+                    column,
+                    rank_column(
+                        values,
+                        columns,
+                        column,
+                        workspace,
+                        column_orders[column]
+                    )
+                ).first;
+            }
+            return found->second;
+        };
+
+        const RankedColumn& target_values = ranked(target_column);
+        if (!(target_values.norm > 0.0)) {
+            continue;
+        }
+        for (const std::size_t peer_column : peer_group) {
+            const RankedColumn& peer_values = ranked(peer_column);
+            if (!(peer_values.norm > 0.0)) {
+                continue;
+            }
+            double value = 0.0;
+            for (std::size_t position = 0;
+                 position < target_values.values.size();
+                 ++position) {
+                value += target_values.values[position]
+                    * peer_values.values[position];
+            }
+            value = std::clamp(value, -1.0, 1.0);
+            group_correlation[target_column * columns + peer_column] = value;
+            group_correlation[peer_column * columns + target_column] = value;
+        }
+    }
+
+}
+
 }  // namespace
 
 void pairwise_spearman(
@@ -286,10 +376,14 @@ void pairwise_spearman(
     int min_n,
     int threads,
     double* correlation,
-    std::int64_t* count
+    std::int64_t* count,
+    std::optional<std::size_t> target_index
 ) {
     if (rows == 0 || columns == 0 || group_count == 0 || threads < 1) {
         throw std::invalid_argument("pairwise_spearman 输入不能为空");
+    }
+    if (target_index.has_value() && *target_index >= columns) {
+        throw std::invalid_argument("target_index 超出矩阵列范围");
     }
     const std::size_t matrix_size = columns * columns;
     std::fill(
@@ -329,16 +423,30 @@ void pairwise_spearman(
             const auto end = static_cast<std::size_t>(group_offsets[group + 1]);
             double* group_correlation = correlation + group * matrix_size;
             std::int64_t* group_count_values = count + group * matrix_size;
-            compute_group(
-                values,
-                columns,
-                start,
-                end,
-                min_n,
-                group_correlation,
-                group_count_values,
-                column_orders
-            );
+            if (target_index.has_value()) {
+                compute_target_group(
+                    values,
+                    columns,
+                    start,
+                    end,
+                    min_n,
+                    *target_index,
+                    group_correlation,
+                    group_count_values,
+                    column_orders
+                );
+            } else {
+                compute_group(
+                    values,
+                    columns,
+                    start,
+                    end,
+                    min_n,
+                    group_correlation,
+                    group_count_values,
+                    column_orders
+                );
+            }
         }
     };
 

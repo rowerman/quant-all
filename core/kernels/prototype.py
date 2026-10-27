@@ -227,12 +227,24 @@ class NumbaPrototypeBackend:
         values: FloatArray,
         group_offsets: IntArray,
         min_n: int = 5,
+        target_index: int | None = None,
     ) -> tuple[FloatArray, IntArray]:
         """调用 Numba Spearman 原型；参数与协议一致。"""
 
         array = validate_float_array(values, "values", ndim=2)
         offsets = validate_offsets(group_offsets, array.shape[0])
         minimum = validate_minimum(min_n, name="min_n", minimum=5)
+        if target_index is not None:
+            logger.info(
+                "内核显式回退 kernel=pairwise_spearman requested=numba "
+                "backend=python reason=numba_target_not_implemented"
+            )
+            return self._fallback.pairwise_spearman(
+                array,
+                offsets,
+                minimum,
+                target_index,
+            )
         configure_threads()
         return _spearman(array, offsets, minimum)
 

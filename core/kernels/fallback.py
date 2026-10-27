@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from calculate.correlation import daily_spearman_matrix
+from calculate.correlation import _daily_spearman
 from calculate.daily import _daily_pearson, rank_pct_by_day
 from calculate.exposure import _daily_regression
 from calculate.normalize import winsorize_by_day
@@ -17,6 +17,7 @@ from kernels.backend import (
     validate_float_array,
     validate_n_mad,
     validate_offsets,
+    validate_target_index,
 )
 from kernels.errors import KernelArrayError
 
@@ -86,12 +87,14 @@ class PythonKernelBackend:
         values: FloatArray,
         group_offsets: IntArray,
         min_n: int = 5,
+        target_index: int | None = None,
     ) -> tuple[FloatArray, IntArray]:
-        """按组调用现有 Spearman，并补齐未参与相关计算的有效配对数。"""
+        """按组调用现有 Spearman，并补齐有效配对数。"""
 
         array = validate_float_array(values, "values", ndim=2)
         offsets = validate_offsets(group_offsets, array.shape[0])
         minimum = validate_minimum(min_n, name="min_n", minimum=5)
+        target = validate_target_index(target_index, array.shape[1])
         group_count = offsets.size - 1
         columns = array.shape[1]
         correlation = np.full(
@@ -103,13 +106,25 @@ class PythonKernelBackend:
         for group in range(group_count):
             start, end = int(offsets[group]), int(offsets[group + 1])
             finite = np.isfinite(array[start:end])
-            count[group] = finite.T.astype(np.int64) @ finite.astype(np.int64)
+            group_count_values = finite.T.astype(np.int64) @ finite.astype(np.int64)
+            if target is None:
+                count[group] = group_count_values
+            else:
+                count[group, target] = group_count_values[target]
+                count[group, :, target] = group_count_values[:, target]
             if end > start:
-                matrix = daily_spearman_matrix(
-                    np.ascontiguousarray(array[start:end])
+                matrix = _daily_spearman(
+                    np.ascontiguousarray(array[start:end]),
+                    target_index=target,
                 )
                 if minimum > 5:
-                    matrix[count[group] < minimum] = np.nan
+                    count_mask = count[group] if target is None else count[group, target]
+                    if target is None:
+                        matrix[count_mask < minimum] = np.nan
+                    else:
+                        invalid = count_mask < minimum
+                        matrix[target, invalid] = np.nan
+                        matrix[invalid, target] = np.nan
                 correlation[group] = matrix
         return correlation, count
 

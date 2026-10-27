@@ -1,8 +1,8 @@
 # 批量计算核
 
 `core/kernels` 以顶层包名 `kernels` 提供与具体加速后端无关的批量数组契约。当前包含
-Python 回退、Numba 研究原型和 C++ Spearman POC；评估、模型、挖掘和回测都没有把加速
-后端接入默认业务路径。
+Python 回退、Numba 研究原型和 C++ Spearman 后端；评估相关性已默认走 `auto`，其他
+评估指标、模型、挖掘和回测尚未接入加速后端。
 
 ## 负责什么
 
@@ -10,24 +10,26 @@ Python 回退、Numba 研究原型和 C++ Spearman POC；评估、模型、挖�
 - 为逐日排名、MAD 去极值、Pearson、成对 Spearman 和逐日 OLS 固定输入输出口径。
 - 提供直接复用现有 `calculate` 实现的 Python 回退。
 - 提供逐日排名和 Spearman 的 Numba 研究原型，用于决定是否值得进入 C++。
-- 提供显式 `native` 后端的 C++ Spearman POC。
+- 提供 C++ Spearman 完整矩阵和目标行后端。
 - 通过 `KERNEL-001`～`KERNEL-004` 区分数组、offset、参数和后端错误。
 
 ## 被谁调用
 
-当前调用方只有：
+当前主要调用方：
 
+- `calculate.correlation`：正式完整矩阵和候选目标行。
 - `tests/test_native_kernels.py`
 - `tests/test_cpp_native.py`
 - `tools/monitor/kernel_baseline.py`
 - `tools/monitor/native_kernel_baseline.py`
+- `tools/monitor/correlation_native_baseline.py`
 
 业务模块不得直接导入 `quant_native` 或 Numba 原型。后续接入统一从此包选择后端。
 
 ## 调用了谁
 
 - Python 回退调用 `calculate.daily`、`calculate.normalize`、
-  `calculate.correlation` 和 `calculate.exposure` 的现有实现。
+  `calculate.correlation._daily_spearman` 和 `calculate.exposure` 的现有实现。
 - Numba 原型的未验证核显式委托 Python 回退。
 - `CppKernelBackend` 只把 `pairwise_spearman` 交给 `quant_native`，其他核显式委托
   Python 回退。
@@ -40,13 +42,16 @@ Python 回退、Numba 研究原型和 C++ Spearman POC；评估、模型、挖�
 - 空组可以保留，但整体空输入明确失败。
 - 允许通过 `float64` 中的 NaN/inf 表达非有限值，各核按现有评估语义过滤。
 - `pairwise_spearman` 返回 `(相关系数[组, 因子, 因子], 有效计数[组, 因子, 因子])`。
+- 可选 `target_index` 只返回目标行、目标列和对角线；其他位置相关值为 `NaN`、计数为 0。
 - Spearman 的最小样本参数不得小于当前评估口径 5。
 - `daily_ols` 返回日期索引、系数、t 值、R²、样本数、残差行号和残差值。
 
 ## 后端选择
 
-- `QUANT_KERNEL_BACKEND` 支持 `python`、`numba`、`native`，缺省为 `python`。
-- P1-01 不开放 `auto`；非法值返回 `KERNEL-004`。
+- `QUANT_KERNEL_BACKEND` 生产支持 `auto`、`python`、`native`，缺省为 `auto`。
+- `auto` 仅在扩展不可导入时回退 Python，原因记为 `cpp_extension_unavailable`。
+- 已加载原生核的运行期错误转换为 `KERNEL-004`，不静默切换后端。
+- `numba` 保留为研究和基准入口，不作为生产默认三态之一。
 - Numba 未验证的方法委托 Python 回退，并在调用方保留显式后端选择信息。
 - 显式请求 `native` 但扩展缺失时返回 `KERNEL-004`，不静默切换 Python。
 - `QUANT_NATIVE_THREADS` 默认 1。Numba 原型和 C++ 扩展沿用同一预算。
@@ -69,17 +74,27 @@ Python 回退、Numba 研究原型和 C++ Spearman POC；评估、模型、挖�
 - 覆盖缺失、无穷、空组、并列、常数、最少样本、GIL、并发和子进程压力。
 - 证据位于 `AiRecord/benchmarks/V113/p1-02-20261027/`。
 
+## P1-03 相关性业务接入
+
+- 完整矩阵与候选目标行均通过统一协议选择 `python`、`native` 或 `auto`。
+- 每请求只选择一次后端，避免逐月或逐日重新读取配置。
+- 固定三年正式 stage 由 `217.770s` 降至 native `140.460s`，下降 `35.5%`；默认
+  auto 为 `135.788s`，下降 `37.6%`。
+- 候选目标行由 `137.599s` 降至 native `118.680s`；auto `120.995s`，没有退化。
+- 固定截面核加速：完整矩阵 `2.796x`，目标行 `1.963x`；RSS 比例不超过 `1.0017x`。
+- 证据位于 `AiRecord/benchmarks/V114/p1-03-20261027/`。
+
 ## C++ 替换台账
 
 只有真实替换、接入并留下正确性和性能证据的模块才计入替换数。
 
 | 项目 | 当前状态 |
 |---|---|
-| 实际 C++ 替换模块数 | 0 |
+| 实际 C++ 替换模块数 | 1 |
 | C++ 扩展 | `quant_native` 已构建 |
-| 默认计算后端 | Python 回退 |
+| 默认计算后端 | `auto`，扩展可用时选择 native |
 | P1-01 门禁 | 逐日排名门禁已通过 |
-| Spearman POC | C++ 加速 `2.358x`，业务未接入 |
+| Spearman 模块 | 评估相关性完整矩阵与候选目标行已接入 |
 
 后续登记每个 C++ 模块时必须写明：C++ 模块名、替换的原 Python 函数、默认/可选后端、
 Python 回退路径、真实 stage 耗时、峰值 RSS、正确性证据和对应 Tracker 任务。
@@ -88,6 +103,6 @@ Python 回退路径、真实 stage 耗时、峰值 RSS、正确性证据和对�
 
 - `calculate.native` 是评估并发锁，不是计算后端；不要合并两套职责。
 - 不复制排名、MAD、Pearson 或 OLS 公式，回退必须继续调用现有实现。
-- 不把未验证的 Numba 或 C++ 后端设为默认，也不静默回退。
+- 不让 `auto` 吞掉已加载原生核的计算错误。
 - 矩阵第一维始终是组；不要按股票或单元格逐次调用。
 - 新增核必须同时覆盖空组、NaN、正负无穷、并列、常数和最小样本边界。

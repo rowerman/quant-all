@@ -110,6 +110,69 @@ def test_cpp_custom_minimum_and_group_parallelism(monkeypatch):
 
 
 @requires_native
+def test_cpp_target_row_matches_python_with_empty_groups():
+    """目标模式覆盖多组、空组、缺失、无穷、并列和常数语义。"""
+
+    rng = np.random.default_rng(211)
+    values = rng.integers(0, 7, (43, 6)).astype(np.float64)
+    values[::5, 0] = np.nan
+    values[::7, 2] = np.inf
+    values[::11, 4] = -np.inf
+    values[:, 5] = 3.0
+    offsets = np.array([0, 0, 17, 43, 43], dtype=np.int64)
+
+    for target in range(values.shape[1]):
+        actual, count = CppKernelBackend().pairwise_spearman(
+            values,
+            offsets,
+            5,
+            target,
+        )
+        expected, expected_count = get_backend("python").backend.pairwise_spearman(
+            values,
+            offsets,
+            5,
+            target,
+        )
+        np.testing.assert_allclose(
+            actual,
+            expected,
+            atol=1e-10,
+            rtol=1e-10,
+            equal_nan=True,
+        )
+        np.testing.assert_array_equal(count, expected_count)
+        off_target = np.ones(values.shape[1], dtype=bool)
+        off_target[target] = False
+        assert np.isnan(actual[:, off_target][:, :, off_target]).all()
+
+
+@requires_native
+def test_cpp_target_minimum_matches_python():
+    """目标模式的非默认样本门槛与 Python 回退一致。"""
+
+    rng = np.random.default_rng(223)
+    values = rng.integers(0, 9, (31, 5)).astype(np.float64)
+    values[::4, 1] = np.nan
+    offsets = np.array([0, 12, 31], dtype=np.int64)
+
+    actual, count = CppKernelBackend().pairwise_spearman(
+        values,
+        offsets,
+        11,
+        2,
+    )
+    expected, expected_count = get_backend("python").backend.pairwise_spearman(
+        values,
+        offsets,
+        11,
+        2,
+    )
+    np.testing.assert_allclose(actual, expected, atol=1e-10, equal_nan=True)
+    np.testing.assert_array_equal(count, expected_count)
+
+
+@requires_native
 @pytest.mark.parametrize(
     ("values", "offsets", "min_n", "error"),
     [
@@ -172,6 +235,25 @@ def test_cpp_thread_environment_errors(monkeypatch):
             np.ones((5, 2), dtype=np.float64),
             np.array([0, 5], dtype=np.int64),
             5,
+        )
+
+
+@requires_native
+@pytest.mark.parametrize(
+    ("target_index", "error"),
+    [(True, TypeError), ("1", TypeError), (-1, ValueError), (5, ValueError)],
+)
+def test_cpp_target_index_contract_errors(target_index, error):
+    """直接调用扩展时目标列必须是非负整数且在列范围内。"""
+
+    import quant_native
+
+    with pytest.raises(error):
+        quant_native.pairwise_spearman(
+            np.ones((5, 5), dtype=np.float64),
+            np.array([0, 5], dtype=np.int64),
+            5,
+            target_index,
         )
 
 
@@ -273,6 +355,23 @@ def test_native_backend_missing_extension_is_explicit(monkeypatch):
     with pytest.raises(KernelBackendError) as error:
         get_backend("native")
     assert error.value.code == "KERNEL-004"
+
+
+def test_auto_backend_falls_back_only_when_extension_is_missing(monkeypatch):
+    """auto 在扩展不可导入时回退 Python，并保留明确原因。"""
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "quant_native":
+            raise ModuleNotFoundError("simulated missing quant_native")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    selected = get_backend("auto")
+    assert selected.name == "python"
+    assert selected.requested == "auto"
+    assert selected.fallback_reason == "cpp_extension_unavailable"
 
 
 @requires_native

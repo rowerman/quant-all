@@ -18,6 +18,7 @@ from kernels.backend import (
     validate_float_array,
     validate_minimum,
     validate_offsets,
+    validate_target_index,
 )
 from kernels.errors import KernelBackendError
 from kernels.fallback import PythonKernelBackend
@@ -99,12 +100,14 @@ class CppKernelBackend:
         values: FloatArray,
         group_offsets: IntArray,
         min_n: int = 5,
+        target_index: int | None = None,
     ) -> tuple[FloatArray, IntArray]:
         """调用 C++ 成对 Spearman 核；参数与统一协议一致。"""
 
         array = validate_float_array(values, "values", ndim=2)
         offsets = validate_offsets(group_offsets, array.shape[0])
         minimum = validate_minimum(min_n, name="min_n", minimum=5)
+        target = validate_target_index(target_index, array.shape[1])
         threads = native_threads()
         started = time.perf_counter()
         try:
@@ -112,13 +115,15 @@ class CppKernelBackend:
                 array,
                 offsets,
                 minimum,
+                target,
             )
         except Exception as exc:
             raise KernelBackendError(f"C++ Spearman 计算失败：{exc}") from exc
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         logger.info(
             "内核执行 kernel=pairwise_spearman requested=native backend=native "
-            "rows=%d groups=%d columns=%d threads=%d elapsed_ms=%.3f",
+            "target_index=%s rows=%d groups=%d columns=%d threads=%d elapsed_ms=%.3f",
+            "none" if target is None else target,
             array.shape[0],
             offsets.size - 1,
             array.shape[1],

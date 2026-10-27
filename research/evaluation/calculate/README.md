@@ -9,8 +9,8 @@
 在项目根目录 `/home/hanwen/quant` 使用 `.venv/bin/python`，或在 notebook 的项目环境里
 `import calculate`。不要在 research/evaluation/calculate/ 内直接执行 `python evaluate.py`，那会改变包导入路径。
 使用 Python 3.12；依赖 numpy、pandas、scipy、duckdb（沿用项目 .venv）。
-后端、前端与因子相关性阶段已接入；后端原生计算资源保护见
-[原生计算资源保护](../../../docs/research/evaluation/native.md)。
+后端、前端与因子相关性阶段已接入；相关性 Spearman 默认经 `kernels` 的 `auto` 后端选择，
+后端原生计算资源保护见 [原生计算资源保护](../../../docs/research/evaluation/native.md)。
 
 ## 快速调用
 
@@ -165,7 +165,7 @@ apps/monitor/frontend/   前端：纯 HTML/JS + ECharts
 | `params.py` | `EvalParams` 定义与校验 | `panel`、指标、接口层 | `errors` | 加字段要同步 `describe()`，meta 事件靠它回显参数 |
 | `universe.py` | 股票池定义与指数成分 CTE | `panel`、接口层 | `errors` | 全 A 池口径必须与数据项目的 `core/data/scripts/build_factors/validate.py` 的 `POOL_FILTER` 一字不差；指数池用**上一个已结束月份**的月末快照，别改成当月（会前视） |
 | `panel.py` | 评估面板、连接、默认参数、`EvalContext` | `evaluate`、各指标、后续拆分阶段 | `factors` 注册表、`universe`、DuckDB、`config` | 面板列是公共契约，后续阶段只加不删；行数/交易日上限也在这里；**不要给面板加 ORDER BY**（几百万行排序要多花 2 秒以上，下游都按交易日分组） |
-| `correlation.py` | 按月取数、成对Spearman、Top-N与矩阵 | metrics/correlation | DuckDB、factors、panel上下文 | 成对缺失后重排名，不用标签；打包掩码和排名缓存只限单日工作区；目录跟随context.factor_dir |
+| `correlation.py` | 按月取数、成对Spearman、Top-N与矩阵 | metrics/correlation | DuckDB、factors、panel上下文、kernels | 完整矩阵与候选目标行经统一后端路由；成对缺失后重排名，不用标签；目录跟随context.factor_dir |
 | `metrics/correlation.py` | 相关性指标声明 | 注册表/evaluate | correlation、metrics/base | Top-N只影响明细数量，不改变全矩阵 |
 | `history.py` | 全历史 IC SQL 聚合与轻量读取 | 调用方 | panel/universe/DuckDB | 不构建完整面板；逐日平均并列排名，工作内存 1GB，临时文件自动清理 |
 | `daily.py` | 逐日截面相关（IC / RankIC、通用 `daily_corr`、多档 `daily_rank_ic_multi` 与截面排名 `rank_pct_by_day`） | `metrics/ic.py`、`metrics/decay.py`，相关性模块独立读取 | `normalize` | RankIC 一律对**原始值**排名；去极值只作用于 Pearson IC；池内过滤默认开（`pool_only=True`）；`rank_pct_by_day` 必须与 pandas `groupby().rank(pct=True)` 同语义（并列取平均名次、按交易日内的位置算名次） |
@@ -1507,11 +1507,11 @@ V11-5～V11-9 的相关性、前后端与多请求压测仍按原计划实施。
 | 公开函数 | 输入与输出 |
 |---|---|
 | `available_factors(factor_dir=FACTOR_DIR)` | parquet根目录 → `{族: 因子名元组}`；仅保留注册且实际存在的列，空目录返回空字典 |
-| `daily_spearman_matrix(values)` | 股票×因子float矩阵 → 成对秩相关方阵；非有限值成对删除、至少5只、常数返回NaN |
-| `accumulate_correlations(frame,names,sums,days)` | 含trade_date的月长表、因子列名、和/计数方阵 → 原地累计；不返回结果 |
+| `daily_spearman_matrix(values, *, target_index=None, backend=None)` | 股票×因子float矩阵 → 成对秩相关方阵或目标行；默认按环境选择后端，目标模式其他位置为NaN |
+| `accumulate_correlations(frame,names,sums,days,backend=None)` | 含trade_date的月长表、因子列名、和/计数方阵 → 原地累计；可复用同一后端 |
 | `correlation_result(names,sums,days,factor,top_n=10)` | 累计矩阵、目标因子 → names/matrix/days/top等字典；不足20有效日返回NaN，Top-N排除自身，范围1～100 |
 | `compute_correlation(context,options)` | 评估上下文与`{'top_n':10}` → 按月计算的完整结果；由注册指标调用，无长期缓存 |
-| `compute_target_correlation(context,options)` | 非正式候选上下文与`{'top_n':10}` → 目标对正式因子的目标行/列；公共矩阵仍保持原形状 |
+| `compute_target_correlation(context,options,backend=None)` | 非正式候选上下文与`{'top_n':10}` → 目标对正式因子的目标行/列；公共矩阵仍保持原形状 |
 
 ```python
 import calculate
@@ -1547,5 +1547,15 @@ insufficient表示没有足够样本的可比较同伴，矩阵仍可有有效�
 
 P0-03 进一步把正式三年相关性 stage 从 228.6 秒降至 209.1 秒，峰值 RSS 约 2680.0MB；
 金标准完全一致。该轮仍是 Python 算法优化，未引入 C++。
+
+P1-03 让 `compute_correlation` 每次请求只选择一次 `auto`/`python`/`native` 后端。默认
+`auto` 在 C++ 扩展可用时使用 `quant_native.pairwise_spearman`，扩展不可导入时回退 Python；
+已加载原生核的执行异常不静默回退。正式完整矩阵调用完整模式，候选目标行传
+`target_index`，C++ 只计算目标行、目标列和对角线，避免重新引入全矩阵浪费。
+
+2026-10-27 固定三年案例中，正式 stage 为 Python 217.770 秒、native 140.460 秒、auto
+135.788 秒；候选目标行为 Python 137.599 秒、native 118.680 秒、auto 120.995 秒。
+相关系数在 `1e-10` 内一致，有效计数和 `NaN` 位置完全一致。该轮实际登记 1 个 C++ 替换
+模块，证据位于 `AiRecord/benchmarks/V114/p1-03-20261027/`。
 
 完整分析性能请看 `docs/apps/monitor/performance.md`，旧12指标耗时不包含本阶段。

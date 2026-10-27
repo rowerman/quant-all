@@ -67,8 +67,9 @@ class NativeKernelBackend(Protocol):
         values: FloatArray,
         group_offsets: IntArray,
         min_n: int = 5,
+        target_index: int | None = None,
     ) -> tuple[FloatArray, IntArray]:
-        """按组计算因子两两 Spearman 相关矩阵和有效配对数。"""
+        """按组计算完整相关矩阵或单目标行及有效配对数。"""
 
     def daily_ols(
         self,
@@ -141,6 +142,16 @@ def validate_minimum(min_n: object, *, name: str, minimum: int) -> int:
     return min_n
 
 
+def validate_target_index(target_index: object, columns: int) -> int | None:
+    """校验相关性目标列；参数 columns 为输入矩阵列数。"""
+
+    if target_index is None:
+        return None
+    if type(target_index) is not int or not 0 <= target_index < columns:
+        raise KernelParameterError("target_index 必须是矩阵列范围内的整数")
+    return target_index
+
+
 def validate_n_mad(n_mad: object) -> float:
     """校验 MAD 倍数；参数 n_mad 必须为有限正数。"""
 
@@ -176,18 +187,29 @@ def native_threads() -> int:
 
 
 def get_backend(requested: str | None = None) -> BackendSelection:
-    """按显式参数或环境变量选择后端；默认使用 Python 回退。"""
+    """按显式参数或环境变量选择后端；默认优先 native。"""
 
     from kernels.fallback import PythonKernelBackend
 
     if requested is None:
-        requested = os.environ.get("QUANT_KERNEL_BACKEND", "python")
-        fallback_reason = None if "QUANT_KERNEL_BACKEND" in os.environ else "default_python"
+        requested = os.environ.get("QUANT_KERNEL_BACKEND", "auto")
+        fallback_reason = None
     else:
         fallback_reason = None
     name = str(requested).strip().lower()
     if name == "python":
         selection = BackendSelection(PythonKernelBackend(), name, fallback_reason)
+    elif name == "auto":
+        try:
+            from kernels.native import CppKernelBackend
+
+            selection = BackendSelection(CppKernelBackend(), "auto", None)
+        except KernelBackendError:
+            selection = BackendSelection(
+                PythonKernelBackend(),
+                name,
+                "cpp_extension_unavailable",
+            )
     elif name == "numba":
         try:
             from kernels.prototype import NumbaPrototypeBackend
@@ -202,7 +224,7 @@ def get_backend(requested: str | None = None) -> BackendSelection:
         selection = BackendSelection(CppKernelBackend(), name, None)
     else:
         raise KernelBackendError(
-            f"未知内核后端 {requested!r}，仅支持 python、numba 或 native"
+            f"未知内核后端 {requested!r}，仅支持 auto、python、numba 或 native"
         )
     logger.info(
         "内核后端选择 requested=%s backend=%s fallback_reason=%s",

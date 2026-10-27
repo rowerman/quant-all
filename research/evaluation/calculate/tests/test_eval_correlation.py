@@ -1,5 +1,7 @@
 """相关性独立验证：缺失、并列、常数与分块累计。"""
 
+import importlib.util
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -15,6 +17,9 @@ from calculate.correlation import (
     daily_spearman_matrix,
 )
 from calculate.errors import MetricError
+from kernels import get_backend
+
+NATIVE_AVAILABLE = importlib.util.find_spec("quant_native") is not None
 
 
 def test_pairwise_scipy_and_chunks():
@@ -207,6 +212,59 @@ def test_pool_filter_and_missing_labels_do_not_change_correlation(tmp_path):
     assert result['top'] == [{'factor': 'MOM_60', 'correlation': pytest.approx(1.), 'days': 25}]
 
 
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="quant_native 扩展未构建")
+def test_full_native_and_python_payloads_match(tmp_path, monkeypatch):
+    """正式完整矩阵的 Python/native payload 和有效日完全一致。"""
+
+    from types import SimpleNamespace
+    from calculate import EvalParams
+    from calculate.correlation import compute_correlation
+
+    dates = np.repeat(pd.date_range('2024-01-18', periods=25), 10)
+    x = np.tile(np.arange(10), 25)
+    frame = pd.DataFrame({
+        'trade_date': dates,
+        'stock_code': np.tile([f'SH{i:06d}' for i in range(10)], 25),
+        'MOM_20': x.astype(float),
+        'MOM_60': np.where(x < 5, x, -x).astype(float),
+    })
+    target = tmp_path / 'momentum/year=2024/part.parquet'
+    target.parent.mkdir(parents=True)
+    frame.to_parquet(target, index=False)
+    pool = frame[['stock_code', 'trade_date']].assign(in_universe=True)
+    context = SimpleNamespace(
+        panel=pool,
+        params=EvalParams('MOM_20', '2024-01-18', '2024-02-11'),
+        factor_dir=tmp_path,
+    )
+
+    monkeypatch.setenv('QUANT_KERNEL_BACKEND', 'python')
+    python_result = compute_correlation(context, {'top_n': 10})
+    monkeypatch.setenv('QUANT_KERNEL_BACKEND', 'native')
+    native_result = compute_correlation(context, {'top_n': 10})
+
+    assert native_result['names'] == python_result['names']
+    assert [row['factor'] for row in native_result['top']] == [
+        row['factor'] for row in python_result['top']
+    ]
+    assert [row['days'] for row in native_result['top']] == [
+        row['days'] for row in python_result['top']
+    ]
+    assert [row['correlation'] for row in native_result['top']] == pytest.approx(
+        [row['correlation'] for row in python_result['top']],
+        abs=1e-10,
+    )
+    assert native_result['basis'] == python_result['basis']
+    np.testing.assert_allclose(
+        native_result['matrix'],
+        python_result['matrix'],
+        atol=1e-10,
+        rtol=1e-10,
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(native_result['days'], python_result['days'])
+
+
 def test_candidate_correlation_only_fills_target_row(tmp_path):
     from types import SimpleNamespace
     from calculate import EvalParams
@@ -242,6 +300,70 @@ def test_candidate_correlation_only_fills_target_row(tmp_path):
     assert np.isnan(result['matrix'][np.ix_(other, other)]).all()
     assert np.count_nonzero(result['days'][np.ix_(other, other)]) == 0
     assert {row['factor'] for row in result['top']} == {'MOM_60', 'MOM_60_20'}
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="quant_native 扩展未构建")
+def test_candidate_native_and_python_payloads_match(tmp_path):
+    """候选目标行的 Python/native 累计结果和有效日完全一致。"""
+
+    from types import SimpleNamespace
+    from calculate import EvalParams
+    from calculate.correlation import compute_target_correlation
+
+    dates = np.repeat(pd.date_range('2024-01-18', periods=25), 10)
+    x = np.tile(np.arange(10), 25)
+    frame = pd.DataFrame({
+        'trade_date': dates,
+        'stock_code': np.tile([f'SH{i:06d}' for i in range(10)], 25),
+        'MOM_20': x.astype(float),
+        'MOM_60': np.where(x < 5, x, -x).astype(float),
+        'MOM_60_20': (x % 3).astype(float),
+    })
+    target = tmp_path / 'momentum/year=2024/part.parquet'
+    target.parent.mkdir(parents=True)
+    frame.to_parquet(target, index=False)
+    pool = frame[['stock_code', 'trade_date']].assign(in_universe=True)
+    context = SimpleNamespace(
+        panel=pool,
+        params=EvalParams('MOM_20', '2024-01-18', '2024-02-11'),
+        factor_dir=tmp_path,
+        spec=SimpleNamespace(
+            parquet_glob=str(tmp_path / 'momentum/year=*/part.parquet'),
+            formal=False,
+        ),
+    )
+
+    python_result = compute_target_correlation(
+        context,
+        {'top_n': 10},
+        backend=get_backend('python'),
+    )
+    native_result = compute_target_correlation(
+        context,
+        {'top_n': 10},
+        backend=get_backend('native'),
+    )
+
+    assert native_result['names'] == python_result['names']
+    assert [row['factor'] for row in native_result['top']] == [
+        row['factor'] for row in python_result['top']
+    ]
+    assert [row['days'] for row in native_result['top']] == [
+        row['days'] for row in python_result['top']
+    ]
+    assert [row['correlation'] for row in native_result['top']] == pytest.approx(
+        [row['correlation'] for row in python_result['top']],
+        abs=1e-10,
+    )
+    assert native_result['basis'] == python_result['basis']
+    np.testing.assert_allclose(
+        native_result['matrix'],
+        python_result['matrix'],
+        atol=1e-10,
+        rtol=1e-10,
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(native_result['days'], python_result['days'])
 
 
 def test_candidate_correlation_without_formal_peers(tmp_path):

@@ -6,6 +6,7 @@ from kernels.backend import (
     NativeKernelBackend,
     get_backend,
     native_threads,
+    validate_target_index,
 )
 from kernels.errors import (
     KernelArrayError,
@@ -30,4 +31,5 @@ __all__ = [
     "PythonKernelBackend",
     "get_backend",
     "native_threads",
+    "validate_target_index",
 ]
