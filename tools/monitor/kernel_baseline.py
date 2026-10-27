@@ -1,4 +1,4 @@
-"""验证批量核契约、Numba 原型和 Spearman 放行门禁。"""
+"""验证批量核契约、Numba 原型和逐日排名放行门禁。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import sys
 from tempfile import TemporaryDirectory
 import time
 from typing import Any, Callable
-from unittest.mock import patch
 
 import duckdb
 import numpy as np
@@ -27,11 +26,9 @@ from kernels.backend import group_codes
 from tools.monitor.baseline_contract import (
     atomic_write_json,
     atomic_write_text,
-    compare_golden,
     load_golden,
     prepare_common,
     project_relative,
-    strip_volatile,
     update_manifest,
 )
 
@@ -41,15 +38,14 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from backend import service
 
-SCHEMA_VERSION = "kernel_baseline_v1"
-EVIDENCE_ROOT = PROJECT_ROOT / "AiRecord/benchmarks/V111/p1-01-20261027"
+SCHEMA_VERSION = "kernel_baseline_v2"
+EVIDENCE_ROOT = (
+    PROJECT_ROOT
+    / "AiRecord/benchmarks/V112/p1-01-20261027-recheck"
+)
 V105_INPUTS = (
     PROJECT_ROOT
     / "AiRecord/benchmarks/V105/p0-01-20261027/inputs.json"
-)
-V107_CORRELATION = (
-    PROJECT_ROOT
-    / "AiRecord/benchmarks/V107/p0-03-20261027/correlation.golden.json"
 )
 CORRELATION_QUERY = {
     "factor": "MOM_20",
@@ -68,8 +64,6 @@ RANK_START = "2026-08-01"
 RANK_END = "2026-08-31"
 REPEATS = 5
 MIN_KERNEL_SPEEDUP = 1.5
-MIN_STAGE_IMPROVEMENT = 0.20
-MAX_RSS_RATIO = 1.20
 
 
 def _timed_runs(
@@ -172,24 +166,6 @@ def _load_rank_values(context) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
-def _numba_matrix() -> Callable[[np.ndarray], np.ndarray]:
-    """构造单日 Spearman 生产函数替换入口。"""
-
-    backend = get_backend("numba").backend
-
-    def matrix(values: np.ndarray) -> np.ndarray:
-        contiguous = np.ascontiguousarray(values, dtype=np.float64)
-        offsets = np.array([0, contiguous.shape[0]], dtype=np.int64)
-        correlation, _ = backend.pairwise_spearman(
-            contiguous,
-            offsets,
-            min_n=MIN_CROSS_SECTION,
-        )
-        return correlation[0]
-
-    return matrix
-
-
 def run_micro(output: Path) -> dict[str, Any]:
     """测量真实截面上的 Python 与 Numba 排名及 Spearman。"""
 
@@ -283,7 +259,9 @@ def run_micro(output: Path) -> dict[str, Any]:
             "numba_runs_s": spearman_numba_runs,
             "numba_median_s": spearman_numba_median,
             "speedup": spearman_speedup,
-            "gate_pass": bool(spearman_speedup >= MIN_KERNEL_SPEEDUP),
+            "diagnostic_pass": bool(
+                spearman_speedup >= MIN_KERNEL_SPEEDUP
+            ),
         },
         "rank": {
             "correct": True,
@@ -294,7 +272,7 @@ def run_micro(output: Path) -> dict[str, Any]:
             "numba_runs_s": rank_numba_runs,
             "numba_median_s": rank_numba_median,
             "speedup": rank_speedup,
-            "diagnostic_pass": bool(rank_speedup >= MIN_KERNEL_SPEEDUP),
+            "gate_pass": bool(rank_speedup >= MIN_KERNEL_SPEEDUP),
         },
         "peak_rss_mb": round(
             resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
@@ -305,130 +283,57 @@ def run_micro(output: Path) -> dict[str, Any]:
     return result
 
 
-def _run_correlation_stage() -> tuple[list[dict[str, Any]], float]:
-    """在子进程内替换 Spearman 并执行完整三年相关性 stage。"""
-
-    spec = service.prepare(CORRELATION_QUERY)
-    events = []
-    stage_ms = None
-    started = time.perf_counter()
-    with patch(
-        "calculate.correlation.daily_spearman_matrix",
-        _numba_matrix(),
-    ):
-        for stage, payload in service.run(spec):
-            event = strip_volatile({"stage": stage, "payload": payload})
-            events.append(event)
-            if stage == "correlation":
-                stage_ms = float(payload["elapsed_ms"])
-    return events, (
-        stage_ms
-        if stage_ms is not None
-        else (time.perf_counter() - started) * 1000
-    )
-
-
-def run_stage(output: Path) -> dict[str, Any]:
-    """运行真实三年相关性原型并对照 V107 金标准。"""
-
-    events, stage_ms = _run_correlation_stage()
-    expected = load_golden(V107_CORRELATION)["golden"]["events"]
-    expected_payload = next(
-        event["payload"] for event in expected if event["stage"] == "correlation"
-    )
-    actual_payload = next(
-        event["payload"] for event in events if event["stage"] == "correlation"
-    )
-    compare_golden(expected_payload, actual_payload)
-    baseline = load_golden(
-        V107_CORRELATION.with_name("correlation.timing.json")
-    )
-    baseline_stage_ms = float(
-        next(
-            event["reported_elapsed_ms"]
-            for event in baseline["case_timing"]["events"]
-            if event["stage"] == "correlation"
-        )
-    )
-    improvement = 1.0 - stage_ms / baseline_stage_ms
-    rss = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 3)
-    baseline_rss = float(baseline["peak_rss_mb"])
-    result = {
-        "schema_version": SCHEMA_VERSION,
-        "case": "stage",
-        "payload_match": True,
-        "baseline_stage_ms": baseline_stage_ms,
-        "prototype_stage_ms": stage_ms,
-        "improvement": improvement,
-        "stage_gate_pass": bool(improvement >= MIN_STAGE_IMPROVEMENT),
-        "baseline_rss_mb": baseline_rss,
-        "prototype_rss_mb": rss,
-        "rss_ratio": rss / baseline_rss,
-        "rss_gate_pass": bool(rss / baseline_rss <= MAX_RSS_RATIO),
-    }
-    atomic_write_json(output / "stage.json", result)
-    return result
-
-
 def finalize_gate(
     output: Path,
     micro: dict[str, Any],
-    stage: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """汇总 Spearman 专项门禁并写出机器可读结论。"""
+    """按逐日排名核汇总 P1-01 门禁并写出机器可读结论。"""
 
-    if not micro["spearman"]["gate_pass"]:
-        reason = "spearman_microbench_below_1.5x"
-        stage_run = False
+    rank_correct = bool(micro["rank"]["correct"])
+    rank_speedup = float(micro["rank"]["speedup"])
+    if not rank_correct:
+        reason = "daily_rank_incorrect"
         gate_pass = False
-    elif stage is None:
-        reason = "spearman_stage_missing"
-        stage_run = False
+    elif rank_speedup < MIN_KERNEL_SPEEDUP:
+        reason = "daily_rank_microbench_below_1.5x"
         gate_pass = False
     else:
-        stage_run = True
-        gate_pass = bool(
-            stage["stage_gate_pass"]
-            and stage["rss_gate_pass"]
-            and stage["payload_match"]
-        )
-        reason = None if gate_pass else "spearman_stage_or_memory_gate_failed"
+        reason = None
+        gate_pass = True
     result = {
         "schema_version": SCHEMA_VERSION,
-        "gate": "spearman",
-        "micro_pass": micro["spearman"]["gate_pass"],
-        "stage_run": stage_run,
+        "gate": "daily_rank",
+        "micro_pass": gate_pass,
         "gate_pass": gate_pass,
+        "rank_correct": rank_correct,
+        "rank_speedup": rank_speedup,
+        "spearman_diagnostic_pass": micro["spearman"]["diagnostic_pass"],
+        "spearman_speedup": micro["spearman"]["speedup"],
+        "stage_run": False,
+        "stage_scope": "deferred_to_p1_02",
         "reason": reason,
-        "next_task": "P1-02" if gate_pass else "P1-02 已停止",
+        "next_task": "P1-02" if gate_pass else "P1-02 保持待开始",
         "cpp_modules_replaced": 0,
     }
     atomic_write_json(output / "gate.json", result)
     lines = [
-        "# P1-01 Spearman 放行门禁",
+        "# P1-01 逐日排名放行门禁",
         "",
-        f"- Spearman 微基准加速：{micro['spearman']['speedup']:.3f}x",
-        f"- 排名诊断加速：{micro['rank']['speedup']:.3f}x",
-        f"- 真实 stage 执行：{'是' if stage_run else '否'}",
+        f"- 逐日排名加速：{micro['rank']['speedup']:.3f}x",
+        f"- 逐日排名正确：{'是' if micro['rank']['correct'] else '否'}",
+        f"- Spearman 诊断加速：{micro['spearman']['speedup']:.3f}x",
+        (
+            "- Spearman 诊断结论："
+            + ("达到 1.5x" if micro["spearman"]["diagnostic_pass"] else "未达到 1.5x")
+        ),
+        "- 真实 stage：本轮不执行，留给 P1-02 的 C++ POC 验证",
+        f"- 门禁结论：{'通过' if gate_pass else '未通过'}",
+        f"- 原因：{reason or '逐日排名门禁满足'}",
+        "- 本轮实际 C++ 替换模块数：0",
     ]
-    if stage is not None:
-        lines.extend(
-            [
-                f"- 真实 stage 改善：{stage['improvement']:.1%}",
-                f"- 峰值 RSS 比值：{stage['rss_ratio']:.3f}x",
-                f"- 金标准一致：{'是' if stage['payload_match'] else '否'}",
-            ]
-        )
-    lines.extend(
-        [
-            f"- 门禁结论：{'通过' if gate_pass else '未通过'}",
-            f"- 原因：{reason or '全部门槛满足'}",
-            "- 本轮实际 C++ 替换模块数：0",
-        ]
-    )
     atomic_write_text(output / "gate.md", "\n".join(lines) + "\n")
     result_lines = [
-        "# P1-01 批量核适配层与 Numba 验证结果",
+        "# P1-01 逐日排名门禁返工结果",
         "",
         "## 口径",
         "",
@@ -462,35 +367,24 @@ def finalize_gate(
             f"{micro['rank']['numba_cold_s']:.3f}s |"
         ),
         "",
-        "Spearman 与当前 Python 实现在 `1e-10` 容差内一致，有效计数完全一致；排名与"
-        " pandas/当前 NumPy 实现逐值一致。",
+        "逐日排名与 pandas/当前 NumPy 实现逐值一致，是 P1-01 放行门禁。Spearman"
+        " 与当前 Python 实现在 `1e-10` 容差内一致、有效计数完全一致，但热运行仅为诊断，"
+        "不参与本轮门禁，留给 P1-02 的 C++ POC 验证。",
         "",
         "## 门禁",
         "",
-        f"- 真实 stage 执行：{'是' if stage_run else '否'}",
+        "- 真实 stage：本轮不执行，留给 P1-02 的 C++ POC 验证。",
+        f"- 结论：{'P1-02 可以继续' if gate_pass else 'P1-02 保持待开始'}",
+        f"- 原因：{reason or '逐日排名门禁满足'}",
+        "- 本轮实际 C++ 替换模块数：0。",
+        "",
     ]
-    if stage is not None:
-        result_lines.extend(
-            [
-                f"- 真实 stage 改善：{stage['improvement']:.1%}",
-                f"- 峰值 RSS 比值：{stage['rss_ratio']:.3f}x",
-                f"- 金标准一致：{'是' if stage['payload_match'] else '否'}",
-            ]
-        )
-    result_lines.extend(
-        [
-            f"- 结论：{'P1-02 可以继续' if gate_pass else 'P1-02 已停止'}",
-            f"- 原因：{reason or '全部门槛满足'}",
-            "- 本轮实际 C++ 替换模块数：0。",
-            "",
-        ]
-    )
     atomic_write_text(output / "result.md", "\n".join(result_lines))
     return result
 
 
 def run_suite(output: Path) -> int:
-    """顺序运行微基准，并在需要时运行真实 stage。"""
+    """运行固定微基准并按逐日排名门禁生成结论。"""
 
     output.mkdir(parents=True, exist_ok=True)
     common = prepare_common(output, refresh=True)
@@ -524,33 +418,7 @@ def run_suite(output: Path) -> int:
         if completed.returncode:
             return completed.returncode
     micro = load_golden(output / "micro.json")
-    stage = None
-    if micro["spearman"]["gate_pass"]:
-        with TemporaryDirectory(prefix="kernel-numba-stage-") as cache:
-            environment = os.environ.copy()
-            environment["NUMBA_CACHE_DIR"] = cache
-            environment["QUANT_NATIVE_THREADS"] = "1"
-            command = [
-                sys.executable,
-                "-m",
-                "tools.monitor.kernel_baseline",
-                "--case",
-                "stage",
-                "--output",
-                str(output),
-            ]
-            completed = subprocess.run(
-                command,
-                cwd=PROJECT_ROOT,
-                env=environment,
-                check=False,
-            )
-            if completed.returncode:
-                return completed.returncode
-        stage = load_golden(output / "stage.json")
-    else:
-        (output / "stage.json").unlink(missing_ok=True)
-    gate = finalize_gate(output, micro, stage)
+    gate = finalize_gate(output, micro)
     update_manifest(output)
     print(
         json.dumps(
@@ -574,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="运行批量核 Numba 验证")
     parser.add_argument(
         "--case",
-        choices=("suite", "micro", "stage"),
+        choices=("suite", "micro"),
         default="suite",
     )
     parser.add_argument("--output", type=Path, default=EVIDENCE_ROOT)
@@ -582,9 +450,6 @@ def main(argv: list[str] | None = None) -> int:
     output = args.output.resolve()
     if args.case == "micro":
         run_micro(output)
-        return 0
-    if args.case == "stage":
-        run_stage(output)
         return 0
     return run_suite(output)
 

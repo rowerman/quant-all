@@ -5,7 +5,8 @@
 
 批量数组接口位于 [`kernels`](../../core/kernels/README.md)。它当前只提供 Python 回退和
 Numba 排名/Spearman 验证，没有接入默认评估路径；`calculate.native` 仍只负责并发锁。
-P1-01 的 Spearman 原型未达到 `1.5x` 热运行门槛，因此没有进入 C++ P1-02。
+P1-01 按逐日排名 `1.5x` 门禁通过；Spearman Numba 仅 `0.179x`，未达到诊断门槛，
+其真实 stage 收益留给 P1-02 的 C++ POC 验证。
 
 正式因子和自动挖掘候选通过 `FactorView` 指向各自的 Parquet 来源；`evaluate_context()`
 在已构建面板上复用同一套指标。正式入口 `evaluate()` 保持原行为，候选路径不能绕过

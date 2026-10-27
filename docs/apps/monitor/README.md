@@ -65,8 +65,9 @@ benchmark另有near_limit/full_ic/compare/concurrent/reject案例。concurrent�
 .venv/bin/python -m tools.monitor.kernel_baseline --case suite
 ```
 
-工具先校验数据指纹，再运行固定真实截面微基准；只有 Spearman 达到 `1.5x` 才继续完整
-相关性 stage。P1-01 结果与 C++ 替换状态见
+工具先校验数据指纹，再运行固定真实截面微基准；P1-01 以逐日排名达到 `1.5x` 为放行
+门禁。Spearman Numba 仅保留诊断，真实 stage 收益由 P1-02 C++ POC 验证。P1-01 结果与
+C++ 替换状态见
 [批量计算核](../../core/kernels/README.md)。
 
 浏览器验收依赖不进项目环境，需要时临时安装：

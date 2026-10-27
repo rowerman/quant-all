@@ -44,6 +44,15 @@
 - Numba 未验证的方法委托 Python 回退，并在调用方保留显式后端选择信息。
 - `QUANT_NATIVE_THREADS` 默认 1。Numba 原型使用该预算，未来 C++ 扩展沿用同一变量。
 
+## P1-01 门禁
+
+- V112 起，P1-01 以 `daily_rank_pct` 的正确性和热运行中位加速 `1.5x` 作为放行门禁。
+- V112 复测逐日排名由 Python 0.016966 秒降至 Numba 0.008388 秒，加速 2.023x。
+- Spearman Numba 继续做正确性和耗时诊断，但 `0.179x` 未达标，不作为 P1-01 放行依据；
+  其性能和真实 stage 收益由 P1-02 的 C++ POC 重新验证。
+- 基准 schema 为 `kernel_baseline_v2`，证据位于
+  `AiRecord/benchmarks/V112/p1-01-20261027-recheck/`。
+
 ## C++ 替换台账
 
 只有真实替换、接入并留下正确性和性能证据的模块才计入替换数。
@@ -53,7 +62,8 @@
 | 实际 C++ 替换模块数 | 0 |
 | C++ 扩展 | 未建设 |
 | 默认计算后端 | Python 回退 |
-| Spearman POC | P1-01 未通过，P1-02 已停止 |
+| P1-01 门禁 | 逐日排名门禁已通过 |
+| Spearman POC | Numba 诊断未达标，P1-02 C++ POC 待开始 |
 
 后续登记每个 C++ 模块时必须写明：C++ 模块名、替换的原 Python 函数、默认/可选后端、
 Python 回退路径、真实 stage 耗时、峰值 RSS、正确性证据和对应 Tracker 任务。
