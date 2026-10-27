@@ -42,6 +42,8 @@ DuckDB/NumPy 计算，代价是两个完整分析互相等待（见 performance.
 .venv/bin/python tools/monitor/browser_check.py
 # 每次用独立进程测一个case；不可同时跑多个重型压测
 .venv/bin/python -m tools.monitor.benchmark --case default
+# P0-01 固定金标准、输入哈希、逐stage耗时和独立进程RSS
+.venv/bin/python -m tools.monitor.operator_baseline --suite all
 # 并发验收：双任务重复5轮走真实调度器与SSE；取消与背压必须对真实服务验证
 .venv/bin/python -m tools.monitor.stress --mode local --case concurrent --rounds 5
 .venv/bin/python -m tools.monitor.stress --mode http --server-pid <pid> --case cancel
@@ -51,6 +53,11 @@ benchmark另有near_limit/full_ic/compare/concurrent/reject案例。concurrent�
 任务，用于双请求最坏资源观测；其余案例应依次运行。stress另有cancel/slow场景，
 结果追加写入 AiRecord/benchmarks/V11/日期-stress-模式.jsonl；本地模式因 TestClient
 会缓冲整段响应，只跑双任务，取消与背压用 `--mode http` 对真实服务验证。
+
+`operator_baseline.py` 用于后续算法和 C++ 优化对照，不作为日常全量 benchmark。它固定
+完整评估、相关性单 stage、全历史轻量 IC、单族单年构建、挖掘门禁和边界语义，证据写入
+`AiRecord/benchmarks/V105/p0-01-20261027/`。完整评估只跑一次；各案例独立子进程运行，
+不要与其他重型分析并发。
 
 浏览器验收依赖不进项目环境，需要时临时安装：
 

@@ -602,6 +602,7 @@ bash tools/monitor/serve.sh
 | `backend.preflight` | 只读 | 检查依赖、核心文件和可评估因子 |
 | `browser_check.py` | 写截图 | 需要监测站和 Chromium；会执行短区间评估 |
 | `benchmark.py` | 只打印 JSON | 读取正式因子和主库，可能计算完整 IC |
+| `operator_baseline.py` | 写 `AiRecord/benchmarks/V105` 证据 | 固定真实金标准、输入哈希、逐 stage 耗时和 RSS；完整评估较慢，应独立运行 |
 | `stress.py` | 写 `AiRecord/benchmarks` JSONL | 本地或真实 HTTP 并发/取消/背压 |
 | `mining_check.py` | 写截图，启动临时夹具 | 使用临时挖掘库和确定性候选，不调用付费模型 |
 | `backtest_check.py` | 执行真实回测并写结果库、截图 | 会改变回测历史列表 |
