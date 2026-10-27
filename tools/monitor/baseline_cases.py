@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import math
 from pathlib import Path
 import sys
@@ -14,7 +14,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from calculate import EvalParams, load_daily_ic
+from calculate import EvalParams, evaluate, load_daily_ic, resolve_factor
 from calculate.correlation import daily_spearman_matrix
 from calculate.daily import _daily_pearson, daily_ic, rank_pct_by_day
 from common.paths import PROJECT_ROOT
@@ -94,6 +94,63 @@ def _event_case(definition: dict[str, Any]) -> tuple[dict[str, Any], dict[str, A
         },
         {
             "prepare_elapsed_ms": round(prepare_elapsed_ms, 3),
+            "run_elapsed_s": round(time.perf_counter() - started, 3),
+            "events": timings,
+        },
+    )
+
+
+def _target_correlation_case(
+    definition: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """执行非正式候选的目标行相关性路径。"""
+
+    params = EvalParams(
+        factor=definition["factor"],
+        start=definition["start"],
+        end=definition["end"],
+        universe=definition["universe"],
+        horizon=definition["horizon"],
+        price=definition["price"],
+        quantiles=definition["quantiles"],
+        winsorize=definition["winsorize"],
+    )
+    factor_view = replace(
+        resolve_factor(definition["factor"]),
+        formal=definition["formal"],
+    )
+    events: list[dict[str, Any]] = []
+    timings: list[dict[str, Any]] = []
+    started = time.perf_counter()
+    last = started
+    for stage, payload in evaluate(
+        definition["factor"],
+        params,
+        factor_view=factor_view,
+        stages=definition["stages"],
+        metric_options={"correlation": {"top_n": definition["top_n"]}},
+    ):
+        received = time.perf_counter()
+        serialization_started = time.perf_counter()
+        events.append({"stage": stage, "payload": payload})
+        payload_bytes = len(canonical_json(payload).encode("utf-8"))
+        serialization_ms = (time.perf_counter() - serialization_started) * 1000
+        timings.append(
+            {
+                "stage": stage,
+                "generation_elapsed_ms": round((received - last) * 1000, 3),
+                "reported_elapsed_ms": payload.get("elapsed_ms"),
+                "serialization_ms": round(serialization_ms, 3),
+                "payload_bytes": payload_bytes,
+            }
+        )
+        last = time.perf_counter()
+    return (
+        {
+            "query": definition,
+            "events": strip_volatile(events),
+        },
+        {
             "run_elapsed_s": round(time.perf_counter() - started, 3),
             "events": timings,
         },
@@ -404,6 +461,8 @@ def run_case(
         return _event_case(CASE_DEFINITIONS[name])
     if name == "correlation":
         return _event_case(CASE_DEFINITIONS[name])
+    if name == "correlation_target":
+        return _target_correlation_case(CASE_DEFINITIONS[name])
     if name == "history":
         return _history_case(CASE_DEFINITIONS[name])
     if name == "factor_build":

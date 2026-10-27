@@ -28,6 +28,7 @@ def test_fixed_cases_lock_dates_and_parameters():
     assert CASE_ORDER == (
         "evaluation",
         "correlation",
+        "correlation_target",
         "history",
         "factor_build",
         "mining",
@@ -35,6 +36,8 @@ def test_fixed_cases_lock_dates_and_parameters():
     )
     assert CASE_DEFINITIONS["evaluation"]["start"] == "2023-10-15"
     assert CASE_DEFINITIONS["evaluation"]["end"] == "2026-10-15"
+    assert CASE_DEFINITIONS["correlation_target"]["formal"] is False
+    assert CASE_DEFINITIONS["correlation_target"]["stages"] == ("correlation",)
     assert CASE_DEFINITIONS["history"]["start"] == "2000-01-04"
     assert CASE_DEFINITIONS["factor_build"] == {
         "families": ("momentum",),

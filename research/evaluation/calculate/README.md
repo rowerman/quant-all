@@ -1511,6 +1511,7 @@ V11-5～V11-9 的相关性、前后端与多请求压测仍按原计划实施。
 | `accumulate_correlations(frame,names,sums,days)` | 含trade_date的月长表、因子列名、和/计数方阵 → 原地累计；不返回结果 |
 | `correlation_result(names,sums,days,factor,top_n=10)` | 累计矩阵、目标因子 → names/matrix/days/top等字典；不足20有效日返回NaN，Top-N排除自身，范围1～100 |
 | `compute_correlation(context,options)` | 评估上下文与`{'top_n':10}` → 按月计算的完整结果；由注册指标调用，无长期缓存 |
+| `compute_target_correlation(context,options)` | 非正式候选上下文与`{'top_n':10}` → 目标对正式因子的目标行/列；公共矩阵仍保持原形状 |
 
 ```python
 import calculate
@@ -1530,4 +1531,14 @@ insufficient表示没有足够样本的可比较同伴，矩阵仍可有有效�
 相同有限掩码分组复用排序；成对删除后按保留的并列块重新排名，不能先对全截面
 排名再直接删股票。相关性不筛收益标签，不做去极值。不同因子对可以有不同样本，
 因此均值矩阵不保证半正定；Top-N按绝对相关性排序并保留正负号。
+
+正式因子页面使用完整相关热力图，因此 `compute_correlation` 继续计算完整矩阵。
+非正式候选只展示目标因子与正式因子的关系，`compute_target_correlation` 只计算目标行、
+目标列和对角线；返回的 `matrix`、`days`、`names` 数组仍保持原字段与形状，其他矩阵位置
+分别为 `NaN` 和 `0`。两条路径共用缺失掩码分组、稳定排序、并列平均名次和相关计算。
+
+2026-10-27 三年固定案例中，47 个相关性列的候选阶段由 233.5 秒降至 132.9 秒，峰值 RSS
+由 2788.2MB 降至 2682.3MB；正式完整矩阵与 P0-01 金标准一致。该优化仍为 Python 算法
+调整，不代表已经采用 C++。
+
 完整分析性能请看 `docs/apps/monitor/performance.md`，旧12指标耗时不包含本阶段。

@@ -140,7 +140,7 @@ def finalize_output(output: Path) -> dict[str, Any]:
             timings.append(load_golden(timing_path))
 
     lines = [
-        "# P0-01 算子优化基线",
+        "# 算子优化固定基准",
         "",
         f"- 证据目录：`{project_relative(output)}`",
         f"- Schema：`{SCHEMA_VERSION}`",
