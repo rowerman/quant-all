@@ -9,8 +9,9 @@
 在项目根目录 `/home/hanwen/quant` 使用 `.venv/bin/python`，或在 notebook 的项目环境里
 `import calculate`。不要在 research/evaluation/calculate/ 内直接执行 `python evaluate.py`，那会改变包导入路径。
 使用 Python 3.12；依赖 numpy、pandas、scipy、duckdb（沿用项目 .venv）。
-因子相关性、IC/RankIC、多周期衰减和增量 IC 默认经 `kernels` 的 `auto` 后端选择；
-扩展可用时分别使用 C++ Spearman、逐日排名和逐日 Pearson，不可导入时回退 Python。
+因子相关性、IC/RankIC、多周期衰减、增量 IC 和风格暴露默认经 `kernels` 的 `auto` 后端
+选择；扩展可用时分别使用 C++ Spearman、逐日排名、Pearson、MAD 和 z-score，不可导入时
+回退 Python。
 后端原生计算资源保护见
 [原生计算资源保护](../../../docs/research/evaluation/native.md)。
 
@@ -171,7 +172,7 @@ apps/monitor/frontend/   前端：纯 HTML/JS + ECharts
 | `metrics/correlation.py` | 相关性指标声明 | 注册表/evaluate | correlation、metrics/base | Top-N只影响明细数量，不改变全矩阵 |
 | `history.py` | 全历史 IC SQL 聚合与轻量读取 | 调用方 | panel/universe/DuckDB | 不构建完整面板；逐日平均并列排名，工作内存 1GB，临时文件自动清理 |
 | `daily.py` | 逐日截面相关（IC / RankIC、通用 `daily_corr`、多档 `daily_rank_ic_multi` 与截面排名 `rank_pct_by_day`） | `metrics/ic.py`、`metrics/decay.py`、`metrics/exposure.py` | `normalize`、`kernels` | RankIC 一律对**原始值**排名；去极值只作用于 Pearson IC；池内过滤默认开（`pool_only=True`）；调用批量核前必须按交易日稳定分组；多标签逐档独立取配对；`rank_pct_by_day` 必须与 pandas `groupby().rank(pct=True)` 同语义 |
-| `normalize.py` | MAD 去极值、分位、zscore | `daily`、后续风格因子 | — | 都按交易日分组调用，NaN 原样保留 |
+| `normalize.py` | MAD 去极值、分位、zscore | `daily`、`exposure`、后续风格因子 | `kernels` | 都按交易日分组调用，NaN 原样保留；逐日 MAD/z-score 经统一后端选择 |
 | `stages.py` | `STAGE_ORDER`（stage 顺序契约） | `evaluate`、指标注册表 | — | 单独成模块是为了让注册表能按它排序又不与评估入口循环依赖 |
 | `stats.py` | 序列四件套、净值累乘、最大回撤、年化夏普 | IC 家族与 binplot 家族 | — | 加统计口径改这里，别在各指标里各写一遍 |
 | `styles.py` | 7 个 Barra 近似风格因子的取数 SQL、`IndustrySource` 协议与静态行业源 | `exposure`、`EvalContext.styles()` | DuckDB、`config`、`errors` | 窗口按有效交易日推进（与数据项目因子构建一致）；只产出**原始值**，标准化在 `exposure` 里做（同一回归样本）；BETA_60 基准写死沪深300，与已实现的 `BETA_60` 因子一致 |
@@ -682,6 +683,9 @@ calculate.normalize.winsorize_by_day(dates, values, n_mad: float=3.0) -> np.ndar
 
 按交易日分别做 MAD 裁剪。
 
+默认经 `kernels` 的 `auto` 后端选择调用 C++ `daily_winsorize_mad`；扩展不可导入时调用
+现有 pandas 回退。MAD 为零或无法裁剪时保持原值。
+
 参数:
     dates: 与 values 等长、表示交易日的序列。
     values: 一维取值序列。
@@ -714,6 +718,9 @@ calculate.normalize.zscore_by_day(dates, values) -> np.ndarray
 
 按交易日分别做截面标准化。
 
+默认经 `kernels` 的 `auto` 后端选择调用 C++ `daily_zscore`；样本标准差使用 `ddof=1`，
+有效样本不足 2 个或标准差为零时该日返回空值。
+
 参数:
     dates: 与 values 等长、表示交易日的序列。
     values: 一维取值序列，允许含 NaN。
@@ -721,6 +728,15 @@ calculate.normalize.zscore_by_day(dates, values) -> np.ndarray
 返回:
     标准化后的数组，顺序与输入一致；有效样本不足 2 个或标准差为 0 的
     交易日返回空值。
+
+#### `standardize_by_day`
+
+```python
+calculate.normalize.standardize_by_day(dates, values, n_mad: float=3.0) -> np.ndarray
+```
+
+按交易日融合 MAD 去极值和 z-score。默认经 `kernels` 后端调用
+`daily_winsorize_zscore`，供风格暴露避免对同一列重复执行 pandas 分组。
 
 ### calculate.panel
 
@@ -1567,5 +1583,13 @@ P1-04 把逐日排名和 Pearson 接入 `daily_ic`、`daily_rank_ic_multi` 与 `
 降至 0.011909 秒（17.670x）；`overview`、`decay`、`incremental_ic` 分别加速
 2.082x、2.820x、1.333x。三个后端 stage payload 在 `1e-10` 内一致，证据位于
 `AiRecord/benchmarks/V115/p1-04-20261027/`。本轮实际 C++ 替换模块数由 1 增至 3。
+
+P1-05 把逐日 MAD 与 z-score 接入 `daily_ic` 和风格暴露。IC 复用一次按日稳定分组的
+offsets，Pearson 使用 MAD 裁剪值，RankIC 仍对原始有限配对排名；风格暴露使用融合
+`daily_winsorize_zscore` 核，对全部原始风格列和待评估因子只做一次日期分组。
+3,724,919 行、722 组单线程微基准中，MAD 加速 2.313x，z-score 10.840x，融合标准化
+3.568x。`overview` 由 4.516 秒降至 1.782 秒，`exposure` 由 15.922 秒降至 13.237 秒；
+三后端 payload 在 `1e-10` 内一致，最高 RSS 比例 1.0195x。证据位于
+`AiRecord/benchmarks/V116/p1-05-20261027/`，本轮实际 C++ 替换模块数由 3 增至 5。
 
 完整分析性能请看 `docs/apps/monitor/performance.md`，旧12指标耗时不包含本阶段。

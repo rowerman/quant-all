@@ -11,8 +11,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from calculate.normalize import winsorize_by_day
-
 if TYPE_CHECKING:
     from kernels import BackendSelection, NativeKernelBackend
 
@@ -211,29 +209,26 @@ def daily_ic(panel: pd.DataFrame, *, winsorize: bool = True,
     codes, levels = pd.factorize(work["trade_date"], sort=True)
     selection = _kernel_selection()
 
-    if winsorize:
-        days = work["trade_date"].to_numpy()
-        factor_values = np.ascontiguousarray(
-            winsorize_by_day(days, raw_factor)
-        )
-        label_values = np.ascontiguousarray(
-            winsorize_by_day(days, raw_label)
-        )
-    else:
-        factor_values = raw_factor
-        label_values = raw_label
     offsets, (
-        factor_values,
-        label_values,
         rank_factor_raw,
         rank_label_raw,
     ) = _grouped_arrays(
         codes,
-        factor_values,
-        label_values,
         raw_factor,
         raw_label,
     )
+    if winsorize:
+        factor_values = selection.backend.daily_winsorize_mad(
+            rank_factor_raw,
+            offsets,
+        )
+        label_values = selection.backend.daily_winsorize_mad(
+            rank_label_raw,
+            offsets,
+        )
+    else:
+        factor_values = rank_factor_raw
+        label_values = rank_label_raw
     ic, count = selection.backend.daily_pearson(
         factor_values,
         label_values,

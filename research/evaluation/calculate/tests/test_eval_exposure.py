@@ -1,6 +1,7 @@
 """风格拆分的单元测试：暴露系数、残差 IC、缺失处理与行业开关都对照手算。"""
 
 import json
+import importlib.util
 
 import numpy as np
 import pandas as pd
@@ -17,11 +18,17 @@ from calculate.panel import EvalContext, summarize_panel
 from calculate.params import EvalParams
 from calculate.styles import INDUSTRY_SOURCES, RAW_COLUMNS, STYLE_KEYS
 from calculate.universe import resolve_universe
+from tools.monitor.baseline_contract import compare_golden
 
 START = "2024-01-02"
 DAYS, STOCKS = 40, 30
 MAD_SCALE = 1.4826
 MIN_ROWS = 30
+
+requires_native = pytest.mark.skipif(
+    importlib.util.find_spec("quant_native") is None,
+    reason="quant_native 扩展未构建",
+)
 
 
 def make_data(days: int = DAYS, stocks: int = STOCKS, *, seed: int = 5
@@ -198,6 +205,26 @@ def test_zscore_by_day_is_standard_and_keeps_missing():
     assert np.isnan(work["z"].iloc[6])
     # 取值全相同的交易日标准差为 0，整日置空
     assert work.loc[work["day"] == frame["day"].unique()[2], "z"].isna().all()
+
+
+@requires_native
+def test_exposure_payload_matches_between_python_and_native(monkeypatch):
+    """风格暴露经融合标准化核后与 Python 回退 payload 一致。"""
+
+    import quant_native  # noqa: F401
+
+    panel, styles = make_data()
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "python")
+    expected = exposure_metric.compute_exposure(make_context(panel, styles), {})
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "native")
+    actual = exposure_metric.compute_exposure(make_context(panel, styles), {})
+
+    compare_golden(
+        json_safe(expected),
+        json_safe(actual),
+        abs_tol=1e-10,
+        rel_tol=1e-10,
+    )
 
 
 def test_exposure_matches_hand_daily_ols():

@@ -17,6 +17,7 @@ from kernels.backend import (
     native_threads,
     validate_float_array,
     validate_minimum,
+    validate_n_mad,
     validate_offsets,
     validate_target_index,
 )
@@ -79,15 +80,93 @@ class CppKernelBackend:
         group_offsets: IntArray,
         n_mad: float = 3.0,
     ) -> FloatArray:
-        """MAD 去极值暂未使用 C++，显式委托 Python 回退。"""
+        """调用 C++ 逐日 MAD 去极值核；参数与统一协议一致。"""
 
-        return self._fallback_unsupported(
-            "daily_winsorize_mad",
-            self._fallback.daily_winsorize_mad,
-            values,
-            group_offsets,
-            n_mad,
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        multiplier = validate_n_mad(n_mad)
+        threads = native_threads()
+        started = time.perf_counter()
+        try:
+            result = self._native.daily_winsorize_mad(
+                array,
+                offsets,
+                multiplier,
+            )
+        except Exception as exc:
+            raise KernelBackendError(f"C++ MAD 去极值计算失败：{exc}") from exc
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "内核执行 kernel=daily_winsorize_mad requested=native backend=native "
+            "rows=%d groups=%d n_mad=%.6g threads=%d elapsed_ms=%.3f",
+            array.size,
+            offsets.size - 1,
+            multiplier,
+            threads,
+            elapsed_ms,
         )
+        return np.asarray(result, dtype=np.float64)
+
+    def daily_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """调用 C++ 逐日 z-score 核；参数与统一协议一致。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        threads = native_threads()
+        started = time.perf_counter()
+        try:
+            result = self._native.daily_zscore(array, offsets)
+        except Exception as exc:
+            raise KernelBackendError(f"C++ z-score 计算失败：{exc}") from exc
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "内核执行 kernel=daily_zscore requested=native backend=native "
+            "rows=%d groups=%d threads=%d elapsed_ms=%.3f",
+            array.size,
+            offsets.size - 1,
+            threads,
+            elapsed_ms,
+        )
+        return np.asarray(result, dtype=np.float64)
+
+    def daily_winsorize_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """调用 C++ 融合标准化核；参数与统一协议一致。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        multiplier = validate_n_mad(n_mad)
+        threads = native_threads()
+        started = time.perf_counter()
+        try:
+            result = self._native.daily_winsorize_zscore(
+                array,
+                offsets,
+                multiplier,
+            )
+        except Exception as exc:
+            raise KernelBackendError(
+                f"C++ 融合 MAD/z-score 计算失败：{exc}"
+            ) from exc
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "内核执行 kernel=daily_winsorize_zscore requested=native backend=native "
+            "rows=%d groups=%d n_mad=%.6g threads=%d elapsed_ms=%.3f",
+            array.size,
+            offsets.size - 1,
+            multiplier,
+            threads,
+            elapsed_ms,
+        )
+        return np.asarray(result, dtype=np.float64)
 
     def daily_pearson(
         self,

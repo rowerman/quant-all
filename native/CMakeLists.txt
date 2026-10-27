@@ -14,6 +14,7 @@ pybind11_add_module(
   src/bindings.cpp
   src/rank.cpp
   src/pearson.cpp
+  src/standardize.cpp
   src/spearman.cpp
 )
 

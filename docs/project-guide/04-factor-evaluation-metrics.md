@@ -686,6 +686,13 @@ IC、RankIC、多周期衰减和增量 IC 的逐日排名与 Pearson 也经同�
 受风格回归支配，其门槛是不退化。证据位于
 `AiRecord/benchmarks/V115/p1-04-20261027/`。
 
+P1-05 继续把 Pearson IC 的逐日 MAD 和风格暴露的逐日 MAD/z-score 接入 C++。IC 复用
+同一次按日分组和 offsets，RankIC 仍对原始有限配对排名；风格列与因子经融合标准化核
+一次完成裁剪和 z-score。固定三年微基准中 MAD 加速 `2.313x`、z-score `10.840x`、
+融合标准化 `3.568x`；`overview` 由 `4.516s` 降至 `1.782s`，`exposure` 由
+`15.922s` 降至 `13.237s`。三后端 payload 在 `1e-10` 内一致，最高 RSS 比例
+`1.0195x`。证据位于 `AiRecord/benchmarks/V116/p1-05-20261027/`。
+
 ### 16.3 输出与阅读
 
 返回 `names`、完整均值 `matrix`、有效天数 `days`、Top-N `top`、`top_n`、

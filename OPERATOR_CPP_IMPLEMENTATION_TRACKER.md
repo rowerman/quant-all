@@ -3,8 +3,9 @@
 - 来源报告：[OPERATOR_CPP_ANALYSIS_REPORT.md](TODO_docs/OPERATOR_CPP_ANALYSIS_REPORT.md)
 - 创建日期：2026-10-27
 - 代码基线：`main` 分支 V112 工作区（P1-01 V111 提交 `4d3943a` 之后）
-- 当前状态：P0-01～P0-06、P1-01～P1-04 已完成；Spearman、逐日排名和逐日 Pearson
-  已接入评估路径，默认后端为 `auto`，实际 C++ 替换模块数为 3；P1-05 待开始。
+- 当前状态：P0-01～P0-06、P1-01～P1-05 已完成；Spearman、逐日排名、逐日 Pearson、
+  逐日 MAD 和逐日 z-score 已接入评估路径，默认后端为 `auto`，实际 C++ 替换模块数为 5；
+  P1-06 待开始。
 
 ## 1. 使用规则
 
@@ -725,7 +726,7 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 ### P1-05 接入逐日 MAD 去极值和 z-score 核
 
-- 状态：待开始（P1-04 已完成）
+- 状态：已完成（V116，2026-10-27）
 - 依赖：P1-04
 - 建议 session 数：1
 
@@ -742,17 +743,17 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 详细工作：
 
-- [ ] 路由 `winsorize_by_day` 和 `zscore_by_day` 到统一后端。
-- [ ] 保留 MAD 为 0、样本不足、非常数约束等现有分支。
-- [ ] 保留 Pearson 去极值对 RankIC 无影响的口径。
-- [ ] 评估是否将 winsorize 与 daily Pearson 合并为一次遍历。
-- [ ] 避免复制未参与目标的整张面板。
+- [x] 路由 `winsorize_by_day` 和 `zscore_by_day` 到统一后端。
+- [x] 保留 MAD 为 0、样本不足、非常数约束等现有分支。
+- [x] 保留 Pearson 去极值对 RankIC 无影响的口径。
+- [x] 评估是否将 winsorize 与 daily Pearson 合并为一次遍历。
+- [x] 避免复制未参与目标的整张面板。
 
 测试：
 
-- [ ] 与 P0-01 金标准逐值对照。
-- [ ] 单样本、常数、NaN 和极小 MAD 行为一致。
-- [ ] native/Python payload 一致。
+- [x] 与 P0-01 金标准逐值对照。
+- [x] 单样本、常数、NaN 和极小 MAD 行为一致。
+- [x] native/Python payload 一致。
 
 验收：
 
@@ -764,9 +765,28 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 - 保留更简单的 NumPy 实现，记录未达门槛原因。
 
+完成记录：
+
+- 新增 `quant_native.daily_winsorize_mad`、`daily_zscore` 和
+  `daily_winsorize_zscore`；z-score 使用与 pandas groupby 一致的 Kahan 补偿求和和
+  运算结合顺序，固定真实数组上两个 z-score 路径均逐值一致。
+- `calculate.daily` 一次按日稳定分组，复用 offsets 完成 Pearson IC 的因子/标签 MAD
+  和 Pearson；RankIC 继续对原始有限配对排名。`calculate.exposure` 对风格列和因子
+  使用融合标准化核，并按原行序写回。
+- 固定 3,724,919 行、722 组、单线程、热运行 5 次：MAD `0.195444s → 0.084487s`
+  （`2.313x`），z-score `0.158660s → 0.014637s`（`10.840x`），融合标准化
+  `0.342608s → 0.096023s`（`3.568x`）。
+- 真实三年 stage 各重复 3 次：`overview` 由 `4.516s` 降至 `1.782s`（`2.535x`），
+  `exposure` 由 `15.922s` 降至 `13.237s`（`1.203x`）；Python/native/auto payload
+  在 `1e-10` 内一致，native/auto 最高 RSS 比例分别为 `1.0172x`、`1.0195x`。
+- 本轮实际 C++ 替换模块数由 3 更新为 5，新增登记“评估逐日 MAD 去极值”和
+  “评估逐日 z-score”。证据：`AiRecord/benchmarks/V116/p1-05-20261027/`。
+- 回退：删除三个标准化原生核和业务路由，`calculate.daily`、`normalize`、`exposure`
+  恢复 Python 路径，台账减回 3；保留 Tracker 证据和 Python 金标准。
+
 ### P1-06 接入分位收益、换手和自相关核
 
-- 状态：等待依赖 P1-04
+- 状态：待开始（P1-04 已完成）
 - 依赖：P1-04
 - 建议 session 数：1～2
 
@@ -809,7 +829,7 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 ### P1-07 接入逐日 OLS 暴露核
 
-- 状态：等待依赖 P1-04
+- 状态：待开始（P1-04 已完成）
 - 依赖：P1-04
 - 建议 session 数：1～2
 
@@ -854,7 +874,7 @@ P2 只复用 P1 已验收的稳定核，不新增未经评估的算法。
 
 ### P2-01 将排名和标准化核共享给模型预处理
 
-- 状态：等待依赖 P1-04、P1-05
+- 状态：待开始（P1-04、P1-05 已完成）
 - 依赖：P1-04、P1-05
 - 建议 session 数：1
 

@@ -303,8 +303,10 @@ payload 可以变化细节字段，但 `key`、所属 stage 和外部入口不�
 自动获得这些缓存。
 
 完整面板上的 `daily_ic()`、多周期 RankIC 和增量 IC 默认经 `kernels.auto` 选择逐日排名
-与 Pearson 后端。路由层必须先按交易日稳定整理为连续分组；全历史轻量 IC 仍在 DuckDB
-内聚合，不经过这组数组核。
+与 Pearson 后端；Pearson IC 的逐日 MAD 和风格暴露的 MAD/z-score 也经同一后端选择。
+路由层必须先按交易日稳定整理为连续分组；全历史轻量 IC 仍在 DuckDB 内聚合，不经过这组
+数组核。P1-05 后固定三年 `overview` 加速 `2.535x`、`exposure` 加速 `1.203x`，
+实际 C++ 替换模块数累计为 5。
 
 ## 4. 执行路径
 

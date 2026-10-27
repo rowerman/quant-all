@@ -1,8 +1,8 @@
 # C++ 批量计算扩展
 
 `native` 负责构建顶层扩展 `quant_native`，当前提供完整矩阵和目标行两种成对 Spearman
-核，以及逐日排名和逐日 Pearson 核。三类核都已接入评估业务路径；有扩展时默认 `auto`
-选择 native，无扩展时回退 Python。
+核，以及逐日排名、Pearson、MAD、z-score 和融合标准化核。这些核都已接入评估业务路径；
+有扩展时默认 `auto` 选择 native，无扩展时回退 Python。
 
 ## 负责什么
 
@@ -10,6 +10,7 @@
 - 一次计算所有组的完整 Spearman 相关矩阵，或只计算一个目标因子的行、列和对角线。
 - 按实际配对样本剔除非有限值，使用并列平均名次，常数截面返回 `NaN`。
 - 按组计算平均名次分位和 Pearson 相关，保持原有效计数与最小样本门槛。
+- 按组计算中位数、MAD、裁剪和 z-score；z-score 使用与 pandas 相同的补偿求和顺序。
 - 计算期间释放 GIL，按组使用受控线程数。
 
 不负责输入数据读取、因子目录、评估 payload、日志聚合、业务回退选择或并发阶段锁。
@@ -19,8 +20,9 @@
 - `kernels.native.CppKernelBackend` 是唯一 Python 适配入口。
 - 正式完整矩阵和候选目标行经 `calculate.correlation` 调用 `kernels` 适配层。
 - IC、RankIC、多周期衰减和增量 IC 经 `calculate.daily` 调用同一适配层。
+- 风格暴露经 `calculate.exposure` 调用融合标准化核。
 - 核测试和 P1-02/P1-03 基准工具直接验证适配层或扩展。
-- 模型、MAD/z-score、OLS、挖掘表达式和回测尚未调用这些核。
+- 模型、OLS、挖掘表达式和回测尚未调用这些核。
 
 业务模块不得直接导入 `quant_native`。后续接入必须经过 `kernels.get_backend()` 和统一
 `NativeKernelBackend` 协议。
@@ -59,6 +61,9 @@
 pairwise_spearman(values, group_offsets, min_n=5, target_index=None)
 daily_rank_pct(values, group_offsets)
 daily_pearson(left, right, group_offsets, min_n=5)
+daily_winsorize_mad(values, group_offsets, n_mad=3.0)
+daily_zscore(values, group_offsets)
+daily_winsorize_zscore(values, group_offsets, n_mad=3.0)
 ```
 
 - `values`：C 连续 `float64`，形状为 `[样本, 因子]`。
@@ -73,6 +78,9 @@ daily_pearson(left, right, group_offsets, min_n=5)
 - `daily_rank_pct.values`：C 连续一维 `float64`；NaN 原位保留，其他值按组计算平均并列
   名次分位。
 - `daily_pearson.left/right`：长度相同的一维 C 连续 `float64`；只使用两侧都有限的配对。
+- `daily_winsorize_mad`：返回与输入等长的裁剪数组；MAD 为零或无法裁剪时保持原值。
+- `daily_zscore`：样本标准差 `ddof=1`；有效样本不足 2 或标准差为零时返回 `NaN`。
+- `daily_winsorize_zscore`：对裁剪结果继续计算 z-score，供风格暴露一次完成标准化。
 - 两个日度接口的 `group_offsets` 都与 Spearman 相同，返回一维结果；Pearson 额外返回
   每组有效配对数。
 - 业务评估的最小截面继续固定为 5；底层 Pearson 接口接受不小于 2 的门槛。
@@ -140,18 +148,36 @@ Python/native/auto 的 payload 在 `1e-10` 内一致，有效计数和 `NaN` 位
 峰值 RSS 比例最高 `1.037x`。`incremental_ic` 的主要耗时仍是风格回归，因此该 stage 以不退化
 为门槛。证据位于 `AiRecord/benchmarks/V115/p1-04-20261027/`。
 
+## P1-05 逐日 MAD 与 z-score 接入
+
+原生 `daily_winsorize_mad`、`daily_zscore` 和 `daily_winsorize_zscore` 保持现有 pandas
+缺失、无穷、常数、MAD 为零和最小样本语义。z-score 的和与平方和使用 Kahan 补偿，
+并保持 `count * (mean * mean)` 的结合顺序，以匹配 pandas groupby 的逐值结果。
+
+固定 3,724,919 行、722 组、单线程、热运行 5 次：
+
+| 核 | Python | C++ | 加速 |
+|---|---:|---:|---:|
+| MAD 去极值 | 0.195444s | 0.084487s | 2.313x |
+| z-score | 0.158660s | 0.014637s | 10.840x |
+| 融合标准化 | 0.342608s | 0.096023s | 3.568x |
+
+真实 `overview` 由 4.516 秒降至 1.782 秒（2.535x），`exposure` 由 15.922 秒降至
+13.237 秒（1.203x）。三后端 payload 在 `1e-10` 内一致，最高 RSS 比例 1.0195x。
+证据位于 `AiRecord/benchmarks/V116/p1-05-20261027/`。
+
 ## C++ 替换台账
 
 | 项目 | 当前状态 |
 |---|---|
 | 扩展 | `quant_native` 已构建 |
-| 原生核 | `pairwise_spearman`、`daily_rank_pct`、`daily_pearson` |
+| 原生核 | `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、`daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore` |
 | 可选后端 | `native`、`python`、`auto` |
 | 默认后端 | `auto` |
-| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC |
-| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson` 的业务调用路径 |
-| 实际 C++ 替换模块数 | 3 |
-| 真实业务 stage 收益 | 相关性 native 下降 35.5%；overview 加速 2.082x；decay 加速 2.820x |
+| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露 |
+| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson`；`winsorize_by_day`；`zscore_by_day` |
+| 实际 C++ 替换模块数 | 5 |
+| 真实业务 stage 收益 | 相关性下降 35.5%；overview 加速 2.535x；exposure 加速 1.203x |
 
 ## 修改注意
 

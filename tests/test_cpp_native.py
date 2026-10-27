@@ -375,7 +375,7 @@ def test_auto_backend_falls_back_only_when_extension_is_missing(monkeypatch):
 
 
 @requires_native
-def test_native_backend_unsupported_kernels_log_explicit_fallback(monkeypatch):
+def test_native_backend_unsupported_ols_logs_explicit_fallback(monkeypatch):
     """未实现核记录 native 到 Python 的明确回退原因。"""
 
     messages = []
@@ -384,20 +384,29 @@ def test_native_backend_unsupported_kernels_log_explicit_fallback(monkeypatch):
         "info",
         lambda message, *args: messages.append(message % args if args else message),
     )
-    values = np.array([1.0, 2.0, 3.0])
-    actual = CppKernelBackend().daily_winsorize_mad(
-        values,
-        np.array([0, values.size], dtype=np.int64),
+    design = np.column_stack(
+        (
+            np.ones(4, dtype=np.float64),
+            np.array([1.0, 2.0, 3.0, 4.0]),
+        )
     )
-
-    np.testing.assert_array_equal(
-        actual,
-        get_backend("python").backend.daily_winsorize_mad(
-            values,
-            np.array([0, values.size], dtype=np.int64),
-        ),
+    response = np.array([2.0, 4.0, 6.0, 8.0])
+    offsets = np.array([0, 4], dtype=np.int64)
+    actual = CppKernelBackend().daily_ols(design, response, offsets, min_rows=1)
+    expected = get_backend("python").backend.daily_ols(
+        design,
+        response,
+        offsets,
+        min_rows=1,
+    )
+    np.testing.assert_array_equal(actual["days"], expected["days"])
+    np.testing.assert_allclose(actual["coefficients"], expected["coefficients"])
+    np.testing.assert_array_equal(actual["residual_rows"], expected["residual_rows"])
+    np.testing.assert_allclose(
+        actual["residual_values"],
+        expected["residual_values"],
     )
     assert messages == [
-        "内核显式回退 kernel=daily_winsorize_mad requested=native "
+        "内核显式回退 kernel=daily_ols requested=native "
         "backend=python reason=cpp_kernel_not_implemented"
     ]

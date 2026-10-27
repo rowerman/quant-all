@@ -2,6 +2,7 @@
 #include "quant_native/spearman.hpp"
 
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -69,6 +70,13 @@ void validate_offsets(
             throw py::value_error("group_offsets 必须单调不减");
         }
     }
+}
+
+double validate_n_mad(double n_mad) {
+    if (!std::isfinite(n_mad) || n_mad <= 0.0) {
+        throw py::value_error("n_mad 必须是有限正数");
+    }
+    return n_mad;
 }
 
 py::tuple pairwise_spearman(
@@ -207,6 +215,90 @@ py::tuple daily_pearson(
     );
 }
 
+py::array_t<double> daily_winsorize_mad(
+    const py::array& values,
+    const py::array& group_offsets,
+    double n_mad
+) {
+    validate_vector(values, "values");
+    const double multiplier = validate_n_mad(n_mad);
+    const auto rows = static_cast<std::size_t>(values.shape(0));
+    validate_offsets(group_offsets, rows);
+    const auto group_count =
+        static_cast<std::size_t>(group_offsets.size() - 1);
+    py::array_t<double> result(static_cast<py::ssize_t>(rows));
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::daily_winsorize_mad(
+            static_cast<const double*>(values.data()),
+            rows,
+            static_cast<const std::int64_t*>(group_offsets.data()),
+            group_count,
+            multiplier,
+            threads,
+            static_cast<double*>(result.mutable_data())
+        );
+    }
+    return result;
+}
+
+py::array_t<double> daily_zscore(
+    const py::array& values,
+    const py::array& group_offsets
+) {
+    validate_vector(values, "values");
+    const auto rows = static_cast<std::size_t>(values.shape(0));
+    validate_offsets(group_offsets, rows);
+    const auto group_count =
+        static_cast<std::size_t>(group_offsets.size() - 1);
+    py::array_t<double> result(static_cast<py::ssize_t>(rows));
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::daily_zscore(
+            static_cast<const double*>(values.data()),
+            rows,
+            static_cast<const std::int64_t*>(group_offsets.data()),
+            group_count,
+            threads,
+            static_cast<double*>(result.mutable_data())
+        );
+    }
+    return result;
+}
+
+py::array_t<double> daily_winsorize_zscore(
+    const py::array& values,
+    const py::array& group_offsets,
+    double n_mad
+) {
+    validate_vector(values, "values");
+    const double multiplier = validate_n_mad(n_mad);
+    const auto rows = static_cast<std::size_t>(values.shape(0));
+    validate_offsets(group_offsets, rows);
+    const auto group_count =
+        static_cast<std::size_t>(group_offsets.size() - 1);
+    py::array_t<double> result(static_cast<py::ssize_t>(rows));
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::daily_winsorize_zscore(
+            static_cast<const double*>(values.data()),
+            rows,
+            static_cast<const std::int64_t*>(group_offsets.data()),
+            group_count,
+            multiplier,
+            threads,
+            static_cast<double*>(result.mutable_data())
+        );
+    }
+    return result;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(quant_native, module) {
@@ -235,5 +327,28 @@ PYBIND11_MODULE(quant_native, module) {
         py::arg("group_offsets"),
         py::arg("min_n") = 5,
         R"doc(按组计算有限配对 Pearson 相关系数和有效配对数。)doc"
+    );
+    module.def(
+        "daily_winsorize_mad",
+        &daily_winsorize_mad,
+        py::arg("values"),
+        py::arg("group_offsets"),
+        py::arg("n_mad") = 3.0,
+        R"doc(按组使用中位数和 MAD 裁剪极值。)doc"
+    );
+    module.def(
+        "daily_zscore",
+        &daily_zscore,
+        py::arg("values"),
+        py::arg("group_offsets"),
+        R"doc(按组计算样本标准差口径的截面 z-score。)doc"
+    );
+    module.def(
+        "daily_winsorize_zscore",
+        &daily_winsorize_zscore,
+        py::arg("values"),
+        py::arg("group_offsets"),
+        py::arg("n_mad") = 3.0,
+        R"doc(按组融合 MAD 去极值和截面 z-score。)doc"
     );
 }

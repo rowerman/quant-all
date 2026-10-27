@@ -86,6 +86,12 @@ benchmark另有near_limit/full_ic/compare/concurrent/reject案例。concurrent�
 .venv/bin/python -m tools.monitor.daily_native_baseline
 ```
 
+逐日 MAD、z-score 和风格标准化核的微基准与真实 stage 对照：
+
+```bash
+.venv/bin/python -m tools.monitor.standardize_native_baseline
+```
+
 当前 C++ 替换状态和最新证据见 [批量计算核](../../core/kernels/README.md) 与
 [C++ 批量计算扩展](../../native/README.md)。
 

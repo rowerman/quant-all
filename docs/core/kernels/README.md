@@ -1,18 +1,20 @@
 # 批量计算核
 
 `core/kernels` 以顶层包名 `kernels` 提供与具体加速后端无关的批量数组契约。当前包含
-Python 回退、Numba 研究原型和 C++ Spearman、逐日排名、逐日 Pearson 后端；评估相关性、
-IC/RankIC、多周期衰减和增量 IC 已默认走 `auto`，模型、OLS、MAD/z-score、挖掘和回测
-尚未接入加速后端。
+Python 回退、Numba 研究原型，以及 C++ Spearman、逐日排名、逐日 Pearson、MAD、
+z-score 和融合标准化后端。评估相关性、IC/RankIC、多周期衰减、增量 IC 和风格暴露
+已默认走 `auto`；模型、OLS、挖掘和回测尚未接入加速后端。
 
 ## 负责什么
 
 - 校验 C 连续 `float64` 数组和 C 连续 `int64` 分组边界。
-- 为逐日排名、MAD 去极值、Pearson、成对 Spearman 和逐日 OLS 固定输入输出口径。
+- 为逐日排名、MAD 去极值、z-score、融合标准化、Pearson、成对 Spearman 和逐日 OLS
+  固定输入输出口径。
 - 提供直接复用现有 `calculate` 实现的 Python 回退。
 - 提供逐日排名和 Spearman 的 Numba 研究原型，用于决定是否值得进入 C++。
 - 提供 C++ Spearman 完整矩阵和目标行后端。
 - 提供 C++ 逐日排名和逐日 Pearson 后端。
+- 提供 C++ 逐日 MAD、z-score 和融合标准化后端。
 - 通过 `KERNEL-001`～`KERNEL-004` 区分数组、offset、参数和后端错误。
 
 ## 被谁调用
@@ -21,11 +23,13 @@ IC/RankIC、多周期衰减和增量 IC 已默认走 `auto`，模型、OLS、MAD
 
 - `calculate.correlation`：正式完整矩阵和候选目标行。
 - `calculate.daily`：IC、RankIC、多周期衰减和增量 IC。
+- `calculate.exposure`：风格与因子逐日 MAD 去极值 + z-score。
 - `tests/test_native_kernels.py`
 - `tests/test_cpp_native.py`
 - `tools/monitor/kernel_baseline.py`
 - `tools/monitor/native_kernel_baseline.py`
 - `tools/monitor/correlation_native_baseline.py`
+- `tools/monitor/standardize_native_baseline.py`
 
 业务模块不得直接导入 `quant_native` 或 Numba 原型。后续接入统一从此包选择后端。
 
@@ -34,8 +38,9 @@ IC/RankIC、多周期衰减和增量 IC 已默认走 `auto`，模型、OLS、MAD
 - Python 回退调用 `calculate.daily`、`calculate.normalize`、
   `calculate.correlation._daily_spearman` 和 `calculate.exposure` 的现有实现。
 - Numba 原型的未验证核显式委托 Python 回退。
-- `CppKernelBackend` 把 `pairwise_spearman`、`daily_rank_pct` 和 `daily_pearson`
-  交给 `quant_native`；MAD 和 OLS 继续显式委托 Python 回退。
+- `CppKernelBackend` 把 `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、
+  `daily_winsorize_mad`、`daily_zscore` 和 `daily_winsorize_zscore` 交给
+  `quant_native`；OLS 继续显式委托 Python 回退。
 - 基准工具读取正式因子 Parquet 和评估面板，只读，不写业务数据。
 
 ## 数据契约
@@ -47,6 +52,10 @@ IC/RankIC、多周期衰减和增量 IC 已默认走 `auto`，模型、OLS、MAD
 - `pairwise_spearman` 返回 `(相关系数[组, 因子, 因子], 有效计数[组, 因子, 因子])`。
 - `daily_rank_pct` 返回与输入等长的一维分位排名；NaN 保持原位。
 - `daily_pearson` 返回 `(相关系数[组], 有效配对数[组])`，只使用两侧有限的配对。
+- `daily_winsorize_mad` 返回与输入等长的一维 MAD 裁剪结果。
+- `daily_zscore` 返回按组样本标准差计算的 z-score。
+- `daily_winsorize_zscore` 等价于先调用 MAD 去极值、再调用 z-score，供风格暴露一次
+  完成标准化。
 - 可选 `target_index` 只返回目标行、目标列和对角线；其他位置相关值为 `NaN`、计数为 0。
 - Spearman 的最小样本参数不得小于当前评估口径 5。
 - `daily_ols` 返回日期索引、系数、t 值、R²、样本数、残差行号和残差值。
@@ -101,19 +110,37 @@ IC/RankIC、多周期衰减和增量 IC 已默认走 `auto`，模型、OLS、MAD
   Python/native/auto payload 在 `1e-10` 内一致，native/auto 峰值 RSS 比例最高 1.037x。
 - 证据位于 `AiRecord/benchmarks/V115/p1-04-20261027/`。
 
+## P1-05 逐日标准化业务接入
+
+- `calculate.daily` 先按交易日稳定整理一次，再复用同一 offsets 计算 Pearson IC 的
+  因子/标签 MAD 去极值；RankIC 继续对原始有限配对排名。
+- `calculate.exposure` 只为全部风格列和待评估因子分组一次，经
+  `daily_winsorize_zscore` 融合核完成 MAD 裁剪与 z-score。
+- C++ z-score 使用与 pandas groupby 相同的 Kahan 补偿求和；在固定真实数组中，
+  `daily_zscore` 和 `daily_winsorize_zscore` 与 Python 金标准逐值完全一致。
+- 3,724,919 行、722 组单线程微基准：MAD `0.195444s → 0.084487s`（`2.313x`），
+  z-score `0.158660s → 0.014637s`（`10.840x`），融合标准化
+  `0.342608s → 0.096023s`（`3.568x`）。
+- `overview` 由 `4.516s` 降至 `1.782s`（`2.535x`），`exposure` 由 `15.922s`
+  降至 `13.237s`（`1.203x`）；Python/native/auto payload 在 `1e-10` 内一致，
+  最高 RSS 比例 `1.0195x`。
+- 证据位于 `AiRecord/benchmarks/V116/p1-05-20261027/`。
+
 ## C++ 替换台账
 
 只有真实替换、接入并留下正确性和性能证据的模块才计入替换数。
 
 | 项目 | 当前状态 |
 |---|---|
-| 实际 C++ 替换模块数 | 3 |
+| 实际 C++ 替换模块数 | 5 |
 | C++ 扩展 | `quant_native` 已构建 |
 | 默认计算后端 | `auto`，扩展可用时选择 native |
 | P1-01 门禁 | 逐日排名门禁已通过 |
 | Spearman 模块 | 评估相关性完整矩阵与候选目标行已接入 |
 | 逐日排名模块 | IC、RankIC、多周期衰减、增量 IC 已接入 |
 | 逐日 Pearson 模块 | Pearson IC 与通用日度相关已接入 |
+| 逐日 MAD 去极值模块 | Pearson IC 和风格暴露已接入 |
+| 逐日 z-score 模块 | 风格暴露经融合标准化入口接入 |
 
 后续登记每个 C++ 模块时必须写明：C++ 模块名、替换的原 Python 函数、默认/可选后端、
 Python 回退路径、真实 stage 耗时、峰值 RSS、正确性证据和对应 Tracker 任务。

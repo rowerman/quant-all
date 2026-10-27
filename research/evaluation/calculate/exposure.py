@@ -23,7 +23,7 @@ import pandas as pd
 from calculate.daily import MIN_CROSS_SECTION, daily_corr
 from calculate.errors import DecomposeError
 from calculate.logging_conf import get_logger
-from calculate.normalize import winsorize_by_day, zscore_by_day
+from calculate.normalize import standardize_by_day
 from calculate.panel import open_source
 from calculate.styles import (
     INDUSTRY_OFF,
@@ -79,7 +79,41 @@ def _standardized_block(values: np.ndarray, days: np.ndarray) -> np.ndarray:
         values: 一维取值。
         days: 与 values 等长的交易日序列。
     """
-    return zscore_by_day(days, winsorize_by_day(days, values))
+    return standardize_by_day(days, values)
+
+
+def _standardized_columns(
+    sample: pd.DataFrame,
+    columns: tuple[str, ...],
+    days: np.ndarray,
+) -> pd.DataFrame:
+    """按日分组一次后标准化多列，并保持样本原顺序。"""
+
+    from kernels import get_backend
+    from calculate.normalize import _grouped_values
+
+    first = sample[columns[0]].to_numpy(dtype="float64")
+    grouped = _grouped_values(days, first, finite_dates_only=True)
+    if grouped is None:
+        return pd.DataFrame({
+            column: _standardized_block(
+                sample[column].to_numpy(dtype="float64"),
+                days,
+            )
+            for column in columns
+        })
+    order, offsets, _ = grouped
+    backend = get_backend().backend
+    standardized: dict[str, np.ndarray] = {}
+    for column in columns:
+        ordered = np.ascontiguousarray(
+            sample[column].to_numpy(dtype="float64")[order]
+        )
+        computed = backend.daily_winsorize_zscore(ordered, offsets)
+        result = np.empty_like(computed)
+        result[order] = computed
+        standardized[column] = result
+    return pd.DataFrame(standardized)
 
 
 def _combine_value(z_bp: np.ndarray, z_ep: np.ndarray) -> np.ndarray:
@@ -268,10 +302,7 @@ def run_exposure(context, industry_key: str = INDUSTRY_OFF) -> ExposureResult:
             "md.index_daily 是否齐全"
         )
 
-    standardized = pd.DataFrame({
-        column: _standardized_block(sample[column].to_numpy(dtype="float64"), days)
-        for column in RAW_COLUMNS
-    })
+    standardized = _standardized_columns(sample, RAW_COLUMNS, days)
     styles_std = pd.DataFrame({
         "SIZE": standardized["SIZE"],
         "VALUE": _combine_value(
@@ -286,7 +317,9 @@ def run_exposure(context, industry_key: str = INDUSTRY_OFF) -> ExposureResult:
     # 风格算不出来的样本（次新股没满 250 日、亏损股没有正 pe）标准化后置 0，
     # 等价于「不暴露」，保留该股票参与回归与增量 IC
     styles_std = styles_std.fillna(0.0)
-    response = _standardized_block(sample["factor"].to_numpy(dtype="float64"), days)
+    response = _standardized_columns(sample, ("factor",), days)["factor"].to_numpy(
+        dtype="float64"
+    )
 
     mapping, industry_block = _industry_frame(context, industry_key)
     industry_column = None

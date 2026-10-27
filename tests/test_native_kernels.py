@@ -13,7 +13,7 @@ import kernels.prototype as prototype_module
 from calculate.correlation import _daily_spearman, daily_spearman_matrix
 from calculate.daily import rank_pct_by_day
 from calculate.exposure import _daily_regression
-from calculate.normalize import winsorize_by_day
+from calculate.normalize import winsorize_by_day, zscore_by_day
 from kernels import (
     KernelArrayError,
     KernelBackendError,
@@ -72,6 +72,26 @@ def test_winsorize_matches_current_daily_implementation():
     actual = PythonKernelBackend().daily_winsorize_mad(values, offsets, n_mad=3.0)
 
     np.testing.assert_array_equal(actual, expected)
+
+
+def test_zscore_and_fused_standardize_match_pandas_gold():
+    """Python 回退的 z-score 和融合标准化直接复用 pandas 金标准。"""
+
+    values = np.array(
+        [1., 2., 3., 100., np.nan, -4., -5., 2., 9., 9., 9.]
+    )
+    offsets = np.array([0, 5, 11], dtype=np.int64)
+    codes = group_codes(offsets)
+    backend = PythonKernelBackend()
+
+    np.testing.assert_array_equal(
+        backend.daily_zscore(values, offsets),
+        zscore_by_day(codes, values),
+    )
+    np.testing.assert_array_equal(
+        backend.daily_winsorize_zscore(values, offsets),
+        zscore_by_day(codes, winsorize_by_day(codes, values)),
+    )
 
 
 def test_pearson_matches_scipy_and_reports_pair_counts():
@@ -202,10 +222,22 @@ def test_numba_unsupported_kernel_logs_explicit_fallback(monkeypatch):
         values,
         np.array([0, values.size], dtype=np.int64),
     )
+    backend.daily_zscore(
+        values,
+        np.array([0, values.size], dtype=np.int64),
+    )
+    backend.daily_winsorize_zscore(
+        values,
+        np.array([0, values.size], dtype=np.int64),
+    )
 
     assert messages == [
         "内核显式回退 kernel=daily_winsorize_mad requested=numba "
-        "backend=python reason=numba_kernel_not_implemented"
+        "backend=python reason=numba_kernel_not_implemented",
+        "内核显式回退 kernel=daily_zscore requested=numba "
+        "backend=python reason=numba_kernel_not_implemented",
+        "内核显式回退 kernel=daily_winsorize_zscore requested=numba "
+        "backend=python reason=numba_kernel_not_implemented",
     ]
 
 
@@ -354,6 +386,11 @@ def test_winsorize_parameter_errors(n_mad):
 
     with pytest.raises(KernelParameterError):
         PythonKernelBackend().daily_winsorize_mad(
+            np.array([1., 2., 3.]),
+            np.array([0, 3], dtype=np.int64),
+            n_mad=n_mad,
+        )
+        PythonKernelBackend().daily_winsorize_zscore(
             np.array([1., 2., 3.]),
             np.array([0, 3], dtype=np.int64),
             n_mad=n_mad,

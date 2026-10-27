@@ -26,4 +26,33 @@ void daily_pearson(
     std::int64_t* count
 );
 
+void daily_winsorize_mad(
+    const double* values,
+    std::size_t rows,
+    const std::int64_t* group_offsets,
+    std::size_t group_count,
+    double n_mad,
+    int threads,
+    double* result
+);
+
+void daily_zscore(
+    const double* values,
+    std::size_t rows,
+    const std::int64_t* group_offsets,
+    std::size_t group_count,
+    int threads,
+    double* result
+);
+
+void daily_winsorize_zscore(
+    const double* values,
+    std::size_t rows,
+    const std::int64_t* group_offsets,
+    std::size_t group_count,
+    double n_mad,
+    int threads,
+    double* result
+);
+
 }  // namespace quant_native

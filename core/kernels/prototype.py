@@ -207,6 +207,37 @@ class NumbaPrototypeBackend:
         )
         return self._fallback.daily_winsorize_mad(values, group_offsets, n_mad)
 
+    def daily_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """未验证核显式委托 Python 回退。"""
+
+        logger.info(
+            "内核显式回退 kernel=daily_zscore requested=numba "
+            "backend=python reason=numba_kernel_not_implemented"
+        )
+        return self._fallback.daily_zscore(values, group_offsets)
+
+    def daily_winsorize_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """未验证核显式委托 Python 回退。"""
+
+        logger.info(
+            "内核显式回退 kernel=daily_winsorize_zscore requested=numba "
+            "backend=python reason=numba_kernel_not_implemented"
+        )
+        return self._fallback.daily_winsorize_zscore(
+            values,
+            group_offsets,
+            n_mad,
+        )
+
     def daily_pearson(
         self,
         left: FloatArray,

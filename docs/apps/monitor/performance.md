@@ -194,6 +194,27 @@ Python/native/auto 的三条 stage payload 均在 `1e-10` 内一致；排名逐�
 总数由 1 增至 3。Pearson 的核级加速明确，但其独立业务占比很小，不对外表述为单独带来
 20% stage 改善。证据位于 `AiRecord/benchmarks/V115/p1-04-20261027/`。
 
+## P1-05 逐日 MAD 与 z-score 接入（2026-10-27）
+
+本轮把逐日 MAD、z-score 和融合标准化接入统一 `kernels` 后端。IC 仅对 Pearson 使用
+MAD 裁剪，RankIC 继续对原始有限配对排名；风格暴露对全部风格列和因子使用融合核。
+
+固定三年、全 A、MOM_20、单线程、3,724,919 行、722 组，微基准热运行 5 次；真实
+`overview` 和 `exposure` 各由独立进程重复 3 次并取中位数：
+
+| 核/stage | Python | native | 加速 |
+|---|---:|---:|---:|
+| MAD 去极值 | 0.195444s | 0.084487s | 2.313x |
+| z-score | 0.158660s | 0.014637s | 10.840x |
+| 融合标准化 | 0.342608s | 0.096023s | 3.568x |
+| `overview` | 4.516s | 1.782s | 2.535x |
+| `exposure` | 15.922s | 13.237s | 1.203x |
+
+Python/native/auto payload 在 `1e-10` 内一致；native/auto 最高峰值 RSS 比例分别为
+`1.0172x` 和 `1.0195x`。本轮新增登记“评估逐日 MAD 去极值”和“评估逐日 z-score”
+两个实际 C++ 替换模块，总数由 3 增至 5。证据位于
+`AiRecord/benchmarks/V116/p1-05-20261027/`。
+
 ---
 
 ## V11 资源实测与并发验收（2026-10-13 复测）

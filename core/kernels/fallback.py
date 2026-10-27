@@ -7,7 +7,11 @@ import numpy as np
 from calculate.correlation import _daily_spearman
 from calculate.daily import _daily_pearson, rank_pct_by_day
 from calculate.exposure import _daily_regression
-from calculate.normalize import winsorize_by_day
+from calculate.normalize import (
+    _winsorize_by_day_numpy,
+    _winsorize_zscore_by_day_numpy,
+    _zscore_by_day_numpy,
+)
 from kernels.backend import (
     DailyOlsResult,
     FloatArray,
@@ -44,7 +48,34 @@ class PythonKernelBackend:
 
         array = validate_float_array(values, "values", ndim=1)
         offsets = validate_offsets(group_offsets, array.size)
-        return winsorize_by_day(
+        return _winsorize_by_day_numpy(
+            group_codes(offsets),
+            array,
+            n_mad=validate_n_mad(n_mad),
+        )
+
+    def daily_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """按组调用现有 pandas z-score；参数与统一协议一致。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        return _zscore_by_day_numpy(group_codes(offsets), array)
+
+    def daily_winsorize_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """按组调用现有 pandas 串联标准化；参数与统一协议一致。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        return _winsorize_zscore_by_day_numpy(
             group_codes(offsets),
             array,
             n_mad=validate_n_mad(n_mad),

@@ -53,6 +53,21 @@ class NativeKernelBackend(Protocol):
     ) -> FloatArray:
         """按组使用中位数和 MAD 裁剪极值。"""
 
+    def daily_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """按组计算样本标准差口径的 z-score。"""
+
+    def daily_winsorize_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """按组融合 MAD 去极值和样本标准差 z-score。"""
+
     def daily_pearson(
         self,
         left: FloatArray,
