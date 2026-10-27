@@ -6,7 +6,7 @@ import pytest
 from scipy import stats
 
 import factors
-from calculate.daily import daily_ic, rank_pct_by_day
+from calculate.daily import daily_corr, daily_ic, rank_pct_by_day
 from calculate.metrics import coverage as coverage_metric
 from calculate.metrics import ic as ic_metric
 from calculate.normalize import mad_winsorize
@@ -89,6 +89,18 @@ def test_rank_pct_by_day_matches_pandas_with_ties_and_missing():
         pct=True
     ).to_numpy()
     assert np.allclose(mine, expected, atol=1e-15, equal_nan=True)
+
+
+def test_daily_corr_returns_empty_after_filtering_non_finite_pairs():
+    """有限配对过滤后为空时返回空表，不把空数组送入批量核。"""
+
+    panel = make_panel(days=2, stocks=6)
+    panel["factor"] = np.inf
+
+    result = daily_corr(panel, "factor", "label", rank=True)
+
+    assert result.empty
+    assert list(result.columns) == ["corr", "n"]
 
 
 def test_series_stats_matches_numpy():

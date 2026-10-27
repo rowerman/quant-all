@@ -12,6 +12,8 @@ find_package(pybind11 CONFIG REQUIRED)
 pybind11_add_module(
   quant_native
   src/bindings.cpp
+  src/rank.cpp
+  src/pearson.cpp
   src/spearman.cpp
 )
 

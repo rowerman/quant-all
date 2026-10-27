@@ -6,13 +6,59 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 
 from calculate.normalize import winsorize_by_day
 
+if TYPE_CHECKING:
+    from kernels import BackendSelection, NativeKernelBackend
+
 # 单日有效配对数少于这个数就不参与统计：样本太小算出来的相关系数没有意义
 MIN_CROSS_SECTION = 5
+
+
+def _kernel_selection(
+    backend: "NativeKernelBackend | None" = None,
+) -> "BackendSelection":
+    """返回本次逐日计算使用的后端。"""
+
+    from kernels import BackendSelection, get_backend
+
+    if backend is None:
+        return get_backend()
+    if isinstance(backend, BackendSelection):
+        return backend
+    return BackendSelection(backend, backend.name, None)
+
+
+def _offsets_from_codes(codes: np.ndarray) -> np.ndarray:
+    """把非负组号转换为 C 连续分组边界。"""
+
+    if codes.size == 0:
+        return np.array([0], dtype=np.int64)
+    sizes = np.bincount(codes)
+    return np.concatenate(
+        (
+            np.array([0], dtype=np.int64),
+            np.cumsum(sizes, dtype=np.int64),
+        )
+    ).astype(np.int64, copy=False)
+
+
+def _grouped_arrays(
+    codes: np.ndarray,
+    *arrays: np.ndarray,
+) -> tuple[np.ndarray, tuple[np.ndarray, ...]]:
+    """把样本稳定整理为按组连续，返回边界和同序数组。"""
+
+    order = np.argsort(codes, kind="stable")
+    ordered_codes = codes[order]
+    offsets = _offsets_from_codes(ordered_codes)
+    grouped = tuple(np.ascontiguousarray(array[order]) for array in arrays)
+    return offsets, grouped
 
 
 def _daily_pearson(codes: np.ndarray, left: np.ndarray, right: np.ndarray,
@@ -110,13 +156,25 @@ def daily_corr(frame: pd.DataFrame, x: str, y: str, *,
             index=pd.Index([], name="trade_date", dtype="datetime64[ns]"),
         )
     work = work.loc[np.isfinite(work[x]) & np.isfinite(work[y])]
+    if work.empty:
+        return pd.DataFrame(
+            {"corr": [], "n": []},
+            index=pd.Index([], name="trade_date", dtype="datetime64[ns]"),
+        )
     codes, levels = pd.factorize(work["trade_date"], sort=True)
-    left = work[x].to_numpy(dtype="float64")
-    right = work[y].to_numpy(dtype="float64")
+    left = np.ascontiguousarray(work[x].to_numpy(dtype="float64"))
+    right = np.ascontiguousarray(work[y].to_numpy(dtype="float64"))
+    offsets, (left, right) = _grouped_arrays(codes, left, right)
+    selection = _kernel_selection()
     if rank:
-        left = pd.Series(left).groupby(codes, sort=True).rank(pct=True).to_numpy(dtype="float64")
-        right = pd.Series(right).groupby(codes, sort=True).rank(pct=True).to_numpy(dtype="float64")
-    corr, count = _daily_pearson(codes, left, right, min_n)
+        left = selection.backend.daily_rank_pct(left, offsets)
+        right = selection.backend.daily_rank_pct(right, offsets)
+    corr, count = selection.backend.daily_pearson(
+        left,
+        right,
+        offsets,
+        min_n,
+    )
     return pd.DataFrame({"corr": corr, "n": count}, index=pd.Index(levels, name="trade_date"))
 
 
@@ -144,23 +202,54 @@ def daily_ic(panel: pd.DataFrame, *, winsorize: bool = True,
     if work.empty:
         return pd.DataFrame({"ic": [], "rank_ic": [], "n": []},
                             index=pd.DatetimeIndex([], name="trade_date"))
-    raw_factor = work["factor"].to_numpy(dtype="float64")
-    raw_label = work["label"].to_numpy(dtype="float64")
+    raw_factor = np.ascontiguousarray(
+        work["factor"].to_numpy(dtype="float64")
+    )
+    raw_label = np.ascontiguousarray(
+        work["label"].to_numpy(dtype="float64")
+    )
     codes, levels = pd.factorize(work["trade_date"], sort=True)
+    selection = _kernel_selection()
 
     if winsorize:
         days = work["trade_date"].to_numpy()
-        factor_values = winsorize_by_day(days, raw_factor)
-        label_values = winsorize_by_day(days, raw_label)
+        factor_values = np.ascontiguousarray(
+            winsorize_by_day(days, raw_factor)
+        )
+        label_values = np.ascontiguousarray(
+            winsorize_by_day(days, raw_label)
+        )
     else:
         factor_values = raw_factor
         label_values = raw_label
-    ic, count = _daily_pearson(codes, factor_values, label_values, min_n)
+    offsets, (
+        factor_values,
+        label_values,
+        rank_factor_raw,
+        rank_label_raw,
+    ) = _grouped_arrays(
+        codes,
+        factor_values,
+        label_values,
+        raw_factor,
+        raw_label,
+    )
+    ic, count = selection.backend.daily_pearson(
+        factor_values,
+        label_values,
+        offsets,
+        min_n,
+    )
 
     # RankIC 直接对原始值排名：排名本身对极值稳健，先去极值会把极端值压成并列，反而改变秩
-    rank_factor = pd.Series(raw_factor).groupby(codes, sort=True).rank(pct=True).to_numpy()
-    rank_label = pd.Series(raw_label).groupby(codes, sort=True).rank(pct=True).to_numpy()
-    rank_ic, _ = _daily_pearson(codes, rank_factor, rank_label, min_n)
+    rank_factor = selection.backend.daily_rank_pct(rank_factor_raw, offsets)
+    rank_label = selection.backend.daily_rank_pct(rank_label_raw, offsets)
+    rank_ic, _ = selection.backend.daily_pearson(
+        rank_factor,
+        rank_label,
+        offsets,
+        min_n,
+    )
     return pd.DataFrame(
         {"ic": ic, "rank_ic": rank_ic, "n": count},
         index=pd.Index(levels, name="trade_date"),
@@ -208,6 +297,7 @@ def daily_rank_ic_multi(panel: pd.DataFrame, columns, *,
         return values if keep is None else values[keep]
 
     factor_values = column_values("factor")
+    selection = _kernel_selection()
     index = pd.Index(levels, name="trade_date")
     series: dict[str, pd.DataFrame] = {}
     for column in columns:
@@ -216,12 +306,29 @@ def daily_rank_ic_multi(panel: pd.DataFrame, columns, *,
         corr = np.full(levels.size, np.nan, dtype="float64")
         count = np.zeros(levels.size, dtype="int64")
         if mask.any():
-            day_codes = codes[mask]
-            values, sizes = _daily_pearson(
-                day_codes, rank_pct_by_day(day_codes, factor_values[mask]),
-                rank_pct_by_day(day_codes, label_values[mask]), min_n
+            day_codes = np.ascontiguousarray(codes[mask])
+            offsets, (paired_factor, paired_label) = _grouped_arrays(
+                day_codes,
+                factor_values[mask],
+                label_values[mask],
             )
-            positions = np.unique(day_codes)
+            rank_factor = selection.backend.daily_rank_pct(
+                paired_factor,
+                offsets,
+            )
+            rank_label = selection.backend.daily_rank_pct(
+                paired_label,
+                offsets,
+            )
+            values, sizes = selection.backend.daily_pearson(
+                rank_factor,
+                rank_label,
+                offsets,
+                min_n,
+            )
+            positions = np.flatnonzero(
+                np.bincount(day_codes, minlength=levels.size)
+            )
             corr[positions] = values[positions]
             count[positions] = sizes[positions]
         series[column] = pd.DataFrame({"rank_ic": corr, "n": count}, index=index)

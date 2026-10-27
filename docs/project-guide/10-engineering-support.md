@@ -111,8 +111,9 @@ python3.12 -m venv .venv
 `.venv/bin/python -m scripts.build_db.build`，而文件实际位于 `core/data/scripts/`。
 
 `kernels` 是批量数值核的稳定导入入口，当前包含 Python 回退、Numba 研究原型和 C++
-Spearman 后端；它不替代 `calculate.native` 的并发锁。评估相关性默认使用 `auto`，
-扩展可用时选择 native，不可导入时回退 Python。构建方式和替换状态见
+Spearman、逐日排名、逐日 Pearson 后端；它不替代 `calculate.native` 的并发锁。
+相关性、IC/RankIC、多周期衰减和增量 IC 默认使用 `auto`，扩展可用时选择 native，
+不可导入时回退 Python。构建方式和替换状态见
 [C++ 批量计算扩展](../native/README.md) 和
 [批量计算核](../core/kernels/README.md) 中的台账。
 

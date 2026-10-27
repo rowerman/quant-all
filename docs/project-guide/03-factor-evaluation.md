@@ -302,6 +302,10 @@ payload 可以变化细节字段，但 `key`、所属 stage 和外部入口不�
 缓存不写磁盘，也不跨请求复用。直接调用底层 `daily_ic()`、`run_exposure()` 等函数不会
 自动获得这些缓存。
 
+完整面板上的 `daily_ic()`、多周期 RankIC 和增量 IC 默认经 `kernels.auto` 选择逐日排名
+与 Pearson 后端。路由层必须先按交易日稳定整理为连续分组；全历史轻量 IC 仍在 DuckDB
+内聚合，不经过这组数组核。
+
 ## 4. 执行路径
 
 ### 4.1 完整 Python 评估

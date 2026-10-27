@@ -20,7 +20,7 @@ from kernels.backend import (
     validate_offsets,
     validate_target_index,
 )
-from kernels.errors import KernelBackendError
+from kernels.errors import KernelArrayError, KernelBackendError
 from kernels.fallback import PythonKernelBackend
 
 logger = get_logger("kernels.native", LOGS_DIR / "core")
@@ -52,14 +52,26 @@ class CppKernelBackend:
         return function(*args, **kwargs)
 
     def daily_rank_pct(self, values: FloatArray, group_offsets: IntArray) -> FloatArray:
-        """逐日排名暂未使用 C++，显式委托 Python 回退。"""
+        """调用 C++ 逐日排名核；参数与统一协议一致。"""
 
-        return self._fallback_unsupported(
-            "daily_rank_pct",
-            self._fallback.daily_rank_pct,
-            values,
-            group_offsets,
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        threads = native_threads()
+        started = time.perf_counter()
+        try:
+            result = self._native.daily_rank_pct(array, offsets)
+        except Exception as exc:
+            raise KernelBackendError(f"C++ 逐日排名计算失败：{exc}") from exc
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "内核执行 kernel=daily_rank_pct requested=native backend=native "
+            "rows=%d groups=%d threads=%d elapsed_ms=%.3f",
+            array.size,
+            offsets.size - 1,
+            threads,
+            elapsed_ms,
         )
+        return np.asarray(result, dtype=np.float64)
 
     def daily_winsorize_mad(
         self,
@@ -84,15 +96,38 @@ class CppKernelBackend:
         group_offsets: IntArray,
         min_n: int = 5,
     ) -> tuple[FloatArray, IntArray]:
-        """Pearson 暂未使用 C++，显式委托 Python 回退。"""
+        """调用 C++ 逐日 Pearson 核；参数为两列、边界和最小样本。"""
 
-        return self._fallback_unsupported(
-            "daily_pearson",
-            self._fallback.daily_pearson,
-            left,
-            right,
-            group_offsets,
-            min_n,
+        left_values = validate_float_array(left, "left", ndim=1)
+        right_values = validate_float_array(right, "right", ndim=1)
+        if left_values.shape != right_values.shape:
+            raise KernelArrayError("left 与 right 形状必须一致")
+        offsets = validate_offsets(group_offsets, left_values.size)
+        minimum = validate_minimum(min_n, name="min_n", minimum=2)
+        threads = native_threads()
+        started = time.perf_counter()
+        try:
+            correlation, count = self._native.daily_pearson(
+                left_values,
+                right_values,
+                offsets,
+                minimum,
+            )
+        except Exception as exc:
+            raise KernelBackendError(f"C++ Pearson 计算失败：{exc}") from exc
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "内核执行 kernel=daily_pearson requested=native backend=native "
+            "rows=%d groups=%d min_n=%d threads=%d elapsed_ms=%.3f",
+            left_values.size,
+            offsets.size - 1,
+            minimum,
+            threads,
+            elapsed_ms,
+        )
+        return (
+            np.asarray(correlation, dtype=np.float64),
+            np.asarray(count, dtype=np.int64),
         )
 
     def pairwise_spearman(

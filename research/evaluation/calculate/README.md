@@ -9,8 +9,10 @@
 在项目根目录 `/home/hanwen/quant` 使用 `.venv/bin/python`，或在 notebook 的项目环境里
 `import calculate`。不要在 research/evaluation/calculate/ 内直接执行 `python evaluate.py`，那会改变包导入路径。
 使用 Python 3.12；依赖 numpy、pandas、scipy、duckdb（沿用项目 .venv）。
-后端、前端与因子相关性阶段已接入；相关性 Spearman 默认经 `kernels` 的 `auto` 后端选择，
-后端原生计算资源保护见 [原生计算资源保护](../../../docs/research/evaluation/native.md)。
+因子相关性、IC/RankIC、多周期衰减和增量 IC 默认经 `kernels` 的 `auto` 后端选择；
+扩展可用时分别使用 C++ Spearman、逐日排名和逐日 Pearson，不可导入时回退 Python。
+后端原生计算资源保护见
+[原生计算资源保护](../../../docs/research/evaluation/native.md)。
 
 ## 快速调用
 
@@ -168,7 +170,7 @@ apps/monitor/frontend/   前端：纯 HTML/JS + ECharts
 | `correlation.py` | 按月取数、成对Spearman、Top-N与矩阵 | metrics/correlation | DuckDB、factors、panel上下文、kernels | 完整矩阵与候选目标行经统一后端路由；成对缺失后重排名，不用标签；目录跟随context.factor_dir |
 | `metrics/correlation.py` | 相关性指标声明 | 注册表/evaluate | correlation、metrics/base | Top-N只影响明细数量，不改变全矩阵 |
 | `history.py` | 全历史 IC SQL 聚合与轻量读取 | 调用方 | panel/universe/DuckDB | 不构建完整面板；逐日平均并列排名，工作内存 1GB，临时文件自动清理 |
-| `daily.py` | 逐日截面相关（IC / RankIC、通用 `daily_corr`、多档 `daily_rank_ic_multi` 与截面排名 `rank_pct_by_day`） | `metrics/ic.py`、`metrics/decay.py`，相关性模块独立读取 | `normalize` | RankIC 一律对**原始值**排名；去极值只作用于 Pearson IC；池内过滤默认开（`pool_only=True`）；`rank_pct_by_day` 必须与 pandas `groupby().rank(pct=True)` 同语义（并列取平均名次、按交易日内的位置算名次） |
+| `daily.py` | 逐日截面相关（IC / RankIC、通用 `daily_corr`、多档 `daily_rank_ic_multi` 与截面排名 `rank_pct_by_day`） | `metrics/ic.py`、`metrics/decay.py`、`metrics/exposure.py` | `normalize`、`kernels` | RankIC 一律对**原始值**排名；去极值只作用于 Pearson IC；池内过滤默认开（`pool_only=True`）；调用批量核前必须按交易日稳定分组；多标签逐档独立取配对；`rank_pct_by_day` 必须与 pandas `groupby().rank(pct=True)` 同语义 |
 | `normalize.py` | MAD 去极值、分位、zscore | `daily`、后续风格因子 | — | 都按交易日分组调用，NaN 原样保留 |
 | `stages.py` | `STAGE_ORDER`（stage 顺序契约） | `evaluate`、指标注册表 | — | 单独成模块是为了让注册表能按它排序又不与评估入口循环依赖 |
 | `stats.py` | 序列四件套、净值累乘、最大回撤、年化夏普 | IC 家族与 binplot 家族 | — | 加统计口径改这里，别在各指标里各写一遍 |
@@ -1557,5 +1559,13 @@ P1-03 让 `compute_correlation` 每次请求只选择一次 `auto`/`python`/`nat
 135.788 秒；候选目标行为 Python 137.599 秒、native 118.680 秒、auto 120.995 秒。
 相关系数在 `1e-10` 内一致，有效计数和 `NaN` 位置完全一致。该轮实际登记 1 个 C++ 替换
 模块，证据位于 `AiRecord/benchmarks/V114/p1-03-20261027/`。
+
+P1-04 把逐日排名和 Pearson 接入 `daily_ic`、`daily_rank_ic_multi` 与 `daily_corr`。
+`daily.py` 每次调用只选择一次后端，先按交易日稳定整理为连续分组，再复用同一 offsets。
+多标签衰减逐档独立取有限配对和排名，不跨标签复用掩码。固定 3,724,919 行、722 组面板
+上，排名由 Python 1.114445 秒降至 C++ 0.238150 秒（4.680x），Pearson 由 0.210444 秒
+降至 0.011909 秒（17.670x）；`overview`、`decay`、`incremental_ic` 分别加速
+2.082x、2.820x、1.333x。三个后端 stage payload 在 `1e-10` 内一致，证据位于
+`AiRecord/benchmarks/V115/p1-04-20261027/`。本轮实际 C++ 替换模块数由 1 增至 3。
 
 完整分析性能请看 `docs/apps/monitor/performance.md`，旧12指标耗时不包含本阶段。

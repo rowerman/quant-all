@@ -3,8 +3,8 @@
 - 来源报告：[OPERATOR_CPP_ANALYSIS_REPORT.md](TODO_docs/OPERATOR_CPP_ANALYSIS_REPORT.md)
 - 创建日期：2026-10-27
 - 代码基线：`main` 分支 V112 工作区（P1-01 V111 提交 `4d3943a` 之后）
-- 当前状态：P0-01～P0-06、P1-01～P1-03 已完成；Spearman C++ 已接入正式完整矩阵和
-  候选目标行，默认后端为 `auto`，实际 C++ 替换模块数为 1；P1-04 待开始。
+- 当前状态：P0-01～P0-06、P1-01～P1-04 已完成；Spearman、逐日排名和逐日 Pearson
+  已接入评估路径，默认后端为 `auto`，实际 C++ 替换模块数为 3；P1-05 待开始。
 
 ## 1. 使用规则
 
@@ -664,7 +664,7 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 ### P1-04 接入逐日排名和 Pearson 核
 
-- 状态：待开始（P1-03 已完成）
+- 状态：已完成（V115，2026-10-27）
 - 依赖：P1-03
 - 建议 session 数：1
 
@@ -683,18 +683,18 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 详细工作：
 
-- [ ] 将 `rank_pct_by_day` 和 `_daily_pearson` 路由到统一后端。
-- [ ] 保持最小截面 5、并列平均名次和有效计数语义。
-- [ ] 避免在 IC、decay、incremental IC 中重复转换同一数组。
-- [ ] 对多标签样本各自取有效配对，不跨标签复用错误掩码。
-- [ ] 保持日期索引、序列长度和 stage payload 不变。
+- [x] 将 `rank_pct_by_day` 和 `_daily_pearson` 路由到统一后端。
+- [x] 保持最小截面 5、并列平均名次和有效计数语义。
+- [x] 避免在 IC、decay、incremental IC 中重复转换同一数组。
+- [x] 对多标签样本各自取有效配对，不跨标签复用错误掩码。
+- [x] 保持日期索引、序列长度和 stage payload 不变。
 
 测试：
 
-- [ ] 与 pandas rank、SciPy/Pearson 金标准一致。
-- [ ] IC、RankIC、多周期衰减、增量 IC payload 一致。
-- [ ] 因子或标签常数、缺失、尾部样本不足时行为一致。
-- [ ] 截断重算无前视。
+- [x] 与 pandas rank、SciPy/Pearson 金标准一致。
+- [x] IC、RankIC、多周期衰减、增量 IC payload 一致。
+- [x] 因子或标签常数、缺失、尾部样本不足时行为一致。
+- [x] 截断重算无前视。
 
 验收：
 
@@ -706,9 +706,26 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 - 若评估总收益低于门槛，保留 Python 路径，不继续将相同核扩散到更多指标。
 
+完成记录：
+
+- 新增 `quant_native.daily_rank_pct` 和 `quant_native.daily_pearson`，按组并行、释放
+  GIL，并沿用 `QUANT_NATIVE_THREADS` 单线程默认预算。
+- `calculate.daily` 在每次 IC、RankIC、多标签衰减或通用日度相关调用中只选择一次后端，
+  先按交易日稳定分组，再复用同一 offsets 调用批量核；多标签仍逐档独立取有限配对。
+- 固定 3,724,919 行、722 组真实面板：逐日排名 Python 1.114445 秒降至 C++ 0.238150 秒
+  （4.680x），Pearson 0.210444 秒降至 0.011909 秒（17.670x）。
+- 真实 stage：`overview` 由 4.661 秒降至 2.239 秒（2.082x），`decay` 由 15.145 秒降至
+  5.371 秒（2.820x），`incremental_ic` 由 21.727 秒降至 16.298 秒（1.333x）。
+- Python/native/auto 三个 stage payload 在 `1e-10` 内一致；native/auto 峰值 RSS 比例
+  最高 1.037x，未超过 1.2x。证据：`AiRecord/benchmarks/V115/p1-04-20261027/`。
+- 实际 C++ 替换模块数由 1 更新为 3，新增登记“评估逐日排名”和“评估逐日 Pearson”。
+  Pearson 的独立业务占比很小，其价值以核级 17.670x 和 `overview` 的组合收益为准。
+- 回退：删除两个原生核的业务路由与台账增量，保留 Spearman 相关性接入、Python 金标准
+  和本任务证据。
+
 ### P1-05 接入逐日 MAD 去极值和 z-score 核
 
-- 状态：等待依赖 P1-04
+- 状态：待开始（P1-04 已完成）
 - 依赖：P1-04
 - 建议 session 数：1
 
