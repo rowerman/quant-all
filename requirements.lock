@@ -40,6 +40,7 @@ charset-normalizer==3.5.1
 clarabel==0.11.1
 click==8.5.0
 cloudpickle==3.1.2
+cmake==4.4.4
 comm==0.2.3
 contourpy==1.4.0
 cryptography==50.0.1
@@ -138,6 +139,7 @@ nbconvert==7.17.1
 nbformat==5.11.1
 nest-asyncio2==1.7.2
 networkx==3.6.1
+ninja==1.13.2
 notebook==7.6.3
 notebook_shim==0.2.4
 numba==0.61.2
@@ -153,6 +155,7 @@ pandas-ta==0.4.71b0
 pandas==2.3.3
 pandocfilters==1.5.1
 parso==0.8.7
+pathspec==1.1.1
 patsy==1.0.3
 peewee==3.17.3
 pexpect==4.9.0
@@ -174,6 +177,7 @@ py-mini-racer==0.6.0
 pyarrow==25.0.1
 pyasn1==0.6.4
 pyasn1_modules==0.4.2
+pybind11==3.1.0
 pycparser==3.0
 pydantic-settings==2.15.0
 pydantic==2.13.5
@@ -203,6 +207,7 @@ rpds-py==2026.6.3
 ruamel.yaml==0.19.1
 schedule==1.2.2
 scikit-learn==1.9.1
+scikit_build_core==1.1.1
 scipy==1.18.1
 scs==3.3.1
 seaborn==0.13.2

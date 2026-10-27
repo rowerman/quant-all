@@ -194,8 +194,16 @@ def get_backend(requested: str | None = None) -> BackendSelection:
         except ImportError as exc:
             raise KernelBackendError("请求的 Numba 后端不可用") from exc
         selection = BackendSelection(NumbaPrototypeBackend(), name, None)
+    elif name == "native":
+        try:
+            from kernels.native import CppKernelBackend
+        except ImportError as exc:
+            raise KernelBackendError("请求的 native 后端不可用") from exc
+        selection = BackendSelection(CppKernelBackend(), name, None)
     else:
-        raise KernelBackendError(f"未知内核后端 {requested!r}，仅支持 python 或 numba")
+        raise KernelBackendError(
+            f"未知内核后端 {requested!r}，仅支持 python、numba 或 native"
+        )
     logger.info(
         "内核后端选择 requested=%s backend=%s fallback_reason=%s",
         requested,

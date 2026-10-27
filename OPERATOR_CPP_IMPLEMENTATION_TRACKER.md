@@ -3,8 +3,8 @@
 - 来源报告：[OPERATOR_CPP_ANALYSIS_REPORT.md](TODO_docs/OPERATOR_CPP_ANALYSIS_REPORT.md)
 - 创建日期：2026-10-27
 - 代码基线：`main` 分支 V112 工作区（P1-01 V111 提交 `4d3943a` 之后）
-- 当前状态：P0-01～P0-06、P1-01 已完成；P1-01 按逐日排名门禁通过，
-  Spearman Numba 失败仅保留为诊断，P1-02 待开始。
+- 当前状态：P0-01～P0-06、P1-01、P1-02 已完成；C++ Spearman POC 通过微基准
+  正确性、`1.5x` 加速和 `1.2x` 内存门槛，尚未接入业务，P1-03 待开始。
 
 ## 1. 使用规则
 
@@ -522,7 +522,7 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 ### P1-02 建立 C++ 构建骨架和 Spearman 单核 POC
 
-- 状态：待开始（V112，2026-10-27：逐日排名门禁已通过）
+- 状态：已完成（V113，2026-10-27）
 - 依赖：P1-01
 - 建议 session 数：1
 
@@ -542,22 +542,22 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 详细工作：
 
-- [ ] 采用 C++20、`pybind11`、`scikit-build-core` 和 CMake。
-- [ ] 产物模块名固定为 `quant_native`。
-- [ ] 只暴露 `pairwise_spearman(values, group_offsets, min_n)`。
-- [ ] 输入校验和缺失语义由 Python 适配层与 C++ 层共同防守。
-- [ ] 计算期间释放 GIL，线程数受 `QUANT_NATIVE_THREADS` 控制，默认 1。
-- [ ] C++ 异常转换为 Python 异常；禁止 `abort`、静默失败和全局可变状态。
-- [ ] 生成可安装 wheel，并记录 Python 3.12、x86_64 构建命令。
-- [ ] 未安装扩展时 `import` 明确失败，业务仍可使用 Python 回退。
+- [x] 采用 C++20、`pybind11`、`scikit-build-core` 和 CMake。
+- [x] 产物模块名固定为 `quant_native`。
+- [x] 只暴露 `pairwise_spearman(values, group_offsets, min_n)`。
+- [x] 输入校验和缺失语义由 Python 适配层与 C++ 层共同防守。
+- [x] 计算期间释放 GIL，线程数受 `QUANT_NATIVE_THREADS` 控制，默认 1。
+- [x] C++ 异常转换为 Python 异常；禁止 `abort`、静默失败和全局可变状态。
+- [x] 生成可安装 wheel，并记录 Python 3.12、x86_64 构建命令。
+- [x] 未安装扩展时 `import` 明确失败，业务仍可使用 Python 回退。
 
 测试：
 
-- [ ] C++ 与 Python 金标准逐值一致。
-- [ ] 并列、缺失、空组、常数序列和最少样本一致。
-- [ ] 错误形状、dtype、offset 和 min_n 明确报错。
-- [ ] 重复并发调用没有崩溃、泄漏或结果污染。
-- [ ] 子进程压力测试通过。
+- [x] C++ 与 Python 金标准逐值一致。
+- [x] 并列、缺失、空组、常数序列和最少样本一致。
+- [x] 错误形状、dtype、offset 和 min_n 明确报错。
+- [x] 重复并发调用没有崩溃、泄漏或结果污染。
+- [x] 子进程压力测试通过。
 
 验收：
 
@@ -579,9 +579,28 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 - V112 更新：用户确认把 P1-01 放行口径改为逐日排名核 `1.5x`，Spearman 直接交给本
   任务 C++ POC 验证。以上 V111 Spearman 停止记录作为历史保留；V112 未创建 C++ 工程。
 
+完成记录：
+
+- 新增 `quant_native` C++20 扩展，使用 pybind11、CMake 4.4.4、Ninja 1.13.2 和
+  scikit-build-core 1.1.1 的 setuptools 兼容后端；现有包目录映射和动态依赖保持不变。
+- 新增长期可复用的 C++ Spearman 算法：每个因子只排序一次，按相同缺失掩码复用实际样本
+  内的并列平均名次，再批量计算组对点积。最初逐因子对重复排序的 POC 仅 `0.161x`，
+  该无效路径未保留。
+- 固定 2026-08-03、5,219×47 真实截面、单组单线程：Python 热运行中位 0.172836 秒，
+  C++ 0.073312 秒，加速 2.358x；峰值 RSS 282.820MB 对 283.129MB，比例为 1.001x。
+- C++ 与 Python 相关系数在 `1e-10` 内一致，有效计数和 `NaN` 位置完全一致；覆盖空组、
+  并列、缺失、正负无穷、常数、自定义 `min_n`、GIL、并发和子进程压力。
+- 新增 `kernels.CppKernelBackend`，只允许显式请求 `native`；默认仍为 Python，不提供
+  `auto`。未实现核显式回退 Python，扩展缺失时返回 `KERNEL-004`。
+- 证据：`AiRecord/benchmarks/V113/p1-02-20261027/`；构建环境为 Python 3.12.3、
+  x86_64 Linux、GCC 13.3.0。
+- 本轮没有修改评估默认路径，实际 C++ 替换模块数为 0，不计入 C++ 模块替换收益。
+- 回退：删除 `native/`、`core/kernels/native.py`、C++ 测试和基准工具，恢复构建依赖、
+  Tracker 与文档；不涉及生产数据或业务结果。
+
 ### P1-03 将 Spearman 批量核接入评估相关性
 
-- 状态：等待依赖 P1-02
+- 状态：待开始（P1-02 已通过单核 POC）
 - 依赖：P1-02
 - 建议 session 数：1
 

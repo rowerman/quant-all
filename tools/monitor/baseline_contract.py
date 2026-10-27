@@ -163,11 +163,19 @@ _SOURCE_PATHS = (
     Path("tools/monitor/baseline_contract.py"),
     Path("tools/monitor/baseline_cases.py"),
     Path("tools/monitor/kernel_baseline.py"),
+    Path("tools/monitor/native_kernel_baseline.py"),
     Path("core/kernels/__init__.py"),
     Path("core/kernels/backend.py"),
     Path("core/kernels/errors.py"),
     Path("core/kernels/fallback.py"),
+    Path("core/kernels/native.py"),
     Path("core/kernels/prototype.py"),
+    Path("native/CMakeLists.txt"),
+    Path("native/include/quant_native/spearman.hpp"),
+    Path("native/src/bindings.cpp"),
+    Path("native/src/spearman.cpp"),
+    Path("tests/test_cpp_native.py"),
+    Path("tests/test_native_kernel_baseline.py"),
     Path("research/evaluation/calculate/correlation.py"),
     Path("research/evaluation/calculate/daily.py"),
     Path("research/evaluation/calculate/normalize.py"),
@@ -420,6 +428,7 @@ def environment_snapshot() -> dict[str, Any]:
     """返回可复现 Python、依赖、机器和源码快照。"""
 
     import duckdb
+    from importlib.metadata import version
     import scipy
 
     sources = [
@@ -447,6 +456,10 @@ def environment_snapshot() -> dict[str, Any]:
             "numpy": np.__version__,
             "pandas": pd.__version__,
             "scipy": scipy.__version__,
+            "cmake": version("cmake"),
+            "ninja": version("ninja"),
+            "pybind11": version("pybind11"),
+            "scikit-build-core": version("scikit-build-core"),
         },
         "source_files": sources,
         "source_tree_sha256": _records_digest(sources),

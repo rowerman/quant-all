@@ -15,6 +15,7 @@ from kernels.errors import (
     KernelParameterError,
 )
 from kernels.fallback import PythonKernelBackend
+from kernels.native import CppKernelBackend
 
 __all__ = [
     "BackendSelection",
@@ -25,6 +26,7 @@ __all__ = [
     "KernelOffsetError",
     "KernelParameterError",
     "NativeKernelBackend",
+    "CppKernelBackend",
     "PythonKernelBackend",
     "get_backend",
     "native_threads",

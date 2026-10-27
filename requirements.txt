@@ -18,3 +18,9 @@ uvicorn==0.53.0
 plotly==5.24.1
 httpx==0.28.1
 pytest==9.1.1
+
+# C++20 源码构建、wheel 和性能验证工具。
+scikit_build_core==1.1.1
+pybind11==3.1.0
+cmake==4.4.4
+ninja==1.13.2

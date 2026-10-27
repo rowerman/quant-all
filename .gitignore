@@ -4,6 +4,14 @@
 **/__pycache__/
 *.py[cod]
 *.egg-info/
+*.so
+*.pyd
+.skbuild/
+_skbuild/
+dist/
+build/
+/CMakeCache.txt
+/CMakeFiles/
 .ipynb_checkpoints/
 .coverage
 htmlcov/

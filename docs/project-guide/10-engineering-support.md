@@ -89,7 +89,8 @@ python3.12 -m venv .venv
 .venv/bin/python -m pytest --collect-only -q
 ```
 
-[pyproject.toml](../../pyproject.toml) 使用 `setuptools` 把物理目录映射成原有包名：
+[pyproject.toml](../../pyproject.toml) 使用 scikit-build-core 的 setuptools 兼容后端，
+保留 setuptools 的物理目录映射，并由 CMake 构建顶层扩展 `quant_native`：
 
 | 物理目录 | 导入包名 |
 |---|---|
@@ -104,13 +105,20 @@ python3.12 -m venv .venv
 | `apps/monitor/backend` | `backend` |
 | `research/mining` | `mining` |
 | `research/mining_worker` | `mining_worker` |
+| `native` | C++ 扩展 `quant_native` |
 
 这层映射解释了为什么文档中的命令仍使用
 `.venv/bin/python -m scripts.build_db.build`，而文件实际位于 `core/data/scripts/`。
 
 `kernels` 是批量数值核的稳定导入入口，当前包含 Python 回退和 Numba 研究原型；它不替代
-`calculate.native` 的并发锁，也没有接入评估默认路径。C++ 替换状态以
-[批量计算核](../core/kernels/README.md) 中的台账为准。
+`calculate.native` 的并发锁，也没有接入评估默认路径。P1-02 已构建 C++ Spearman
+扩展，但只允许显式请求 `native`，默认仍为 Python。构建方式和替换状态见
+[C++ 批量计算扩展](../native/README.md) 和
+[批量计算核](../core/kernels/README.md) 中的台账。
+
+源码构建需要 CMake、Ninja、pybind11 和 scikit-build-core；版本固定在
+`requirements.txt` 与 `requirements.lock`。编辑安装会编译
+`native/src/*.cpp` 并把扩展放在源码根目录，普通 wheel 则把扩展打包到顶层。
 
 ### 3.2 两套依赖锁
 

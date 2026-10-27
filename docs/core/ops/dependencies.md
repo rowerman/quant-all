@@ -2,7 +2,7 @@
 
 ## 文件
 
-- `requirements.txt`：项目直接运行与测试依赖，全部使用精确版本。
+- `requirements.txt`：项目直接运行、测试和 C++ 源码构建依赖，全部使用精确版本。
 - `requirements.lock`：当前虚拟环境的完整 `pip freeze`，包含所有传递依赖。
 
 两份文件都必须同步更新。只升级一个包时，先改直接依赖版本，再在干净环境中重建
@@ -30,6 +30,8 @@ cd /home/hanwen/quant
 | NumPy / Pandas | 2.2.6 / 2.3.3 |
 | DuckDB | 1.5.5 |
 | VectorBT / Numba | 0.28.5 / 0.61.2 |
+| CMake / Ninja | 4.4.4 / 1.13.2 |
+| pybind11 / scikit-build-core | 3.1.0 / 1.1.1 |
 | scikit-learn / joblib | 1.9.1 / 1.6.0 |
 | LightGBM | 4.7.0 |
 | FastAPI / Starlette | 0.141.1 / 1.6.0 |

@@ -65,7 +65,7 @@ flowchart LR
 | 隔离 Worker | Python 3.11、Docker | 固定 RD-Agent 1.0.0 的独立运行环境 |
 | 数据处理 | pandas 2.3、NumPy 2.2、PyArrow 25 | 面板处理、Parquet、计算与序列化 |
 | 数据库 | DuckDB 1.5 | 行情主库、因子目录库、候选库和回测结果库 |
-| 数值计算 | SciPy、Numba | 统计计算与 JIT 辅助 |
+| 数值计算 | SciPy、Numba、C++20/pybind11 | 统计计算、JIT 辅助和显式批量核 |
 | 机器学习 | scikit-learn 1.9、LightGBM 4.7、joblib | 线性模型、GBDT、模型持久化 |
 | 外部行情 | Tushare 1.4.29、HTTP 中转 | 行情、财务、指数和行业数据 |
 | Agent | RD-Agent 1.0.0、DeepSeek 兼容 LiteLLM | 生成受控候选表达式 |

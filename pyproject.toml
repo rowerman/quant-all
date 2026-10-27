@@ -1,6 +1,11 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = [
+  "scikit-build-core[setuptools]==1.1.1",
+  "pybind11==3.1.0",
+  "cmake==4.4.4",
+  "ninja==1.13.2",
+]
+build-backend = "scikit_build_core.setuptools.build_meta"
 
 [project]
 name = "quant-monorepo"
@@ -36,6 +41,11 @@ package-dir = {common = "core/common", quant = "core/data/quant", scripts = "cor
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+
+[tool.scikit-build]
+minimum-version = "1.1"
+cmake.source-dir = "native"
+editable.mode = "inplace"
 
 [tool.pytest.ini_options]
 testpaths = [
