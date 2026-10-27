@@ -989,6 +989,7 @@ P2 只复用 P1 已验收的稳定核，不新增未经评估的算法。
 - 定向测试 154 passed；普通 wheel、`pip check`、`compileall` 和
   `git diff --check` 通过。wheel SHA-256：
   `81d6868ecdf9ce0e37b974a3869ce0ac0db3782cdc4788934dee400e9452e673`。
+- commit：`522cfd6`。
 
 ### P2-02 将共享核用于挖掘门禁、轻量 IC 和相关性
 
