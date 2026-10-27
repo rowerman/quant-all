@@ -54,10 +54,35 @@ class HoldoutPhaseMixin:
             or usage["evidence_hash"] != evidence_hash
         ):
             raise HoldoutError("模块测试段已被不同候选批次领取")
+        batch_candidates = []
+        for candidate_id in usage["candidate_ids"]:
+            item = self.store.get_candidate(run_id, candidate_id)
+            if item["status"] not in {"review_ready", "holdout_failed"}:
+                batch_candidates.append(item)
+        batch_failures = self._materialize_batches(
+            run,
+            batch_candidates,
+            context,
+            start=context.holdout_start,
+            end=context.holdout_end,
+            holdout=True,
+        )
         for candidate_id in usage["candidate_ids"]:
             self._check_cancelled(run_id, cancellation)
             item = self.store.get_candidate(run_id, candidate_id)
             if item["status"] in {"review_ready", "holdout_failed"}:
+                continue
+            failure = batch_failures.get(candidate_id)
+            if failure is not None:
+                self._transition_if_needed(
+                    run_id,
+                    candidate_id,
+                    "holdout_failed",
+                    stage="holdout",
+                    failure_stage="holdout",
+                    error_code=failure.error_code,
+                    error_message=failure.message,
+                )
                 continue
             report = self.store.find_evaluation(run_id, candidate_id, "holdout")
             if report is None:

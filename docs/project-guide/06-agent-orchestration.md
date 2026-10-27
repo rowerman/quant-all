@@ -715,6 +715,7 @@ Token 首次由 `ensure_worker_token()` 生成，值是 `secrets.token_urlsafe(4
 | `MINING-118` | Worker 协议或模型响应非法 | Worker/客户端 |
 | `MINING-119` | Token、Key、模型、版本或健康状态不可用 | Worker/客户端 |
 | `MINING-120` | 数据、目录或正式因子快照失效 | 编排器/审批 |
+| `MINING-124` | 候选批量边界或共享层物化失败 | 候选物化 |
 
 主服务 HTTP 层根据 `MiningError.status` 映射 400、404、409、422、429、500、502、
 503 或 504。Worker 客户端还会把作业错误码映射回

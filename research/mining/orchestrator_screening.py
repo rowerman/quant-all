@@ -29,8 +29,41 @@ class ScreeningPhaseMixin:
         run_id = run["run_id"]
         context = context_from_run(run)
         self._assert_snapshot(context)
+        items = self.store.list_candidates(run_id)
+        proposed = [item for item in items if item["status"] == "proposed"]
+        for item in proposed:
+            self.store.transition_candidate(
+                run_id,
+                item["candidate_id"],
+                "validating",
+                event_key=f"candidate_{item['candidate_id']}_validating",
+                stage="technical",
+            )
+        batch_failures = self._materialize_batches(
+            run,
+            proposed,
+            context,
+            start=context.research_start,
+            end=context.research_end,
+        )
         for item in self.store.list_candidates(run_id):
             self._check_cancelled(run_id, cancellation)
+            failure = batch_failures.get(item["candidate_id"])
+            if failure is not None:
+                self._transition_if_needed(
+                    run_id,
+                    item["candidate_id"],
+                    "technical_failed",
+                    stage="technical",
+                    failure_stage="technical",
+                    error_code=failure.error_code,
+                    error_message=failure.message,
+                )
+                if self._failure_rate_reached(run_id, context):
+                    raise MiningEvaluationError(
+                        "候选失败率达到冻结阈值，停止后续质量检查"
+                    )
+                continue
             status = item["status"]
             if status in _FAILED_CANDIDATE_STATUSES or status in {
                 "review_ready",

@@ -34,6 +34,11 @@ S6 另有两个公开单阶段入口：
 模块测试段的通过标准只检查评估链路完整、无执行错误且至少 20 个有效交易日。
 RankIC 等预测指标原样保存，但不用于通过判定、候选重排或再次生成。
 
+[candidate_batch.py](../../research/mining/candidate_batch.py) 的批量入口
+`materialize_candidate_batch()` 接收同一运行、冻结上下文和时间区间的
+`CandidateBatchItem` 集合，返回成功的 `MaterializedCandidate`、候选级失败和诊断。
+`materialize_candidate()` 仍是兼容的单候选入口。
+
 ## 数据流
 
 ```text
@@ -46,6 +51,11 @@ CandidateDefinition + FrozenContext
   -> [调用方要求] 完整评估全部 stage
 ```
 
+同一发现轮次至少两个候选且表达式 DAG 有共享计算节点时，筛选和测试段先生成一条
+共享 CTE 查询，把各候选根列临时写成一个宽 Parquet，再逐候选拆成年分区。单体查询失败
+会逐候选回退；候选校验、拆分或 manifest 校验失败只影响该候选，共享层及全部回退失败
+返回 `MINING-124`。
+
 候选因子路径固定为：
 
 ```text
@@ -55,6 +65,10 @@ data/factor_mining/runs/<run_id>/<candidate_id>/factor/year=YYYY/part.parquet
 评估报告写入同级 `evaluations/<stage>.json`。写入前先写 `.tmp` 再原子替换；任何失败
 都不留下 staging 或半完成年分区。正式因子目录只能作为只读对照，候选根目录落在
 `data/factors/` 内会直接失败。
+
+批量路径的 manifest 在 staging 内写完后，整个候选目录才原子替换；发布后再次计算
+artifact hash。批量拆分与串行路径要求年度 Parquet 字节和 tree hash 完全一致，重复运行
+直接校验并复用已有产物。
 
 ## 共享评估口径
 

@@ -19,13 +19,17 @@ from calculate.correlation import daily_spearman_matrix
 from calculate.daily import _daily_pearson, daily_ic, rank_pct_by_day
 from common.paths import PROJECT_ROOT
 from mining import (
+    CandidateBatchItem,
     CandidateEvaluationInput,
     FrozenContext,
     MiningConstraints,
     MiningRunRequest,
     evaluate_candidate,
+    load_catalog,
+    materialize_candidate_batch,
     validate_expression,
 )
+from mining.candidate_materialization import materialize_candidate
 from scripts.build_factors import build as factor_build
 from tools.monitor.baseline_contract import (
     CASE_DEFINITIONS,
@@ -451,6 +455,127 @@ def _edge_case(definition: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
     )
 
 
+def _mining_batch_case(
+    definition: dict[str, Any],
+    common: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """对照同轮候选的串行物化与 DAG 批量物化。"""
+
+    catalog = load_catalog()
+    constraints = MiningConstraints(
+        max_rounds=1,
+        max_candidates=4,
+        full_eval_top_k=1,
+        max_llm_calls=1,
+        max_failure_rate=1.0,
+        min_quality_checks_for_failure_stop=1,
+    )
+    context = FrozenContext(
+        data_fingerprint=common["inputs"]["input_tree_sha256"],
+        field_catalog=catalog.frozen_field_mappings(),
+        operator_catalog=catalog.frozen_operator_mappings(),
+        budget=constraints,
+    )
+    candidates = tuple(
+        validate_expression(expression, direction=1).to_candidate(
+            mechanism="批量物化基准",
+            description=f"候选 {index}",
+            steps=("执行受控表达式",),
+            discovery_round=1,
+            discovery_index=index,
+        )
+        for index, expression in enumerate(definition["expressions"], start=1)
+    )
+    started = time.perf_counter()
+    with TemporaryDirectory(prefix=f"operator-baseline-{definition['mode']}-") as root:
+        root_path = Path(root)
+        if definition["mode"] == "serial":
+            results = [
+                materialize_candidate(
+                    candidate,
+                    context,
+                    root_path / candidate.candidate_id,
+                    start=definition["start"],
+                    end=definition["end"],
+                )
+                for candidate in candidates
+            ]
+            diagnostics = {
+                "candidate_count": len(candidates),
+                "shared_node_count": 0,
+                "materialized_node_count": 0,
+                "analysis_sql_count": len(candidates),
+                "daily_source_reference_count": len(candidates) * 2,
+                "temporary_bytes": 0,
+                "fallback_reason": "serial",
+            }
+        else:
+            result = materialize_candidate_batch(
+                [
+                    CandidateBatchItem(
+                        candidate,
+                        root_path / candidate.candidate_id,
+                    )
+                    for candidate in candidates
+                ],
+                context,
+                start=definition["start"],
+                end=definition["end"],
+                catalog=catalog,
+            )
+            if result.failures:
+                raise RuntimeError(
+                    "批量基准出现候选失败："
+                    + ", ".join(
+                        f"{failure.candidate_id}:{failure.error_code}"
+                        for failure in result.failures
+                    )
+                )
+            results = list(result.materialized)
+            diagnostics = {
+                "candidate_count": result.diagnostics.candidate_count,
+                "shared_node_count": result.diagnostics.shared_node_count,
+                "materialized_node_count": result.diagnostics.materialized_node_count,
+                "analysis_sql_count": result.diagnostics.analysis_sql_count,
+                "daily_source_reference_count": (
+                    result.diagnostics.daily_source_reference_count
+                ),
+                "temporary_bytes": result.diagnostics.temporary_bytes,
+                "fallback_reason": result.diagnostics.fallback_reason,
+            }
+        elapsed_s = time.perf_counter() - started
+        artifacts = []
+        for materialized in sorted(
+            results,
+            key=lambda item: item.factor_view.name,
+        ):
+            factor_root = Path(materialized.factor_view.parquet_glob).parent.parent
+            artifacts.append(
+                {
+                    "name": materialized.factor_view.name,
+                    "artifact_sha256": materialized.artifact_sha256,
+                    "files": [
+                        {
+                            "path": path.relative_to(factor_root).as_posix(),
+                            "bytes": path.stat().st_size,
+                        }
+                        for path in materialized.files
+                    ],
+                }
+            )
+    return (
+        {
+            "definition": definition,
+            "candidates": artifacts,
+            "diagnostics": diagnostics,
+        },
+        {
+            "materialize_elapsed_s": round(elapsed_s, 3),
+            **diagnostics,
+        },
+    )
+
+
 def run_case(
     name: str,
     common: dict[str, Any],
@@ -469,6 +594,8 @@ def run_case(
         return _factor_build_case(CASE_DEFINITIONS[name])
     if name == "mining":
         return _mining_case(CASE_DEFINITIONS[name], common)
+    if name in {"mining_batch_serial", "mining_batch_dag"}:
+        return _mining_batch_case(CASE_DEFINITIONS[name], common)
     if name == "edge":
         return _edge_case(CASE_DEFINITIONS[name])
     raise ValueError(f"未知基准案例：{name}")

@@ -103,14 +103,146 @@ def _candidate_files(root: Path) -> tuple[Path, ...]:
     return tuple(sorted(root.glob("year=*/part.parquet")))
 
 
+def _candidate_base(candidate_root: Path | str) -> Path:
+    """校验候选根目录并返回规范化路径。
+
+    参数:
+        candidate_root: 调用方给出的候选根目录。
+    """
+
+    base = Path(candidate_root).resolve()
+    formal = FACTOR_DIR.resolve()
+    if base == formal or base.is_relative_to(formal):
+        raise MiningEvaluationError("候选根目录不能位于正式因子目录内")
+    return base
+
+
+def _computation(
+    candidate: CandidateDefinition,
+    validated: ValidatedExpression,
+) -> CandidateComputation:
+    """由已验证表达式构造候选计算定义。
+
+    参数:
+        candidate: 冻结候选定义。
+        validated: 重新校验后的表达式。
+    """
+
+    return CandidateComputation(
+        name=candidate.name,
+        layers=validated.layers,
+        extra_sources=validated.extra_sources,
+    )
+
+
+def _factor_view(
+    candidate: CandidateDefinition,
+    validated: ValidatedExpression,
+    factor_root: Path,
+) -> FactorView:
+    """构造候选评估使用的只读因子视图。
+
+    参数:
+        candidate: 冻结候选定义。
+        validated: 重新校验后的表达式。
+        factor_root: 已发布因子目录。
+    """
+
+    return FactorView(
+        name=candidate.name,
+        family="mining_candidate",
+        formula=candidate.canonical_expression,
+        description=candidate.description,
+        steps=candidate.steps,
+        direction=candidate.direction,
+        lookback=candidate.lookback,
+        fields=candidate.dependencies,
+        extra_sources=validated.extra_sources,
+        parquet_glob=str(factor_root / "year=*" / "part.parquet"),
+        formal=False,
+    )
+
+
+def _publish_staging(
+    staging: Path,
+    factor_root: Path,
+    *,
+    identity: dict[str, object],
+    candidate: CandidateDefinition,
+    computation: CandidateComputation,
+    validated: ValidatedExpression,
+) -> MaterializedCandidate:
+    """写入 manifest，原子发布候选目录并重新校验产物。
+
+    参数:
+        staging: 包含完整年分区的临时目录。
+        factor_root: 最终候选因子目录。
+        identity: 参与复用判断的稳定身份。
+        candidate/computation/validated: 候选定义与校验结果。
+    """
+
+    files = _candidate_files(staging)
+    if not files:
+        raise MiningEvaluationError("候选物化没有生成任何年分区")
+    artifact_sha256 = _artifact_hash(files, staging)
+    _write_manifest(
+        staging / "materialization.json",
+        {**identity, "artifact_sha256": artifact_sha256},
+    )
+    if factor_root.exists():
+        raise MiningEvaluationError(f"候选因子目录已被占用但不可复用：{factor_root}")
+    os.replace(staging, factor_root)
+    published_files = _candidate_files(factor_root)
+    published_hash = _artifact_hash(published_files, factor_root)
+    manifest = _read_manifest(factor_root / "materialization.json")
+    if (
+        published_hash != artifact_sha256
+        or manifest.get("artifact_sha256") != published_hash
+    ):
+        shutil.rmtree(factor_root, ignore_errors=True)
+        raise MiningEvaluationError("候选因子发布后产物哈希或 manifest 不匹配")
+    return MaterializedCandidate(
+        factor_view=_factor_view(candidate, validated, factor_root),
+        computation=computation,
+        artifact_sha256=published_hash,
+        files=published_files,
+    )
+
+
+def _log_materialized(
+    candidate: CandidateDefinition,
+    materialized: MaterializedCandidate,
+    *,
+    operation: str,
+) -> None:
+    """记录单个候选的物化结果。"""
+
+    _LOGGER.info(
+        format_event(
+            {
+                "operation": operation,
+                "candidate_id": candidate.candidate_id,
+                "artifact_sha256": materialized.artifact_sha256,
+                "files": len(materialized.files),
+            }
+        )
+    )
+
+
 def _materialize_new(
     root: Path,
     *,
     computation: CandidateComputation,
     start: str,
     end: str,
-) -> tuple[tuple[Path, ...], Path]:
-    """在独立 staging 目录生成完整候选因子后一次替换。"""
+) -> Path:
+    """在独立 staging 目录生成完整候选因子。
+
+    参数:
+        root: 最终候选因子目录。
+        computation: 单候选计算定义。
+        start/end: 物化日期区间。
+    """
 
     staging = root.parent / f".{root.name}.staging-{uuid.uuid4().hex}"
     combined = staging / "_candidate.parquet"
@@ -149,10 +281,7 @@ def _materialize_new(
     if not files:
         shutil.rmtree(staging, ignore_errors=True)
         raise MiningEvaluationError("候选物化没有生成任何年分区")
-    if root.exists():
-        raise MiningEvaluationError(f"候选因子目录已被占用但不可复用：{root}")
-    os.replace(staging, root)
-    return _candidate_files(root), root
+    return staging
 
 
 def materialize_candidate(
@@ -165,15 +294,9 @@ def materialize_candidate(
 ) -> MaterializedCandidate:
     """校验并物化候选，拒绝任何写入正式因子目录的路径。"""
 
-    base = Path(candidate_root).resolve()
-    if base == FACTOR_DIR.resolve() or base.is_relative_to(FACTOR_DIR.resolve()):
-        raise MiningEvaluationError("候选根目录不能位于正式因子目录内")
+    base = _candidate_base(candidate_root)
     validated = validate_candidate_expression(candidate, context)
-    computation = CandidateComputation(
-        name=candidate.name,
-        layers=validated.layers,
-        extra_sources=validated.extra_sources,
-    )
+    computation = _computation(candidate, validated)
     factor_root = base / "factor"
     manifest_path = factor_root / "materialization.json"
     identity = _identity(validated, candidate, context, start, end)
@@ -187,44 +310,31 @@ def materialize_candidate(
         artifact_sha256 = _artifact_hash(files, factor_root)
         if manifest.get("artifact_sha256") != artifact_sha256:
             raise MiningEvaluationError("已有候选因子产物哈希不匹配")
+        factor_view = _factor_view(candidate, validated, factor_root)
+        materialized = MaterializedCandidate(
+            factor_view,
+            computation,
+            artifact_sha256,
+            files,
+        )
     else:
-        files, written_root = _materialize_new(
+        staging = _materialize_new(
             factor_root,
             computation=computation,
             start=start,
             end=end,
         )
-        artifact_sha256 = _artifact_hash(files, written_root)
-        _write_manifest(
-            manifest_path,
-            {**identity, "artifact_sha256": artifact_sha256},
-        )
-    factor_view = FactorView(
-        name=candidate.name,
-        family="mining_candidate",
-        formula=candidate.canonical_expression,
-        description=candidate.description,
-        steps=candidate.steps,
-        direction=candidate.direction,
-        lookback=candidate.lookback,
-        fields=candidate.dependencies,
-        extra_sources=validated.extra_sources,
-        parquet_glob=str(factor_root / "year=*" / "part.parquet"),
-        formal=False,
-    )
-    _LOGGER.info(
-        format_event(
-            {
-                "operation": "materialize_candidate",
-                "candidate_id": candidate.candidate_id,
-                "artifact_sha256": artifact_sha256,
-                "files": len(files),
-            }
-        )
-    )
-    return MaterializedCandidate(
-        factor_view,
-        computation,
-        artifact_sha256,
-        files,
-    )
+        try:
+            materialized = _publish_staging(
+                staging,
+                factor_root,
+                identity=identity,
+                candidate=candidate,
+                computation=computation,
+                validated=validated,
+            )
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+    _log_materialized(candidate, materialized, operation="materialize_candidate")
+    return materialized

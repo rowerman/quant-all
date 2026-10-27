@@ -108,8 +108,10 @@ docker compose --env-file .env -f compose.mining.yaml down
        -> mining_worker      Python 3.11 独立 Worker 的纯协议和本地 HTTP 服务
   -> mining.contracts       请求、冻结上下文、候选、评估、审批和发布对象
   -> mining.catalog         字段、算子、时点与目录 schema 核对
-  -> mining.expression_*    解析、安全校验、规范化、稳定命名、DAG 规划和 SQL 分层
-  -> mining.evaluate_candidate 候选物化、门禁、快速筛选与可选完整评估
+  -> mining.expression_*    解析、安全校验、规范化、DAG 规划、单候选和批量 SQL
+  -> mining.candidate_batch    同轮 DAG 批量拆分、失败隔离和单候选回退
+  -> mining.candidate_materialization 单候选原子物化与 manifest 校验
+  -> mining.evaluate_candidate 门禁、快速筛选与可选完整评估
   -> mining.states          运行、候选和发布状态机
   -> mining.storage         MiningStore 公共存储入口
        -> storage_runs      运行、冻结上下文、中断与恢复
@@ -277,6 +279,7 @@ progress = orchestrator.progress(run["run_id"])
 | `MINING-121` | 发布资格、批次或并发冲突 | 409 |
 | `MINING-122` | 正式因子全量校验失败 | 422 |
 | `MINING-123` | 发布提交、回滚或恢复失败 | 503 |
+| `MINING-124` | 候选批量边界或共享层物化失败 | 422 |
 
 候选评估执行错误使用 `MINING-106`。门禁不通过是正常业务结论，通过
 `TechnicalGate.passed=false` 和逐项 `checks` 表达，不伪装成系统异常。

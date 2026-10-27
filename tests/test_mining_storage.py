@@ -768,16 +768,29 @@ def test_cleanup_only_removes_old_transient_paths_for_interrupted_runs(
     candidate_dir = store.candidate_dir(run["run_id"], _candidate().candidate_id)
     old_tmp = candidate_dir / "quick.parquet.tmp"
     old_tmp.write_text("partial", encoding="utf-8")
+    factor_staging = candidate_dir / ".factor.staging-old"
+    factor_staging.mkdir()
+    (factor_staging / "part.parquet").write_bytes(b"partial")
+    batch_staging = candidate_dir.parent / ".batch-materialization.staging-old"
+    batch_staging.mkdir()
+    (batch_staging / "combined.parquet").write_bytes(b"partial")
     old_time = (datetime.now(timezone.utc) - timedelta(days=2)).timestamp()
-    old_tmp.touch()
     import os
 
     os.utime(old_tmp, (old_time, old_time))
+    os.utime(factor_staging, (old_time, old_time))
+    os.utime(batch_staging, (old_time, old_time))
     removed = store.cleanup_transient_temp(
         now=datetime.now(timezone.utc) - timedelta(hours=1)
     )
-    assert removed == [old_tmp.resolve()]
+    assert set(removed) == {
+        old_tmp.resolve(),
+        factor_staging.resolve(),
+        batch_staging.resolve(),
+    }
     assert not old_tmp.exists()
+    assert not factor_staging.exists()
+    assert not batch_staging.exists()
 
 
 def test_unknown_schema_version_is_rejected(tmp_path: Path):

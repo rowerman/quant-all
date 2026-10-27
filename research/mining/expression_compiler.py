@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -34,10 +35,16 @@ class CompiledExpression:
 
 
 @dataclass(frozen=True)
-class _Value:
+class CompiledValue:
+    """一个 AST 节点的 SQL、量纲和是否必须单独成层的标记。"""
+
     sql: str
     dimension: str
     lookback: int
+    needs_layer: bool = False
+
+
+_Value = CompiledValue
 
 
 def _calculation_sql(name: str, arguments: tuple[str, ...], window: int | None) -> str:
@@ -224,6 +231,22 @@ class ExpressionCompiler:
         return alias
 
     def _compile_node(self, node: ExpressionNode) -> _Value:
+        value = self.compile_value(node, self._compile_node)
+        if value.needs_layer:
+            return CompiledValue(
+                self._emit(value.sql),
+                value.dimension,
+                value.lookback,
+            )
+        return value
+
+    def compile_value(
+        self,
+        node: ExpressionNode,
+        resolve_child: Callable[[ExpressionNode], CompiledValue],
+    ) -> CompiledValue:
+        """按调用方提供的子节点结果编译当前节点，不直接写入单候选层列表。"""
+
         if isinstance(node, NumberNode):
             return _Value(node.canonical(), "scalar", 0)
         if isinstance(node, FieldNode):
@@ -233,11 +256,11 @@ class ExpressionCompiler:
                 return _Value(sql, "scalar", 0)
             return _Value(field.name, field.dimension, 0)
         if isinstance(node, UnaryNode):
-            operand = self._compile_node(node.operand)
+            operand = resolve_child(node.operand)
             return _Value(ops.neg(operand.sql), operand.dimension, operand.lookback)
         if isinstance(node, BinaryNode):
-            left = self._compile_node(node.left)
-            right = self._compile_node(node.right)
+            left = resolve_child(node.left)
+            right = resolve_child(node.right)
             name = {"+": "add", "-": "sub", "*": "mul", "/": "div"}[node.operator]
             if name in {"add", "sub"}:
                 dimension = _add_dimension(left.dimension, right.dimension, operator=node.operator)
@@ -247,7 +270,7 @@ class ExpressionCompiler:
                 dimension = _divide_dimension(left.dimension, right.dimension)
             sql = _calculation_sql(name, (left.sql, right.sql), None)
             return _Value(sql, dimension, max(left.lookback, right.lookback))
-        return self._compile_call(node)
+        return self._compile_call(node, resolve_child)
 
     def _require_literal(self, node: ExpressionNode, *, label: str) -> Decimal:
         if not isinstance(node, NumberNode):
@@ -272,7 +295,11 @@ class ExpressionCompiler:
             )
         return window
 
-    def _compile_call(self, node: CallNode) -> _Value:
+    def _compile_call(
+        self,
+        node: CallNode,
+        resolve_child: Callable[[ExpressionNode], CompiledValue],
+    ) -> _Value:
         operator = self._find_operator(node.name)
         if not operator.min_args <= len(node.arguments) <= operator.max_args:
             raise ExpressionValidationError(
@@ -286,7 +313,7 @@ class ExpressionCompiler:
             for index, argument in enumerate(node.arguments)
             if index != operator.window_arg and index != operator.parameter_arg
         )
-        values = tuple(self._compile_node(argument) for argument in argument_nodes)
+        values = tuple(resolve_child(argument) for argument in argument_nodes)
         if not values:
             raise ExpressionValidationError(
                 f"算子 {node.name} 缺少计算参数",
@@ -340,11 +367,12 @@ class ExpressionCompiler:
         inner_lookback = max(value.lookback for value in values)
         if window is not None:
             inner_lookback += window - 1
-        result = _Value(sql, dimension, inner_lookback)
-        if operator.kind in {"time_series", "cross_section"}:
-            alias = self._emit(sql)
-            return _Value(alias, dimension, inner_lookback)
-        return result
+        return _Value(
+            sql,
+            dimension,
+            inner_lookback,
+            needs_layer=operator.kind in {"time_series", "cross_section"},
+        )
 
     def _lookback(self, node: ExpressionNode) -> int:
         if isinstance(node, (NumberNode, FieldNode)):

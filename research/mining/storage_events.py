@@ -94,7 +94,11 @@ class EventStoreMixin:
                 (
                     path
                     for path in run_root.rglob("*")
-                    if path.name.endswith(".tmp") or path.name == "staging"
+                    if (
+                        path.name.endswith(".tmp")
+                        or path.name == "staging"
+                        or ".staging-" in path.name
+                    )
                 ),
                 key=lambda path: len(path.parts),
                 reverse=True,

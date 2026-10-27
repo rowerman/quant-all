@@ -96,6 +96,28 @@ CASE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "quick_end": "2024-06-28",
         "run_full": False,
     },
+    "mining_batch_serial": {
+        "mode": "serial",
+        "expressions": (
+            "mean(close, 5) + rank(open)",
+            "mean(close, 5) - open",
+            "rank(mean(close, 5))",
+            "mean(close, 5) + close",
+        ),
+        "start": "2024-03-01",
+        "end": "2024-12-31",
+    },
+    "mining_batch_dag": {
+        "mode": "batch",
+        "expressions": (
+            "mean(close, 5) + rank(open)",
+            "mean(close, 5) - open",
+            "rank(mean(close, 5))",
+            "mean(close, 5) + close",
+        ),
+        "start": "2024-03-01",
+        "end": "2024-12-31",
+    },
     "edge": {
         "seed": 20261027,
         "min_cross_section": 5,
@@ -131,7 +153,12 @@ _SOURCE_PATHS = (
     Path("core/data/scripts/build_factors/build.py"),
     Path("core/data/scripts/build_factors/sql.py"),
     Path("research/mining/candidate_evaluator.py"),
+    Path("research/mining/candidate_batch.py"),
+    Path("research/mining/candidate_materialization.py"),
     Path("research/mining/evaluation_gates.py"),
+    Path("research/mining/expression_batch.py"),
+    Path("research/mining/expression_compiler.py"),
+    Path("research/mining/expression_dag.py"),
 )
 
 

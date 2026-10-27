@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from mining.contract_evidence import EvaluationReport, TechnicalGate
+from mining.candidate_batch import CandidateBatchFailure
 from mining.contract_requests import FrozenContext, MiningConstraints, MiningRunRequest
 from mining.contract_types import sha256_json, utc_now_iso
 from mining.errors import MiningError, MiningNotFoundError, SnapshotStaleError
@@ -134,6 +136,31 @@ class FakeEvaluator:
         )
 
 
+class FakeBatchMaterializer:
+    """跳过真实数据库，返回预设的候选级失败。"""
+
+    def __init__(self, failures=(), *, fail_first: bool = False) -> None:
+        self.failures = tuple(failures)
+        self.fail_first = fail_first
+        self._failed_once = False
+        self.calls = []
+
+    def __call__(self, items, context, *, start, end):
+        items = tuple(items)
+        self.calls.append(items)
+        failures = list(self.failures)
+        if self.fail_first and items and not self._failed_once:
+            failures.append(
+                CandidateBatchFailure(
+                    candidate_id=items[0].candidate.candidate_id,
+                    error_code="MINING-106",
+                    message="测试批量物化失败",
+                )
+            )
+            self._failed_once = True
+        return SimpleNamespace(failures=tuple(failures))
+
+
 class FakeFullEvaluator:
     """返回固定完整评估结果。"""
 
@@ -222,6 +249,7 @@ def _orchestrator(
     worker,
     *,
     fake_evaluator=None,
+    batch_materializer=None,
     holdout_passed: bool = True,
 ) -> MiningOrchestrator:
     """创建跳过真实快照、使用确定性评估的编排器。"""
@@ -230,6 +258,7 @@ def _orchestrator(
         store=store,
         worker=worker,
         evaluator=fake_evaluator or FakeEvaluator(),
+        batch_materializer=batch_materializer or FakeBatchMaterializer(),
         full_evaluator=FakeFullEvaluator(),
         holdout_evaluator=FakeHoldoutEvaluator(passed=holdout_passed),
     )
@@ -259,7 +288,12 @@ def test_full_orchestration_reaches_review_ready_and_claims_once(tmp_path: Path)
     store = MiningStore(tmp_path / "factor_mining.duckdb", tmp_path / "data")
     run = _seed_run(store, _constraints())
     worker = _worker()
-    orchestrator = _orchestrator(store, worker)
+    batch_materializer = FakeBatchMaterializer()
+    orchestrator = _orchestrator(
+        store,
+        worker,
+        batch_materializer=batch_materializer,
+    )
 
     final = orchestrator.execute(run["run_id"])
     repeated = orchestrator.execute(run["run_id"])
@@ -281,6 +315,31 @@ def test_full_orchestration_reaches_review_ready_and_claims_once(tmp_path: Path)
     second_usage = store.get_holdout_usage()
     assert second_usage["batch_hash"] == usage["batch_hash"]
     assert len(worker.requests) == 1
+    assert [len(items) for items in batch_materializer.calls] == [4, 2]
+
+
+def test_batch_materialization_failure_isolated_per_candidate(tmp_path: Path):
+    """一个候选批量物化失败后，其他候选仍完成筛选和测试段。"""
+
+    store = MiningStore(tmp_path / "factor_mining.duckdb", tmp_path / "data")
+    run = _seed_run(store, _constraints())
+    batch_materializer = FakeBatchMaterializer(fail_first=True)
+    orchestrator = _orchestrator(
+        store,
+        _worker(),
+        batch_materializer=batch_materializer,
+    )
+
+    final = orchestrator.execute(run["run_id"])
+    orchestrator.close()
+
+    candidates = store.list_candidates(run["run_id"])
+    assert final["status"] == "review_ready"
+    assert sum(item["status"] == "technical_failed" for item in candidates) == 1
+    assert sum(item["status"] == "review_ready" for item in candidates) == 2
+    assert sum(item["status"] == "screened_out" for item in candidates) == 1
+    assert all(item["error_code"] == "MINING-106" for item in candidates if item["status"] == "technical_failed")
+    assert [len(items) for items in batch_materializer.calls] == [4, 2]
 
 
 def test_create_run_background_executes_with_frozen_context(tmp_path: Path):

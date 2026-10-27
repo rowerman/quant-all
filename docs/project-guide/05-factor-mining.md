@@ -217,6 +217,13 @@ proposed -> validating
 候选。因子值先写入候选根目录旁的 hidden staging，完成后一次替换 `factor/`；正式因子
 目录及其子目录不能作为候选根目录。
 
+同一发现轮次至少两个候选且表达式 DAG 有共享计算时，编排器先调用
+[candidate_batch.py](../../research/mining/candidate_batch.py) 批量物化。共享节点
+在一条 DuckDB 查询中只计算一次，结果临时写成宽 Parquet，再逐候选拆入独立 staging。
+单候选、无共享计算或批量查询失败时保留原逐候选路径。单候选失败只标记该候选，批量
+共享层和全部回退均失败时返回 `MINING-124`。测试段使用相同规则写入各自的
+`holdout/factor/`。
+
 质量检查数和失败率按已经进入技术或研究期评估的候选计算。检查数达到冻结下限后，
 失败比例大于等于 `max_failure_rate` 会以 `MINING-106` 终止运行，不进入完整评估和
 测试段。
@@ -314,8 +321,11 @@ rank(mean(close, 5) + lag(close, 1))
 排名、标准化、相关和 `r2` 输出标量。布尔字段在执行时转为 0/1。
 
 [expression_dag.py](../../research/mining/expression_dag.py) 另为同一冻结上下文中的
-候选组建立确定性 DAG，记录跨候选共享子树、候选根节点和潜在节点求值减少比例。该计划
-当前只用于规划与诊断，尚未接入默认物化路径，也没有实际数据库扫描或 C++ 收益。
+候选组建立确定性 DAG，记录跨候选共享子树、候选根节点和潜在节点求值减少比例。
+[expression_batch.py](../../research/mining/expression_batch.py) 已把后序 DAG 接入
+候选筛选和测试段：共享计算节点各生成一个 CTE 列，最终只输出各候选根列。4 候选固定
+案例的分析 SQL 由 4 条降为 1 条，物化中位耗时由 11.40 秒降至 3.52 秒，峰值 RSS
+由约 1225MB 降至 1218MB。该收益来自 DuckDB DAG 批量执行，不是 C++ 替换。
 
 ## 6. 候选评估与质量门禁
 
@@ -476,8 +486,9 @@ schema 版本直接拒绝启动，不做静默迁移。
 | 正式发布版本 | `data/factors/.mined-versions/<batch_id>/` |
 | 正式链接 | `data/factors/mined -> .mined-versions/<batch_id>` |
 
-`data/factor_mining/cache/` 是存储层提供的隔离缓存目录；当前候选物化实际把可复用产物
-放在每个候选根目录，并依靠 materialization manifest 校验身份和树哈希。
+`data/factor_mining/cache/` 是存储层提供的隔离缓存目录。批量物化只在运行目录下创建
+随机 `.batch-materialization.staging-*`，处理后立即删除；可复用产物仍放在每个候选
+根目录，并依靠 materialization manifest 校验身份和树哈希。
 
 ### 7.3 幂等与并发
 
@@ -663,6 +674,7 @@ schema 版本直接拒绝启动，不做静默迁移。
 | `MINING-121` | 409 | 发布资格、批次组成或并发冲突 |
 | `MINING-122` | 422 | 正式因子全量校验失败 |
 | `MINING-123` | 503 | 发布提交、回滚或启动恢复失败 |
+| `MINING-124` | 422 | 候选批量边界或共享层物化失败 |
 
 ### 10.2 日志
 

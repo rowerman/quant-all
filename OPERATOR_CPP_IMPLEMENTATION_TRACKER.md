@@ -2,8 +2,8 @@
 
 - 来源报告：[OPERATOR_CPP_ANALYSIS_REPORT.md](TODO_docs/OPERATOR_CPP_ANALYSIS_REPORT.md)
 - 创建日期：2026-10-27
-- 代码基线：`main` 分支提交 `fe10c55`
-- 当前状态：全部任务待开始，本文档不表示任何后续任务已经实施。
+- 代码基线：`main` 分支 V109 工作区（P0-04 提交 `e3a142a` 之后）
+- 当前状态：P0-01～P0-05 已完成；P0-06 及后续任务按依赖继续。
 
 ## 1. 使用规则
 
@@ -266,6 +266,7 @@ P0 不引入 C++。目标是把后续所有优化放到同一可复现基线上�
 - `research/mining/expression_validation.py`
 - `research/mining/expression_dag.py`
 - `research/mining/candidate_materialization.py`
+- `research/mining/candidate_batch.py`
 - `tests/test_mining_expression_dag.py`
 
 详细工作：
@@ -314,7 +315,7 @@ P0 不引入 C++。目标是把后续所有优化放到同一可复现基线上�
 
 ### P0-05 实现挖掘候选批量物化和复用
 
-- 状态：待开始
+- 状态：已完成（V109，2026-10-27）
 - 依赖：P0-04
 - 建议 session 数：1～2
 
@@ -324,30 +325,33 @@ P0 不引入 C++。目标是把后续所有优化放到同一可复现基线上�
 涉及文件：
 
 - `research/mining/candidate_materialization.py`
+- `research/mining/expression_batch.py`
 - `research/mining/expression_compiler.py`
 - `research/mining/orchestrator_screening.py`
+- `research/mining/orchestrator_holdout.py`
 - `research/mining/candidate_evaluator.py`
 - `tests/test_mining_orchestrator.py`
-- `tests/test_mining_expression.py`
+- `tests/test_mining_expression_batch.py`
+- `tests/test_mining_batch_materialization.py`
 
 详细工作：
 
-- [ ] 明确批量边界：同一 run、同一 FrozenContext、同一日期区间、同一字段目录。
-- [ ] 为共享中间结果定义临时关系或临时 Parquet，不写入正式因子目录。
-- [ ] 批量查询只物化最终候选列和必要的共享中间层。
-- [ ] 每个候选继续写入独立 staging 和原子目录。
-- [ ] 保留单候选物化兼容入口，供调试和故障恢复使用。
-- [ ] 单候选失败只影响该候选；共享层失败则整批返回明确错误。
-- [ ] 批量完成后重新校验每个候选的 artifact hash 和 materialization manifest。
-- [ ] 记录批量前后扫描次数、SQL 数、临时文件大小、总耗时和峰值 RSS。
+- [x] 明确批量边界：同一 run、同一 FrozenContext、同一日期区间、同一字段目录。
+- [x] 为共享中间结果定义临时关系或临时 Parquet，不写入正式因子目录。
+- [x] 批量查询只物化最终候选列和必要的共享中间层。
+- [x] 每个候选继续写入独立 staging 和原子目录。
+- [x] 保留单候选物化兼容入口，供调试和故障恢复使用。
+- [x] 单候选失败只影响该候选；共享层失败则整批返回明确错误。
+- [x] 批量完成后重新校验每个候选的 artifact hash 和 materialization manifest。
+- [x] 记录批量前后扫描次数、SQL 数、临时文件大小、总耗时和峰值 RSS。
 
 测试：
 
-- [ ] 批量物化与逐候选物化的行集、列、非空数和数值一致。
-- [ ] 候选内容哈希、artifact hash 和可复用身份不被批量路径改变。
-- [ ] 相同批量的重复执行保持幂等。
-- [ ] 一个候选失败不会发布半成品，也不会污染正式因子目录。
-- [ ] 公共子树和不同数据窗口不能错误复用。
+- [x] 批量物化与逐候选物化的行集、列、非空数和数值一致。
+- [x] 候选内容哈希、artifact hash 和可复用身份不被批量路径改变。
+- [x] 相同批量的重复执行保持幂等。
+- [x] 一个候选失败不会发布半成品，也不会污染正式因子目录。
+- [x] 公共子树和不同数据窗口不能错误复用。
 
 验收：
 
@@ -358,6 +362,22 @@ P0 不引入 C++。目标是把后续所有优化放到同一可复现基线上�
 停止/回退：
 
 - 如果共享层物化成本高于重复扫描，记录适用候选数和阈值后关闭批量路径，保留 DAG 诊断。
+
+完成记录：
+
+- 证据：`AiRecord/benchmarks/V109/p0-05-20261027/`。
+- 新增 `mining.expression_batch`，把候选 DAG 编译为一条共享 CTE 查询；筛选和测试段
+  按发现轮次自动批量物化，候选级失败隔离，共享层失败返回 `MINING-124` 并尝试逐候选回退。
+- 4 候选三年示例物化中位耗时由 11.395 秒降至 3.517 秒，下降 69.1%，加速 3.24 倍；
+  峰值 RSS 由 1224.914MB 降至 1217.789MB，为串行路径的 0.994 倍。
+- 分析 SQL 由 4 条降为 1 条，`md.daily_hfq` 引用由 8 次降为 2 次；临时宽 Parquet
+  为 16,461,881 字节，完成后删除。
+- 串行与批量 4 个候选的年度 Parquet 字节、artifact tree hash 和文件清单完全一致。
+- 本轮采用 Python 编排和 DuckDB DAG 批量执行，未采用 C++，不计入 C++ 模块替换收益。
+- 复现：
+  `.venv/bin/python -m tools.monitor.operator_baseline --case mining_batch_serial`
+  和 `--case mining_batch_dag`，证据输出目录使用
+  `AiRecord/benchmarks/V109/p0-05-20261027`。
 
 ### P0-06 评估并改造因子族全历史重复扫描
 

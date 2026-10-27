@@ -32,6 +32,8 @@ def test_fixed_cases_lock_dates_and_parameters():
         "history",
         "factor_build",
         "mining",
+        "mining_batch_serial",
+        "mining_batch_dag",
         "edge",
     )
     assert CASE_DEFINITIONS["evaluation"]["start"] == "2023-10-15"
@@ -46,6 +48,12 @@ def test_fixed_cases_lock_dates_and_parameters():
     }
     assert CASE_DEFINITIONS["mining"]["expression"] == "mean(close,5)"
     assert CASE_DEFINITIONS["mining"]["run_full"] is False
+    assert CASE_DEFINITIONS["mining_batch_serial"]["mode"] == "serial"
+    assert CASE_DEFINITIONS["mining_batch_dag"]["mode"] == "batch"
+    assert (
+        CASE_DEFINITIONS["mining_batch_serial"]["expressions"]
+        == CASE_DEFINITIONS["mining_batch_dag"]["expressions"]
+    )
 
 
 def test_nonfinite_values_are_distinguished_and_timings_removed():

@@ -8,6 +8,10 @@ from threading import Event, RLock
 from typing import Any, Callable, Mapping
 
 from common.paths import DB_FILE, FACTOR_DIR
+from mining.candidate_batch import (
+    CandidateBatchItem,
+    materialize_candidate_batch,
+)
 from mining.candidate_evaluator import evaluate_candidate
 from mining.candidate_stage_evaluator import (
     evaluate_full_candidate,
@@ -62,6 +66,7 @@ class MiningOrchestrator(
         store: MiningStore | None = None,
         worker: WorkerClient | None = None,
         evaluator: Callable[..., Any] = evaluate_candidate,
+        batch_materializer: Callable[..., Any] = materialize_candidate_batch,
         full_evaluator: Callable[..., Any] = evaluate_full_candidate,
         holdout_evaluator: Callable[..., Any] = evaluate_holdout_candidate,
         db_file: Path | str = DB_FILE,
@@ -71,6 +76,7 @@ class MiningOrchestrator(
         self.store = store or MiningStore()
         self.worker = worker
         self.evaluator = evaluator
+        self.batch_materializer = batch_materializer
         self.full_evaluator = full_evaluator
         self.holdout_evaluator = holdout_evaluator
         self.db_file = Path(db_file)
@@ -297,6 +303,53 @@ class MiningOrchestrator(
                 run["run_id"], candidate["candidate_id"]
             ),
         )
+
+    def _materialize_batches(
+        self,
+        run: Mapping[str, Any],
+        candidates: list[Mapping[str, Any]],
+        context: Any,
+        *,
+        start: str,
+        end: str,
+        holdout: bool = False,
+    ) -> dict[str, Any]:
+        """按发现轮次批量物化候选，返回候选级失败。"""
+
+        grouped: dict[int, list[Mapping[str, Any]]] = {}
+        for item in candidates:
+            grouped.setdefault(int(item["discovery_round"]), []).append(item)
+        failures: dict[str, Any] = {}
+        for round_index in sorted(grouped):
+            group = grouped[round_index]
+            if len(group) < 2:
+                continue
+            items = []
+            for item in group:
+                candidate_root = self.store.candidate_dir(
+                    run["run_id"], item["candidate_id"]
+                )
+                if holdout:
+                    candidate_root = candidate_root / "holdout"
+                items.append(
+                    CandidateBatchItem(
+                        candidate_from_record(item),
+                        candidate_root,
+                    )
+                )
+            result = self.batch_materializer(
+                items,
+                context,
+                start=start,
+                end=end,
+            )
+            failures.update(
+                {
+                    failure.candidate_id: failure
+                    for failure in result.failures
+                }
+            )
+        return failures
 
     def _append_stage_started(
         self,

@@ -10,6 +10,13 @@ from mining.catalog import (
     validate_catalog,
 )
 from mining.candidate_evaluator import evaluate_candidate
+from mining.candidate_batch import (
+    CandidateBatchDiagnostics,
+    CandidateBatchFailure,
+    CandidateBatchItem,
+    CandidateBatchResult,
+    materialize_candidate_batch,
+)
 from mining.candidate_stage_evaluator import (
     evaluate_full_candidate,
     evaluate_holdout_candidate,
@@ -42,6 +49,7 @@ from mining.contracts import (
 )
 from mining.errors import (
     ApprovalConflictError,
+    BatchMaterializationError,
     CatalogDriftError,
     CandidateError,
     ExpressionValidationError,
@@ -116,6 +124,10 @@ __all__ = [
     "CatalogValidation",
     "CandidateEvaluationInput",
     "CandidateEvaluationResult",
+    "CandidateBatchDiagnostics",
+    "CandidateBatchFailure",
+    "CandidateBatchItem",
+    "CandidateBatchResult",
     "FullEvaluationResult",
     "HoldoutEvaluationResult",
     "CatalogDriftError",
@@ -142,12 +154,14 @@ __all__ = [
     "validate_catalog",
     "validate_expression",
     "evaluate_candidate",
+    "materialize_candidate_batch",
     "evaluate_full_candidate",
     "evaluate_holdout_candidate",
     "build_frozen_context",
     "load_quality_policy",
     "ValidatedExpression",
     "ApprovalConflictError",
+    "BatchMaterializationError",
     "CandidateError",
     "HoldoutError",
     "MiningBusyError",

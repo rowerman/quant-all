@@ -187,3 +187,10 @@ class PublicationFilesystemError(MiningError):
 
     code = "MINING-123"
     status = 503
+
+
+class BatchMaterializationError(MiningEvaluationError):
+    """候选批量物化的共享计算或批次边界失败。"""
+
+    code = "MINING-124"
+    status = 422
