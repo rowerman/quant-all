@@ -253,7 +253,7 @@ P0 不引入 C++。目标是把后续所有优化放到同一可复现基线上�
 
 ### P0-04 建立挖掘候选表达式 DAG 和公共子表达式
 
-- 状态：等待依赖 P0-01
+- 状态：已完成（V108，2026-10-27）
 - 依赖：P0-01
 - 建议 session 数：1
 
@@ -263,29 +263,28 @@ P0 不引入 C++。目标是把后续所有优化放到同一可复现基线上�
 涉及文件：
 
 - `research/mining/expression_ast.py`
-- `research/mining/expression_parser.py`
-- `research/mining/expression_compiler.py`
 - `research/mining/expression_validation.py`
-- `research/mining/contract_candidates.py`
-- `tests/test_mining_expression.py`
-- `tests/test_mining_contracts.py`
+- `research/mining/expression_dag.py`
+- `research/mining/candidate_materialization.py`
+- `tests/test_mining_expression_dag.py`
 
 详细工作：
 
-- [ ] 为 AST 节点定义稳定的结构哈希，不能依赖 Python `id()` 或对象插入顺序。
-- [ ] 将规范化表达式转换为 DAG，保留输出节点和每个候选的根节点映射。
-- [ ] 识别重复叶子字段、常量、标量表达式和相同窗口子树。
-- [ ] 保留每个候选独立的 canonical expression、semantic hash 和 artifacts 身份。
-- [ ] 增加“候选组计划”数据结构，记录共享节点、候选节点和预计可复用次数。
-- [ ] 输出只读诊断：候选数、AST 节点数、去重节点数、共享节点比例。
-- [ ] 禁止把不同冻结目录或不同数据上下文中的节点混入同一计划。
+- [x] 为 AST 节点定义稳定的结构哈希，不能依赖 Python `id()` 或对象插入顺序。
+- [x] 将规范化表达式转换为 DAG，保留输出节点和每个候选的根节点映射。
+- [x] 识别重复叶子字段、常量、标量表达式和相同窗口子树。
+- [x] 保留每个候选独立的 canonical expression、semantic hash 和 artifacts 身份。
+- [x] 增加“候选组计划”数据结构，记录共享节点、候选节点和预计可复用次数。
+- [x] 输出只读诊断：候选数、AST 节点数、去重节点数、共享节点比例。
+- [x] 禁止把不同冻结目录或不同数据上下文中的节点混入同一计划。
 
 测试：
 
-- [ ] 交换律规范化前后哈希符合现有规则。
-- [ ] 相同表达式跨候选去重，不同窗口和不同缺失参数不复用。
-- [ ] 候选名称、内容哈希、semantic hash 和验证结果不变。
-- [ ] 非受控表达式仍被拒绝。
+- [x] 交换律规范化前后哈希符合现有规则。
+- [x] 相同表达式跨候选去重，不同窗口和算子参数不复用；当前 DSL 没有缺失策略参数，
+  所有字面量参数均进入结构键。
+- [x] 候选名称、内容哈希、semantic hash 和验证结果不变。
+- [x] 非受控表达式仍被拒绝。
 
 验收：
 
@@ -297,9 +296,25 @@ P0 不引入 C++。目标是把后续所有优化放到同一可复现基线上�
 
 - 如果现有 AST 无法稳定表达共享节点，先补齐 AST 契约，不进行 SQL 批处理。
 
+完成记录：
+
+- 新增 `mining.expression_dag`，提供 `build_candidate_expression_plan()`、
+  `CandidateExpressionPlan`、`ExpressionDagNode`、`CandidateExpressionRoot` 和
+  `ExpressionDagDiagnostics`。
+- 结构哈希使用 DAG schema 版本和规范化 AST 结构键；候选按 `candidate_id` 排序，
+  节点按后序输出，因此候选输入换序和重复规划得到相同计划。
+- 抽取 `validate_candidate_expression()`，候选物化和 DAG 规划共用同一语义一致性规则。
+- 示例：两个候选共 11 个 AST 节点，去重后 7 个节点，重复 4 个，共享节点 2 个；
+  `potential_evaluation_reduction_ratio=0.363636...`。该指标仅为潜在节点求值减少，
+  不表示已减少 SQL 或 DuckDB 扫描。
+- 定向测试 99 passed；本轮未真实采用 C++，不增加 C++ 模块收益记录。
+- Worker 客户端、发布和存储下游测试 33 passed。
+- 回退：删除 `research/mining/expression_dag.py` 和对应测试，撤销 AST/校验复用改动，
+  恢复文档与 Tracker；不涉及生产数据或候选产物。
+
 ### P0-05 实现挖掘候选批量物化和复用
 
-- 状态：等待依赖 P0-04
+- 状态：待开始
 - 依赖：P0-04
 - 建议 session 数：1～2
 
@@ -346,7 +361,7 @@ P0 不引入 C++。目标是把后续所有优化放到同一可复现基线上�
 
 ### P0-06 评估并改造因子族全历史重复扫描
 
-- 状态：等待依赖 P0-01
+- 状态：待开始
 - 依赖：P0-01
 - 建议 session 数：1～2
 
@@ -394,7 +409,7 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 ### P1-01 建立批量核适配层并完成 Numba 算法验证
 
-- 状态：等待依赖 P0-01、P0-02、P0-03
+- 状态：待开始
 - 依赖：P0-01、P0-02、P0-03
 - 建议 session 数：1～2
 
@@ -839,7 +854,7 @@ P3 当前只做剖析和 I/O 优化。C++ 回测账本不是既定交付，必�
 
 ### P3-01 回测 I/O、分块和内存专项优化
 
-- 状态：等待依赖 P0-01
+- 状态：待开始
 - 依赖：P0-01
 - 建议 session 数：1～2
 
@@ -881,7 +896,7 @@ P3 当前只做剖析和 I/O 优化。C++ 回测账本不是既定交付，必�
 
 ### P3-02 清洗层条件化剖析与共享核评估
 
-- 状态：等待依赖 P0-01
+- 状态：待开始
 - 依赖：P0-01
 - 建议 session 数：1，默认只做剖析
 

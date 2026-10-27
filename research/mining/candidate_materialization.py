@@ -15,8 +15,11 @@ from common.paths import FACTOR_DIR
 from mining.contract_candidates import CandidateDefinition
 from mining.contract_requests import FrozenContext
 from mining.contract_types import canonical_json
-from mining.errors import CandidateError, MiningEvaluationError
-from mining.expression_validation import ValidatedExpression, validate_expression
+from mining.errors import MiningEvaluationError
+from mining.expression_validation import (
+    ValidatedExpression,
+    validate_candidate_expression,
+)
 from mining.logging_conf import format_event, get_mining_logger
 from scripts.build_factors.sql import family_query
 
@@ -40,30 +43,6 @@ class MaterializedCandidate:
     computation: CandidateComputation
     artifact_sha256: str
     files: tuple[Path, ...]
-
-
-def _validated_candidate(
-    candidate: CandidateDefinition,
-    context: FrozenContext,
-) -> ValidatedExpression:
-    """重新执行 S3 校验，拒绝落库后被修改或漂移的候选。"""
-
-    validated = validate_expression(
-        candidate.canonical_expression,
-        direction=candidate.direction,
-        max_depth=context.budget.max_expression_depth,
-        excluded_fields=context.budget.excluded_fields,
-    )
-    if (
-        validated.semantic_hash != candidate.semantic_hash
-        or validated.factor_name != candidate.name
-        or validated.lookback != candidate.lookback
-        or validated.dependencies != candidate.dependencies
-        or validated.output_type != candidate.output_type
-        or validated.parameters != dict(candidate.parameters)
-    ):
-        raise CandidateError("候选表达式、稳定名或语义哈希与冻结定义不一致")
-    return validated
 
 
 def _artifact_hash(files: tuple[Path, ...], root: Path) -> str:
@@ -189,7 +168,7 @@ def materialize_candidate(
     base = Path(candidate_root).resolve()
     if base == FACTOR_DIR.resolve() or base.is_relative_to(FACTOR_DIR.resolve()):
         raise MiningEvaluationError("候选根目录不能位于正式因子目录内")
-    validated = _validated_candidate(candidate, context)
+    validated = validate_candidate_expression(candidate, context)
     computation = CandidateComputation(
         name=candidate.name,
         layers=validated.layers,

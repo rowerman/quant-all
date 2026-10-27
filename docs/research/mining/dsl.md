@@ -57,6 +57,28 @@ rank(mean(close, 5) + lag(close, 1))
 输入，稳定因子名为 `MINE_` 加语义哈希前 24 位大写十六进制。相同表达式和方向得到相同
 名称；方向变化会得到不同名称。
 
+## 候选组 DAG 规划
+
+内部模块 `mining.expression_dag` 在同一冻结上下文内为一组候选建立确定性 DAG。结构键
+沿用规范化规则，节点 ID 由结构哈希生成，不依赖 Python 对象 ID 或输入顺序。相同字段、
+常量、窗口和其他子树只保留一个节点；每个候选仍保存独立的内容哈希、语义哈希和根节点
+映射。
+
+`build_candidate_expression_plan()` 会重新校验候选语义身份，并核对当前字段/算子目录
+与冻结上下文一致。计划保存后序节点、每个节点的引用次数和以下诊断：
+
+| 字段 | 含义 |
+|---|---|
+| `total_node_occurrences` | 各候选 AST 节点数之和，重复节点重复计数 |
+| `unique_node_count` | DAG 去重后的唯一节点数 |
+| `deduplicated_node_count` | 相同子树的重复出现数 |
+| `shared_node_count` | 被引用两次以上的节点数 |
+| `shared_node_ratio` | 共享节点占唯一节点比例 |
+| `potential_evaluation_reduction_ratio` | 去重节点占原始节点出现次数比例 |
+
+这些比例只表示节点求值的潜在复用，不代表数据库扫描已经减少。当前 DAG 尚未接入默认
+候选物化路径；实际 SQL、扫描次数、耗时和内存收益由 P0-05 验证。本轮没有采用 C++。
+
 ## 财务时点
 
 财务字段沿用 `factors.sources` 的 ASOF 连接：同一股票先取最新报告期，再要求

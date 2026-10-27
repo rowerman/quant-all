@@ -95,6 +95,27 @@ class CallNode:
 ExpressionNode: TypeAlias = NumberNode | FieldNode | UnaryNode | BinaryNode | CallNode
 
 
+def expression_structural_key(node: ExpressionNode) -> tuple[object, ...]:
+    """返回与规范化表达式语义一致、可稳定哈希的结构键。"""
+
+    if isinstance(node, NumberNode):
+        return ("number", node.canonical())
+    if isinstance(node, FieldNode):
+        return ("field", node.name)
+    if isinstance(node, UnaryNode):
+        return ("unary", node.operator, expression_structural_key(node.operand))
+    if isinstance(node, BinaryNode):
+        left = expression_structural_key(node.left)
+        right = expression_structural_key(node.right)
+        if node.operator in {"+", "*"} and right < left:
+            left, right = right, left
+        return ("binary", node.operator, left, right)
+    arguments = tuple(expression_structural_key(argument) for argument in node.arguments)
+    if node.name in {"least", "greatest"}:
+        arguments = tuple(sorted(arguments))
+    return ("call", node.name, arguments)
+
+
 def expression_depth(node: ExpressionNode) -> int:
     """返回以叶节点为 1 的 AST 深度。"""
 

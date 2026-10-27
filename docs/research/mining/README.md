@@ -108,7 +108,7 @@ docker compose --env-file .env -f compose.mining.yaml down
        -> mining_worker      Python 3.11 独立 Worker 的纯协议和本地 HTTP 服务
   -> mining.contracts       请求、冻结上下文、候选、评估、审批和发布对象
   -> mining.catalog         字段、算子、时点与目录 schema 核对
-  -> mining.expression_*    解析、安全校验、规范化、稳定命名和 SQL 分层
+  -> mining.expression_*    解析、安全校验、规范化、稳定命名、DAG 规划和 SQL 分层
   -> mining.evaluate_candidate 候选物化、门禁、快速筛选与可选完整评估
   -> mining.states          运行、候选和发布状态机
   -> mining.storage         MiningStore 公共存储入口

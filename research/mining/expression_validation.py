@@ -7,8 +7,9 @@ from typing import Any
 
 from mining.catalog import MiningCatalog, load_catalog
 from mining.contract_candidates import CandidateDefinition
+from mining.contract_requests import FrozenContext
 from mining.contract_types import SCHEMA_VERSION, sha256_json
-from mining.errors import ExpressionValidationError
+from mining.errors import CandidateError, ExpressionValidationError
 from mining.expression_compiler import CompiledExpression, ExpressionCompiler
 from mining.expression_parser import parse_expression
 from mining.logging_conf import format_event, get_mining_logger
@@ -171,3 +172,34 @@ def validate_expression(
             )
         )
         raise
+
+
+def validate_candidate_expression(
+    candidate: CandidateDefinition,
+    context: FrozenContext,
+    *,
+    catalog: MiningCatalog | None = None,
+) -> ValidatedExpression:
+    """重新校验候选表达式及其冻结语义身份。"""
+
+    if not isinstance(candidate, CandidateDefinition):
+        raise CandidateError("candidate 必须是 CandidateDefinition")
+    if not isinstance(context, FrozenContext):
+        raise CandidateError("context 必须是 FrozenContext")
+    validated = validate_expression(
+        candidate.canonical_expression,
+        direction=candidate.direction,
+        max_depth=context.budget.max_expression_depth,
+        excluded_fields=context.budget.excluded_fields,
+        catalog=catalog,
+    )
+    if (
+        validated.semantic_hash != candidate.semantic_hash
+        or validated.factor_name != candidate.name
+        or validated.lookback != candidate.lookback
+        or validated.dependencies != candidate.dependencies
+        or validated.output_type != candidate.output_type
+        or validated.parameters != dict(candidate.parameters)
+    ):
+        raise CandidateError("候选表达式、稳定名或语义哈希与冻结定义不一致")
+    return validated
