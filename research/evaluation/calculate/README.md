@@ -165,7 +165,7 @@ apps/monitor/frontend/   前端：纯 HTML/JS + ECharts
 | `params.py` | `EvalParams` 定义与校验 | `panel`、指标、接口层 | `errors` | 加字段要同步 `describe()`，meta 事件靠它回显参数 |
 | `universe.py` | 股票池定义与指数成分 CTE | `panel`、接口层 | `errors` | 全 A 池口径必须与数据项目的 `core/data/scripts/build_factors/validate.py` 的 `POOL_FILTER` 一字不差；指数池用**上一个已结束月份**的月末快照，别改成当月（会前视） |
 | `panel.py` | 评估面板、连接、默认参数、`EvalContext` | `evaluate`、各指标、后续拆分阶段 | `factors` 注册表、`universe`、DuckDB、`config` | 面板列是公共契约，后续阶段只加不删；行数/交易日上限也在这里；**不要给面板加 ORDER BY**（几百万行排序要多花 2 秒以上，下游都按交易日分组） |
-| `correlation.py` | 按月取数、成对Spearman、Top-N与矩阵 | metrics/correlation | DuckDB、factors、panel上下文 | 成对缺失后重排名，不用标签；目录跟随context.factor_dir |
+| `correlation.py` | 按月取数、成对Spearman、Top-N与矩阵 | metrics/correlation | DuckDB、factors、panel上下文 | 成对缺失后重排名，不用标签；打包掩码和排名缓存只限单日工作区；目录跟随context.factor_dir |
 | `metrics/correlation.py` | 相关性指标声明 | 注册表/evaluate | correlation、metrics/base | Top-N只影响明细数量，不改变全矩阵 |
 | `history.py` | 全历史 IC SQL 聚合与轻量读取 | 调用方 | panel/universe/DuckDB | 不构建完整面板；逐日平均并列排名，工作内存 1GB，临时文件自动清理 |
 | `daily.py` | 逐日截面相关（IC / RankIC、通用 `daily_corr`、多档 `daily_rank_ic_multi` 与截面排名 `rank_pct_by_day`） | `metrics/ic.py`、`metrics/decay.py`，相关性模块独立读取 | `normalize` | RankIC 一律对**原始值**排名；去极值只作用于 Pearson IC；池内过滤默认开（`pool_only=True`）；`rank_pct_by_day` 必须与 pandas `groupby().rank(pct=True)` 同语义（并列取平均名次、按交易日内的位置算名次） |
@@ -1532,6 +1532,10 @@ insufficient表示没有足够样本的可比较同伴，矩阵仍可有有效�
 排名再直接删股票。相关性不筛收益标签，不做去极值。不同因子对可以有不同样本，
 因此均值矩阵不保证半正定；Top-N按绝对相关性排序并保留正负号。
 
+逐日计算由 `_DailySpearmanWorkspace` 管理。每个因子每天只生成一次稳定排序索引；
+相同缺失掩码和组对交集用打包字节键复用解包掩码、样本位置与有效数。排名矩阵直接预分配，
+中心和范数由并列块大小直接计算；排名缓存只存在于当前交易日的调用内，不跨日或跨请求。
+
 正式因子页面使用完整相关热力图，因此 `compute_correlation` 继续计算完整矩阵。
 非正式候选只展示目标因子与正式因子的关系，`compute_target_correlation` 只计算目标行、
 目标列和对角线；返回的 `matrix`、`days`、`names` 数组仍保持原字段与形状，其他矩阵位置
@@ -1540,5 +1544,8 @@ insufficient表示没有足够样本的可比较同伴，矩阵仍可有有效�
 2026-10-27 三年固定案例中，47 个相关性列的候选阶段由 233.5 秒降至 132.9 秒，峰值 RSS
 由 2788.2MB 降至 2682.3MB；正式完整矩阵与 P0-01 金标准一致。该优化仍为 Python 算法
 调整，不代表已经采用 C++。
+
+P0-03 进一步把正式三年相关性 stage 从 228.6 秒降至 209.1 秒，峰值 RSS 约 2680.0MB；
+金标准完全一致。该轮仍是 Python 算法优化，未引入 C++。
 
 完整分析性能请看 `docs/apps/monitor/performance.md`，旧12指标耗时不包含本阶段。

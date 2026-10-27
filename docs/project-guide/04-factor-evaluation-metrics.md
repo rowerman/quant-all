@@ -668,6 +668,11 @@ Correlation(a,b) = average_t rho(a,b,t), 有效日数 >= 20
 每对因子独立取交集，所以不同单元格的有效天数和股票样本可以不同。矩阵对角线也按该逻辑
 计算；因子当天常数时自相关也可能无定义，因此对角线天数不一定等于评估面板天数。
 
+实现上，每个交易日建立一次私有相关性工作区。因子有限值只打包一次，相同缺失掩码因子
+直接成组，组对交集通过打包字节按位与得到；每个因子每天只生成一次稳定排序索引。
+成对交集仍会按实际保留样本重新计算并列平均名次，不能复用完整截面的名次。排名矩阵直接
+预分配，均值与范数由并列块大小计算，缓存只服务当前交易日，不跨请求复用。
+
 ### 16.3 输出与阅读
 
 返回 `names`、完整均值 `matrix`、有效天数 `days`、Top-N `top`、`top_n`、
@@ -788,7 +793,7 @@ HTTP/SSE 如何映射这些错误见 [03-factor-evaluation.md](03-factor-evaluat
 | [test_eval_binning.py](../../research/evaluation/calculate/tests/test_eval_binning.py) | 分箱、两类权重、换手、自相关、净值、价差和分布 |
 | [test_eval_decay.py](../../research/evaluation/calculate/tests/test_eval_decay.py) | 五档独立样本、RankIC、收益差、空池和缺列 |
 | [test_eval_exposure.py](../../research/evaluation/calculate/tests/test_eval_exposure.py) | 标准化、日度 OLS、缺失风格、行业哑变量和残差 IC |
-| [test_eval_correlation.py](../../research/evaluation/calculate/tests/test_eval_correlation.py) | 成对重排名、门槛、Top-N、池过滤和标签无关性 |
+| [test_eval_correlation.py](../../research/evaluation/calculate/tests/test_eval_correlation.py) | 成对重排名、掩码尾部位、单日缓存、门槛、Top-N、池过滤和标签无关性 |
 | [test_eval_regressions.py](../../research/evaluation/calculate/tests/test_eval_regressions.py) | 常数因子、全解释残差、空池、参数和缓存边界 |
 | [test_eval_styles.py](../../research/evaluation/calculate/tests/test_eval_styles.py) | 风格 SQL、真实数据覆盖、静态行业源 |
 | [test_mining_evaluation_consistency.py](../../tests/test_mining_evaluation_consistency.py) | 候选与正式路径共用全部指标口径 |

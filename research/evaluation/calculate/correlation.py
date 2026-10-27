@@ -1,5 +1,6 @@
 """按月读取因子，累计逐日成对 Spearman；不使用收益标签筛选样本。"""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
@@ -49,51 +50,118 @@ def accumulate_correlations(frame: pd.DataFrame, names: list[str],
         days += valid
 
 
-def _missing_groups(finite: np.ndarray) -> list[list[int]]:
-    """按相同缺失掩码给因子列分组。"""
+@dataclass(frozen=True)
+class _MaskSelection:
+    """一个缺失掩码键对应的布尔掩码、紧凑位置和有效样本数。"""
 
-    groups = {}
-    for column in range(finite.shape[1]):
-        key = np.packbits(finite[:, column]).tobytes()
-        groups.setdefault(key, []).append(column)
-    return list(groups.values())
-
-
-def _rank_columns(values: np.ndarray, columns: list[int], mask: np.ndarray,
-                  mask_key: bytes, positions: np.ndarray,
-                  orders: list[np.ndarray], rank_cache: dict) -> np.ndarray:
-    """在给定有效掩码内生成并列平均名次；参数为因子矩阵和排名缓存。"""
-
-    ranked = []
-    for column in columns:
-        cache_key = (column, mask_key)
-        if cache_key not in rank_cache:
-            order = orders[column][mask[orders[column]]]
-            ordered = values[order, column]
-            starts = np.r_[0, np.flatnonzero(ordered[1:] != ordered[:-1]) + 1]
-            ends = np.r_[starts[1:], len(order)]
-            ranks = np.empty(len(order))
-            ranks[positions[order]] = np.repeat(
-                (starts + ends - 1) / 2 + 1,
-                ends - starts,
-            )
-            rank_cache[cache_key] = ranks
-        ranked.append(rank_cache[cache_key])
-    return np.column_stack(ranked)
+    mask: np.ndarray
+    positions: np.ndarray
+    count: int
 
 
-def _normalized_ranks(ranked: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """中心化秩向量并返回每列范数。"""
+@dataclass(frozen=True)
+class _RankedColumn:
+    """单因子在一种成对掩码下的中心化归一化秩和范数。"""
 
-    ranked -= ranked.mean(axis=0)
-    norms = np.sqrt(np.sum(ranked * ranked, axis=0))
-    normalized = np.divide(
-        ranked,
-        norms,
-        out=np.zeros_like(ranked),
-        where=norms > 0,
-    )
-    return normalized, norms
+    ranks: np.ndarray
+    norm: float
+
+
+class _DailySpearmanWorkspace:
+    """管理单个交易日内的有限值掩码、稳定排序和秩缓存。"""
+
+    def __init__(self, values: np.ndarray):
+        self.values = values
+        self.factor_values = np.ascontiguousarray(values.T)
+        self.finite = np.isfinite(values)
+        self.packed = np.packbits(self.finite, axis=0)
+        grouped: dict[bytes, list[int]] = {}
+        for column in range(values.shape[1]):
+            grouped.setdefault(self._column_key(column), []).append(column)
+        self.groups = list(grouped.values())
+        self._mask_cache: dict[bytes, _MaskSelection] = {}
+        self._rank_cache: dict[tuple[int, bytes], _RankedColumn] = {}
+        self.orders = [
+            np.argsort(self.factor_values[column], kind='stable')
+            for column in range(values.shape[1])
+        ]
+
+    def _column_key(self, column: int) -> bytes:
+        """返回单因子有限值掩码的打包字节键。"""
+
+        return self.packed[:, column].tobytes()
+
+    def group_key(self, group: list[int]) -> bytes:
+        """返回一组相同缺失掩码因子共用的键。"""
+
+        return self._column_key(group[0])
+
+    def intersection_key(self, left_column: int, right_column: int) -> bytes:
+        """返回两个因子有效样本交集的打包字节键。"""
+
+        return np.bitwise_and(
+            self.packed[:, left_column],
+            self.packed[:, right_column],
+        ).tobytes()
+
+    def selection(self, key: bytes) -> _MaskSelection:
+        """按掩码键读取样本位置；同键只在当前工作日解包一次。"""
+
+        selected = self._mask_cache.get(key)
+        if selected is not None:
+            return selected
+        mask = np.unpackbits(
+            np.frombuffer(key, dtype=np.uint8),
+            count=self.values.shape[0],
+        ).astype(bool)
+        positions = np.full(self.values.shape[0], -1, dtype=np.intp)
+        count = int(mask.sum())
+        positions[mask] = np.arange(count, dtype=np.intp)
+        selected = _MaskSelection(mask, positions, count)
+        self._mask_cache[key] = selected
+        return selected
+
+    def ranked(self, columns: list[int], key: bytes) -> tuple[np.ndarray, np.ndarray]:
+        """返回指定因子在掩码样本内的中心化归一化秩和范数。"""
+
+        selected = self.selection(key)
+        ranked = np.empty((selected.count, len(columns)), dtype=np.float64)
+        norms = np.empty(len(columns), dtype=np.float64)
+        for local, column in enumerate(columns):
+            cache_key = (column, key)
+            cached = self._rank_cache.get(cache_key)
+            if cached is None:
+                cached = _RankedColumn(
+                    *self._build_ranked_column(column, selected)
+                )
+                self._rank_cache[cache_key] = cached
+            ranked[:, local] = cached.ranks
+            norms[local] = cached.norm
+        return ranked, norms
+
+    def _build_ranked_column(
+        self,
+        column: int,
+        selected: _MaskSelection,
+    ) -> tuple[np.ndarray, float]:
+        """按稳定排序索引生成交集样本的并列平均名次并直接归一化。"""
+
+        order = self.orders[column][selected.mask[self.orders[column]]]
+        ordered = self.factor_values[column, order]
+        starts = np.r_[0, np.flatnonzero(ordered[1:] != ordered[:-1]) + 1]
+        ends = np.r_[starts[1:], selected.count]
+        sizes = ends - starts
+        averages = (starts + ends - 1) / 2.0 + 1.0
+        ranks = np.empty(selected.count, dtype=np.float64)
+        ranks[selected.positions[order]] = np.repeat(averages, sizes)
+
+        mean = (selected.count + 1.0) / 2.0
+        deviations = averages - mean
+        norm = float(np.sqrt(np.sum(sizes * deviations * deviations)))
+        ranks -= mean
+        if norm > 0:
+            ranks /= norm
+        return ranks, norm
 
 
 def _daily_spearman(values: np.ndarray, target_index: int | None = None) -> np.ndarray:
@@ -105,26 +173,21 @@ def _daily_spearman(values: np.ndarray, target_index: int | None = None) -> np.n
         type(target_index) is not int or not 0 <= target_index < values.shape[1]
     ):
         raise MetricError('目标因子位置超出相关性矩阵范围')
-    finite = np.isfinite(values)
-    grouped = _missing_groups(finite)
-    orders = [np.argsort(values[:, column], kind='stable') for column in range(values.shape[1])]
-    rank_cache = {}
+    workspace = _DailySpearmanWorkspace(values)
+    grouped = workspace.groups
     result = np.full((values.shape[1], values.shape[1]), np.nan)
 
     if target_index is not None:
-        target_mask = finite[:, target_index]
         for group in grouped:
-            mask = target_mask & finite[:, group[0]]
-            if mask.sum() < 5:
+            key = (
+                workspace.group_key(group)
+                if target_index in group
+                else workspace.intersection_key(target_index, group[0])
+            )
+            if workspace.selection(key).count < 5:
                 continue
             columns = group if target_index in group else [target_index, *group]
-            mask_key = np.packbits(mask).tobytes()
-            positions = np.full(values.shape[0], -1, dtype=int)
-            positions[mask] = np.arange(mask.sum())
-            ranked = _rank_columns(
-                values, columns, mask, mask_key, positions, orders, rank_cache
-            )
-            normalized, norms = _normalized_ranks(ranked)
+            normalized, norms = workspace.ranked(columns, key)
             target_local = columns.index(target_index)
             peer_local = [
                 index for index in range(len(columns)) if index != target_local
@@ -151,17 +214,15 @@ def _daily_spearman(values: np.ndarray, target_index: int | None = None) -> np.n
 
     for i, left in enumerate(grouped):
         for right in grouped[i:]:
-            mask = finite[:, left[0]] & finite[:, right[0]]
-            if mask.sum() < 5:
+            key = (
+                workspace.group_key(left)
+                if left is right
+                else workspace.intersection_key(left[0], right[0])
+            )
+            if workspace.selection(key).count < 5:
                 continue
             columns = left if left is right else left + right
-            mask_key = np.packbits(mask).tobytes()
-            positions = np.full(values.shape[0], -1, dtype=int)
-            positions[mask] = np.arange(mask.sum())
-            ranked = _rank_columns(
-                values, columns, mask, mask_key, positions, orders, rank_cache
-            )
-            normalized, norms = _normalized_ranks(ranked)
+            normalized, norms = workspace.ranked(columns, key)
             left_ranks = normalized[:, :len(left)]
             right_ranks = left_ranks if left is right else normalized[:, len(left):]
             matrix = np.clip(left_ranks.T @ right_ranks, -1, 1)

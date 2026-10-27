@@ -6,6 +6,7 @@ import pytest
 from scipy.stats import spearmanr
 
 from calculate.correlation import (
+    _DailySpearmanWorkspace,
     _accumulate_target_correlations,
     _daily_spearman,
     accumulate_correlations,
@@ -42,6 +43,80 @@ def test_pairwise_scipy_and_chunks():
     np.testing.assert_allclose(result['matrix'], result['matrix'].T, equal_nan=True)
     assert np.isnan(result['matrix'][3]).all()
     assert all(row['factor'] != 'a' for row in result['top'])
+
+
+def test_tail_bits_ties_nonfinite_and_constant_match_scipy():
+    """行数不是8的倍数时，打包掩码的尾部位不能引入虚假样本。"""
+
+    rng = np.random.default_rng(107)
+    values = rng.integers(0, 6, (37, 8)).astype(float)
+    values[::4, 1] = np.nan
+    values[::7, 2] = np.inf
+    values[::11, 3] = -np.inf
+    values[:, 6] = 2.0
+    actual = daily_spearman_matrix(values)
+    for left in range(values.shape[1]):
+        for right in range(left, values.shape[1]):
+            pair = values[:, [left, right]]
+            pair = pair[np.isfinite(pair).all(axis=1)]
+            if len(pair) < 5:
+                assert np.isnan(actual[left, right])
+                continue
+            expected = (
+                np.nan
+                if np.ptp(pair[:, 0]) == 0 or np.ptp(pair[:, 1]) == 0
+                else spearmanr(pair[:, 0], pair[:, 1]).statistic
+            )
+            if np.isfinite(expected):
+                assert actual[left, right] == pytest.approx(expected, abs=1e-12)
+            else:
+                assert np.isnan(actual[left, right])
+            assert actual[left, right] == pytest.approx(
+                actual[right, left],
+                abs=1e-12,
+                nan_ok=True,
+            )
+
+
+def test_workspace_reuses_mask_selection_and_cross_key_ranking():
+    """相同掩码只建一次位置，完整掩码排名可在后续成对计算中复用。"""
+
+    values = np.array([
+        [1., 1., np.nan],
+        [2., 2., 4.],
+        [3., 3., 5.],
+        [4., 4., 6.],
+        [5., 5., 7.],
+    ])
+    workspace = _DailySpearmanWorkspace(values)
+    assert len(workspace.groups) == 2
+    full_key = workspace.group_key(workspace.groups[0])
+    first = workspace.selection(full_key)
+    second = workspace.selection(full_key)
+    assert first is second
+
+    ranked, norms = workspace.ranked([0, 1], full_key)
+    np.testing.assert_allclose(ranked[:, 0], ranked[:, 1])
+    assert norms[0] == pytest.approx(norms[1])
+    assert len(workspace._rank_cache) == 2
+    cached = workspace._rank_cache[(0, full_key)]
+    workspace.ranked([0], full_key)
+    assert workspace._rank_cache[(0, full_key)] is cached
+
+
+def test_repeated_matrices_do_not_share_workspace_cache():
+    """不同交易日输入不能复用上一矩阵的掩码或排名。"""
+
+    rng = np.random.default_rng(108)
+    first = rng.normal(size=(31, 6))
+    first[::5, 1] = np.nan
+    second = rng.normal(size=(31, 6))
+    second[::3, 2] = np.inf
+    first_expected = daily_spearman_matrix(first.copy())
+    second_expected = daily_spearman_matrix(second.copy())
+    np.testing.assert_allclose(daily_spearman_matrix(first), first_expected, equal_nan=True)
+    np.testing.assert_allclose(daily_spearman_matrix(second), second_expected, equal_nan=True)
+    np.testing.assert_allclose(daily_spearman_matrix(first), first_expected, equal_nan=True)
 
 
 def test_target_row_matches_full_matrix_with_missing_ties_and_constants():
