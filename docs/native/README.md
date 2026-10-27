@@ -1,9 +1,10 @@
 # C++ 批量计算扩展
 
 `native` 负责构建顶层扩展 `quant_native`，当前提供完整矩阵和目标行两种成对 Spearman
-核，以及逐日排名、Pearson、MAD、z-score、融合标准化、分位分组、多标签分位收益、
-分位换手、逐行 Spearman 和逐日 OLS 核。融合标准化同时支持单列和多列批量入口。
-这些核都已接入评估业务路径；有扩展时默认 `auto` 选择 native，无扩展时回退 Python。
+核，以及逐日排名、Pearson、MAD、z-score、融合标准化、分位裁剪、总体标准差
+z-score、分位分组、多标签分位收益、分位换手、逐行 Spearman 和逐日 OLS 核。
+融合标准化同时支持单列和多列批量入口。评估路径和模型预处理均已接入；有扩展时默认
+`auto` 选择 native，无扩展时回退 Python。
 
 ## 负责什么
 
@@ -12,6 +13,8 @@
 - 按实际配对样本剔除非有限值，使用并列平均名次，常数截面返回 `NaN`。
 - 按组计算平均名次分位和 Pearson 相关，保持原有效计数与最小样本门槛。
 - 按组计算中位数、MAD、裁剪和 z-score；z-score 使用与 pandas 相同的补偿求和顺序。
+- 按组使用 pandas 线性插值口径计算 1%/99% 分位裁剪。
+- 按组计算总体标准差口径 `ddof=0` 的 z-score。
 - 一次处理风格暴露的多列标准化，共享日分组和 offsets。
 - 按组计算平均名次分位；批量计算多标签分位收益、池内均值和分位换手。
 - 对每个 lag 的共同有限股票逐行重新排名并计算 Spearman。
@@ -28,6 +31,7 @@
 - 风格暴露经 `calculate.exposure` 调用融合标准化核。
 - 风格暴露经 `calculate.exposure` 调用逐日 OLS。
 - 分位分组、多标签收益、换手和自相关经 `calculate.binning` 调用同一适配层。
+- 模型特征和标签排名、分位裁剪、总体 z-score 经 `alpha.kernel_ops` 调用同一适配层。
 - 核测试和 P1-02/P1-03 基准工具直接验证适配层或扩展。
 - 模型、挖掘表达式和回测尚未调用这些核。
 
@@ -73,6 +77,10 @@ daily_winsorize_mad(values, group_offsets, n_mad=3.0)
 daily_zscore(values, group_offsets)
 daily_winsorize_zscore(values, group_offsets, n_mad=3.0)
 daily_winsorize_zscore_columns(values, group_offsets, n_mad=3.0)
+daily_winsorize_quantile(
+    values, group_offsets, lower_quantile=0.01, upper_quantile=0.99
+)
+daily_zscore_population(values, group_offsets)
 daily_quantile_bins(values, group_offsets, quantiles)
 bin_returns_multi(
     values, day_codes, bin_codes, weights, day_count, bin_count
@@ -96,6 +104,10 @@ daily_ols(design, response, group_offsets, min_rows=30)
 - `daily_pearson.left/right`：长度相同的一维 C 连续 `float64`；只使用两侧都有限的配对。
 - `daily_winsorize_mad`：返回与输入等长的裁剪数组；MAD 为零或无法裁剪时保持原值。
 - `daily_zscore`：样本标准差 `ddof=1`；有效样本不足 2 或标准差为零时返回 `NaN`。
+- `daily_winsorize_quantile`：默认使用当日有效样本的 1%/99% 线性插值分位裁剪；
+  NaN 保持缺失。
+- `daily_zscore_population`：总体标准差 `ddof=0`；均值保持 pandas groupby 的补偿
+  求和顺序，方差保持逐样本更新顺序，使 float32 落值一致。
 - `daily_winsorize_zscore`：对裁剪结果继续计算 z-score，供风格暴露一次完成标准化。
 - `daily_winsorize_zscore_columns`：输入二维 C 连续矩阵，对每一列执行与
   `daily_winsorize_zscore` 相同的融合标准化；用于风格列和因子共享一次分组。
@@ -230,13 +242,13 @@ stage 的收益主要来自原生分位分组和秩宽表。
 | 项目 | 当前状态 |
 |---|---|
 | 扩展 | `quant_native` 已构建 |
-| 原生核 | `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、`daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore`、`daily_winsorize_zscore_columns`、`daily_quantile_bins`、`bin_returns_multi`、`bin_turnover`、`daily_row_spearman`、`daily_ols` |
+| 原生核 | `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、`daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore`、`daily_winsorize_zscore_columns`、`daily_winsorize_quantile`、`daily_zscore_population`、`daily_quantile_bins`、`bin_returns_multi`、`bin_turnover`、`daily_row_spearman`、`daily_ols` |
 | 可选后端 | `native`、`python`、`auto` |
 | 默认后端 | `auto` |
-| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、OLS、分位图、换手与自相关 |
-| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson`；`winsorize_by_day`；`zscore_by_day`；分位分组；多标签分位收益；分位换手；因子自相关；`_daily_regression` |
-| 实际 C++ 替换模块数 | 10 |
-| 真实业务 stage 收益 | 相关性下降 35.5%；overview 2.535x；bins 1.621x；turnover 1.854x；decay 3.255x；OLS 链路 native 相对 Python 改善 46.26% |
+| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、OLS、分位图、换手、自相关和模型预处理 |
+| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson`；`winsorize_by_day`；`zscore_by_day`；分位分组；多标签分位收益；分位换手；因子自相关；`_daily_regression`；模型 groupby rank/quantile/std |
+| 实际 C++ 替换模块数 | 13 |
+| 真实业务 stage 收益 | 相关性下降 35.5%；overview 2.535x；bins 1.621x；turnover 1.854x；decay 3.255x；OLS 链路改善 46.26%；模型 rank 3.282x |
 
 ## 修改注意
 
@@ -271,3 +283,21 @@ V118 曾按 `1e-10` 口径停止原生 OLS。V119 用户确认 OLS 业务一致�
 `13.100s`；native 相对 Python 改善 `46.26%`。三后端 payload 在 `1e-5` 内一致，
 native/auto 峰值 RSS 为 Python 的 `0.998x/0.992x`。证据位于
 `AiRecord/benchmarks/V119/p1-07-20261027/`。
+
+## P2-01 模型预处理
+
+模型预处理通过 `kernels.get_backend()` 使用同一批原生接口。`daily_rank_pct` 同时服务
+特征和标签排名；新增 `daily_winsorize_quantile` 与 `daily_zscore_population` 分别匹配
+模型现有的 1%/99% 分位裁剪和总体标准差 z-score。
+
+固定 2,138,239 行、50 列、单线程、三次独立进程：
+
+| 模式 | Python | native | 加速 |
+|---|---:|---:|---:|
+| rank | 26.095s | 7.951s | 3.282x |
+| zscore | 6.607s | 3.509s | 1.883x |
+| rank+winsorize | 58.726s | 17.095s | 3.435x |
+| zscore+winsorize | 38.841s | 12.345s | 3.146x |
+
+四个模式的 50 列 float32 哈希在三后端完全一致，native/auto 均不慢于 Python。证据位于
+`AiRecord/benchmarks/V120/p2-01-20261027/`。

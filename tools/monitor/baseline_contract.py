@@ -193,6 +193,8 @@ _SOURCE_PATHS = (
     Path("tests/test_ols_native_baseline.py"),
     Path("tools/monitor/standardize_native_baseline.py"),
     Path("tools/monitor/ols_native_baseline.py"),
+    Path("tools/monitor/modeling_preprocess_baseline.py"),
+    Path("core/kernels/preprocess.py"),
     Path("research/evaluation/calculate/correlation.py"),
     Path("research/evaluation/calculate/daily.py"),
     Path("research/evaluation/calculate/normalize.py"),
@@ -209,6 +211,14 @@ _SOURCE_PATHS = (
     Path("research/mining/expression_batch.py"),
     Path("research/mining/expression_compiler.py"),
     Path("research/mining/expression_dag.py"),
+    Path("research/modeling/alpha/kernel_ops.py"),
+    Path("research/modeling/alpha/preprocess.py"),
+    Path("research/modeling/alpha/dataset.py"),
+    Path("tests/test_cpp_model_preprocess.py"),
+    Path("tests/test_modeling_preprocess_baseline.py"),
+    Path("tests/test_alpha_preprocess.py"),
+    Path("tests/test_alpha_dataset.py"),
+    Path("tests/test_alpha_train.py"),
 )
 
 

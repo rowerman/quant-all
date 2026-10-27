@@ -45,6 +45,26 @@ void daily_zscore(
     double* result
 );
 
+void daily_zscore_population(
+    const double* values,
+    std::size_t rows,
+    const std::int64_t* group_offsets,
+    std::size_t group_count,
+    int threads,
+    double* result
+);
+
+void daily_winsorize_quantile(
+    const double* values,
+    std::size_t rows,
+    const std::int64_t* group_offsets,
+    std::size_t group_count,
+    double lower_quantile,
+    double upper_quantile,
+    int threads,
+    double* result
+);
+
 void daily_winsorize_zscore(
     const double* values,
     std::size_t rows,

@@ -305,6 +305,13 @@ manifest 记录数据集 ID、规格、原始特征、上下文特征、数据�
 默认训练规格使用 rank、开启缺失指示、关闭 winsorize、行业/市值中性化和额外截断。
 注意中性化发生在 rank 之后；行业残差或市值残差不会再重新 rank。
 
+V120 起，特征 rank、标签 rank、1%/99% 分位裁剪和总体标准差 z-score 通过
+`alpha.kernel_ops` 进入统一 `kernels` 后端。每次预处理只做一次日期稳定分组，并按原
+行序回填；中性化和市值残差仍由 Python 执行。默认 `QUANT_KERNEL_BACKEND=auto`，
+扩展不可导入时回退 Python。固定 213.8 万行开发集上，rank 由 26.095 秒降至 7.951 秒，
+zscore 由 6.607 秒降至 3.509 秒；python/native/auto 的 float32 列哈希完全一致。
+详见 [模型截面预处理](../research/modeling/alpha/preprocessing.md)。
+
 ### 6.2 中性化边界
 
 - 行业中性化使用信号日可见的申万一级行业，缺失行业归入 `UNKNOWN` 组。
@@ -736,12 +743,12 @@ logs/research/modeling/scripts_build_alpha_evaluate/
 
 ## 16. 测试映射
 
-当前模型相关测试共 192 个（包括正式产物只读检查）。主要映射：
+当前模型相关测试共 208 个（包括正式产物只读检查）。主要映射：
 
 | 主题 | 测试文件 |
 |---|---|
 | 契约、数据集和标签 | [test_alpha_config.py](../../tests/test_alpha_config.py)、[test_alpha_dataset.py](../../tests/test_alpha_dataset.py) |
-| 预处理因果性 | [test_alpha_preprocess.py](../../tests/test_alpha_preprocess.py) |
+| 预处理因果性与原生核一致性 | [test_alpha_preprocess.py](../../tests/test_alpha_preprocess.py)、[test_cpp_model_preprocess.py](../../tests/test_cpp_model_preprocess.py) |
 | 切分、purge 和 embargo | [test_alpha_split.py](../../tests/test_alpha_split.py) |
 | 周频面板与基线 | [test_alpha_panel.py](../../tests/test_alpha_panel.py)、[test_alpha_baselines.py](../../tests/test_alpha_baselines.py) |
 | 模型后端 | [test_alpha_linear.py](../../tests/test_alpha_linear.py)、[test_alpha_gbdt.py](../../tests/test_alpha_gbdt.py)、[test_alpha_sklearn_hist_gbdt.py](../../tests/test_alpha_sklearn_hist_gbdt.py)、[test_alpha_ensemble.py](../../tests/test_alpha_ensemble.py) |

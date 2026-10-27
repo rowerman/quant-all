@@ -20,6 +20,7 @@ from alpha.config import (
     dataset_versions,
 )
 from alpha.errors import AlphaArtifactError, AlphaConfigError, AlphaDataError
+from alpha.kernel_ops import date_groups, get_model_backend, rank_pct_by_date
 from alpha.logging_conf import get_logger
 
 logger = get_logger("alpha.dataset")
@@ -266,13 +267,13 @@ def assemble_dataset(
         "float32"
     )
     valid_label = frame["eligible"] & frame["label_raw"].notna()
-    frame["label_rank"] = (
-        frame["label_raw"]
-        .where(valid_label)
-        .groupby(frame["trade_date"])
-        .rank(pct=True, method="average")
-        .astype("float32")
+    label_rank = rank_pct_by_date(
+        frame["label_raw"].where(valid_label).to_numpy(dtype=np.float64),
+        frame["trade_date"],
+        backend=get_model_backend(),
+        groups=date_groups(frame["trade_date"], len(frame)),
     )
+    frame["label_rank"] = label_rank.astype("float32")
     frame["sample_weight"] = (
         (frame["eligible"] & frame["label_rank"].notna()).astype("float32")
     )

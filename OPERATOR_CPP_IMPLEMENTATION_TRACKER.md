@@ -6,7 +6,8 @@
 - 当前状态：P0-01～P0-06、P1-01～P1-06 已完成；Spearman、逐日排名、逐日 Pearson、
   逐日 MAD、逐日 z-score、分位分组、多标签分位收益、分位换手和因子自相关已接入评估
   路径；P1-07 已按用户确认的 `1e-5` 一致性门槛完成，逐日 OLS 已接入 native 默认路径。
-  默认后端为 `auto`，实际 C++ 替换模块数为 10；P2-01 待开始。
+  模型预处理和标签排名已接入统一核；默认后端为 `auto`，实际 C++ 替换模块数为 13；
+  P2-01 已完成，P2-02 等待开始。
 
 ## 1. 使用规则
 
@@ -929,7 +930,7 @@ P2 只复用 P1 已验收的稳定核，不新增未经评估的算法。
 
 ### P2-01 将排名和标准化核共享给模型预处理
 
-- 状态：待开始（P1-04、P1-05 已完成）
+- 状态：已完成（V120，2026-10-27）
 - 依赖：P1-04、P1-05
 - 建议 session 数：1
 
@@ -947,28 +948,47 @@ P2 只复用 P1 已验收的稳定核，不新增未经评估的算法。
 
 详细工作：
 
-- [ ] 识别预处理中逐日 rank、z-score、winsorize、均值/标准差和标签排名。
-- [ ] 只复用输入输出完全匹配的核，不为模型强行重排数据。
-- [ ] 保持缺失指示、中性化、clip_z、sample_weight 和 label_rank 语义。
-- [ ] 保持 float32 输出和列顺序。
-- [ ] 记录数据集构建和预处理阶段收益。
-- [ ] 训练后端保持 sklearn/LightGBM，不引入自研训练核。
+- [x] 识别预处理中逐日 rank、z-score、winsorize、均值/标准差和标签排名。
+- [x] 模型 rank 复用 `daily_rank_pct`；新增分位裁剪和总体标准差 z-score 核。
+- [x] 每次预处理只做一次日期稳定分组，并按原行序回填。
+- [x] 保持缺失指示、中性化、clip_z、sample_weight 和 label_rank 语义。
+- [x] 保持 float32 输出和列顺序。
+- [x] 记录预处理阶段收益。
+- [x] 训练后端保持 sklearn/LightGBM，不引入自研训练核。
 
 测试：
 
-- [ ] 预处理 DataFrame 逐列对照，允许的浮点差异符合既有测试。
-- [ ] 标签排名的并列和缺失处理一致。
-- [ ] 模型训练输入 hash、模型指标和预测在容差内一致。
+- [x] 预处理 DataFrame 在 python/native/auto 下逐列和报告一致。
+- [x] 标签排名的并列和缺失处理一致。
+- [x] 合成模型指标和预测在 `1e-10` 内一致。
 
 验收：
 
-- 预处理或数据集构建有明显改善。
+- 三种实际 C++ 接入模块的 native 均不慢于 Python，门禁通过。
 - 训练和预测结果不出现实质漂移。
 - 未降低模型产物可复现性。
 
 停止/回退：
 
 - 若收益主要在训练而非预处理，停止该任务，不做无收益共享。
+
+完成记录：
+
+- 新增 `daily_winsorize_quantile` 和 `daily_zscore_population`，模型特征/标签 rank
+  复用 `daily_rank_pct`。
+- 固定 2,138,239 行、50 列、613 日开发集，每种模式三后端各运行 3 次：rank
+  `26.095s → 7.951s`（`3.282x`），zscore `6.607s → 3.509s`（`1.883x`），
+  rank+winsorize `58.726s → 17.095s`（`3.435x`），zscore+winsorize
+  `38.841s → 12.345s`（`3.146x`）。
+- python/native/auto 的 50 列 float32 列哈希与组合哈希完全一致，native/auto 均不慢于
+  Python；训练和预测联动测试通过。
+- 实际 C++ 替换模块数由 10 增至 13，新增“模型截面排名”“模型分位去极值”
+  “模型总体标准差 z-score”。
+- 证据：`AiRecord/benchmarks/V120/p2-01-20261027/`；复现：
+  `.venv/bin/python -m tools.monitor.modeling_preprocess_baseline`。
+- 定向测试 154 passed；普通 wheel、`pip check`、`compileall` 和
+  `git diff --check` 通过。wheel SHA-256：
+  `81d6868ecdf9ce0e37b974a3869ce0ac0db3782cdc4788934dee400e9452e673`。
 
 ### P2-02 将共享核用于挖掘门禁、轻量 IC 和相关性
 

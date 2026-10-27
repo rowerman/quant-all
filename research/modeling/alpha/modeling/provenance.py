@@ -13,6 +13,7 @@ from alpha.artifacts import MODEL_SCHEMA_VERSION_V2, write_json
 from alpha.config import MODEL_DATA_DIR
 from alpha.modeling.contracts import TrainingSpec
 from alpha.split import Fold
+from common.paths import PROJECT_ROOT
 
 
 def source_sha256(backend_name: str) -> str:
@@ -42,6 +43,20 @@ def source_sha256(backend_name: str) -> str:
             "gbdt.py",
             "preprocess.py",
             "split.py",
+            "kernel_ops.py",
+        )
+    )
+    files.extend(
+        PROJECT_ROOT / name
+        for name in (
+            "core/kernels/backend.py",
+            "core/kernels/fallback.py",
+            "core/kernels/native.py",
+            "core/kernels/preprocess.py",
+            "native/include/quant_native/daily.hpp",
+            "native/src/bindings.cpp",
+            "native/src/rank.cpp",
+            "native/src/standardize.cpp",
         )
     )
     digest = hashlib.sha256()

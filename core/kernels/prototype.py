@@ -258,6 +258,39 @@ class NumbaPrototypeBackend:
             n_mad,
         )
 
+    def daily_winsorize_quantile(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        lower_quantile: float = 0.01,
+        upper_quantile: float = 0.99,
+    ) -> FloatArray:
+        """未验证核显式委托 Python 回退。"""
+
+        logger.info(
+            "内核显式回退 kernel=daily_winsorize_quantile requested=numba "
+            "backend=python reason=numba_kernel_not_implemented"
+        )
+        return self._fallback.daily_winsorize_quantile(
+            values,
+            group_offsets,
+            lower_quantile,
+            upper_quantile,
+        )
+
+    def daily_zscore_population(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """未验证核显式委托 Python 回退。"""
+
+        logger.info(
+            "内核显式回退 kernel=daily_zscore_population requested=numba "
+            "backend=python reason=numba_kernel_not_implemented"
+        )
+        return self._fallback.daily_zscore_population(values, group_offsets)
+
     def daily_pearson(
         self,
         left: FloatArray,

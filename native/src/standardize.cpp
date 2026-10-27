@@ -90,6 +90,7 @@ void zscore_group(
     const double* values,
     std::size_t start,
     std::size_t end,
+    double ddof,
     double* result
 ) {
     std::size_t count = 0;
@@ -97,6 +98,8 @@ void zscore_group(
     double sum_compensation = 0.0;
     double square_sum = 0.0;
     double square_compensation = 0.0;
+    double welford_mean = 0.0;
+    double welford_m2 = 0.0;
     for (std::size_t row = start; row < end; ++row) {
         if (std::isfinite(values[row])) {
             const double corrected = values[row] - sum_compensation;
@@ -111,9 +114,19 @@ void zscore_group(
                 (updated_square - square_sum) - corrected_square;
             square_sum = updated_square;
             ++count;
+
+            const double delta =
+                values[row] - welford_mean;
+            welford_mean += delta / static_cast<double>(count);
+            welford_m2 +=
+                delta * (values[row] - welford_mean);
         }
     }
-    if (count < 2) {
+    if (
+        count < 2
+        || !(ddof >= 0.0)
+        || !(ddof < static_cast<double>(count))
+    ) {
         std::fill(
             result + start,
             result + end,
@@ -124,8 +137,11 @@ void zscore_group(
 
     const double sample_count = static_cast<double>(count);
     const double mean = sum / sample_count;
-    double variance =
-        (square_sum - sample_count * (mean * mean)) / (sample_count - 1.0);
+    double variance = ddof == 0.0
+        ? welford_m2 / sample_count
+        : (
+            square_sum - sample_count * (mean * mean)
+        ) / (sample_count - ddof);
     variance = std::max(variance, 0.0);
     const double standard_deviation = std::sqrt(variance);
     if (!(standard_deviation > 0.0)) {
@@ -139,6 +155,60 @@ void zscore_group(
     for (std::size_t row = start; row < end; ++row) {
         result[row] = (values[row] - mean) / standard_deviation;
     }
+}
+
+double quantile(std::vector<double>& samples, double probability) {
+    if (samples.empty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    if (samples.size() == 1) {
+        return samples[0];
+    }
+    std::sort(samples.begin(), samples.end());
+    const double position =
+        static_cast<double>(samples.size() - 1) * probability;
+    const auto lower_index = static_cast<std::size_t>(std::floor(position));
+    const std::size_t upper_index = std::min(
+        lower_index + 1,
+        samples.size() - 1
+    );
+    const double fraction = position - static_cast<double>(lower_index);
+    return samples[lower_index]
+        + fraction * (samples[upper_index] - samples[lower_index]);
+}
+
+std::vector<double> winsorize_quantile_group(
+    const double* values,
+    std::size_t start,
+    std::size_t end,
+    double lower_quantile,
+    double upper_quantile
+) {
+    std::vector<double> result(end - start);
+    std::vector<double> samples;
+    samples.reserve(end - start);
+    for (std::size_t row = start; row < end; ++row) {
+        const double value = values[row];
+        if (std::isfinite(value)) {
+            samples.push_back(value);
+            result[row - start] = value;
+        } else {
+            result[row - start] = std::numeric_limits<double>::quiet_NaN();
+        }
+    }
+    std::vector<double> lower_samples = samples;
+    const double upper = quantile(samples, upper_quantile);
+    const double lower = quantile(lower_samples, lower_quantile);
+    if (std::isnan(lower) || std::isnan(upper)) {
+        return result;
+    }
+    for (double& value : result) {
+        if (std::isnan(value)) {
+            continue;
+        }
+        value = std::clamp(value, lower, upper);
+    }
+    return result;
 }
 
 template <typename Worker>
@@ -246,8 +316,91 @@ void daily_zscore(
                     values,
                     static_cast<std::size_t>(group_offsets[group]),
                     static_cast<std::size_t>(group_offsets[group + 1]),
+                    1.0,
                     result
                 );
+            }
+        }
+    );
+}
+
+void daily_zscore_population(
+    const double* values,
+    std::size_t rows,
+    const std::int64_t* group_offsets,
+    std::size_t group_count,
+    int threads,
+    double* result
+) {
+    validate_inputs(rows, group_count, threads, 1.0);
+    run_groups(
+        group_count,
+        threads,
+        [&](std::size_t worker_index, std::size_t worker_count) {
+            for (std::size_t group = worker_index;
+                 group < group_count;
+                 group += worker_count) {
+                zscore_group(
+                    values,
+                    static_cast<std::size_t>(group_offsets[group]),
+                    static_cast<std::size_t>(group_offsets[group + 1]),
+                    0.0,
+                    result
+                );
+                for (std::size_t row =
+                         static_cast<std::size_t>(group_offsets[group]);
+                     row < static_cast<std::size_t>(group_offsets[group + 1]);
+                     ++row) {
+                    if (!std::isfinite(values[row])) {
+                        result[row] =
+                            std::numeric_limits<double>::quiet_NaN();
+                    }
+                }
+            }
+        }
+    );
+}
+
+void daily_winsorize_quantile(
+    const double* values,
+    std::size_t rows,
+    const std::int64_t* group_offsets,
+    std::size_t group_count,
+    double lower_quantile,
+    double upper_quantile,
+    int threads,
+    double* result
+) {
+    validate_inputs(rows, group_count, threads, 1.0);
+    if (
+        !std::isfinite(lower_quantile)
+        || !std::isfinite(upper_quantile)
+        || lower_quantile < 0.0
+        || upper_quantile > 1.0
+        || lower_quantile >= upper_quantile
+    ) {
+        throw std::invalid_argument("分位参数非法");
+    }
+    run_groups(
+        group_count,
+        threads,
+        [&](std::size_t worker_index, std::size_t worker_count) {
+            for (std::size_t group = worker_index;
+                 group < group_count;
+                 group += worker_count) {
+                const std::size_t start =
+                    static_cast<std::size_t>(group_offsets[group]);
+                const std::size_t end =
+                    static_cast<std::size_t>(group_offsets[group + 1]);
+                const std::vector<double> clipped =
+                    winsorize_quantile_group(
+                        values,
+                        start,
+                        end,
+                        lower_quantile,
+                        upper_quantile
+                    );
+                std::copy(clipped.begin(), clipped.end(), result + start);
             }
         }
     );
@@ -280,6 +433,7 @@ void daily_winsorize_zscore(
                     clipped.data(),
                     0,
                     clipped.size(),
+                    1.0,
                     result + start
                 );
             }
@@ -329,6 +483,7 @@ void daily_winsorize_zscore_columns(
                         clipped.data(),
                         0,
                         clipped.size(),
+                        1.0,
                         standardized.data()
                     );
                     for (std::size_t row = start; row < end; ++row) {

@@ -27,6 +27,7 @@ from kernels.backend import (
     validate_target_index,
 )
 from kernels.errors import KernelArrayError
+from kernels.preprocess import winsorize_quantile, zscore_population
 
 
 class PythonKernelBackend:
@@ -103,6 +104,33 @@ class PythonKernelBackend:
             )
             for column in range(matrix.shape[1])
         ])
+
+    def daily_winsorize_quantile(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        lower_quantile: float = 0.01,
+        upper_quantile: float = 0.99,
+    ) -> FloatArray:
+        """按组调用 pandas 分位裁剪金标准。"""
+
+        from kernels.backend import validate_quantiles
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        lower, upper = validate_quantiles(lower_quantile, upper_quantile)
+        return winsorize_quantile(array, offsets, lower, upper)
+
+    def daily_zscore_population(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """按组调用 pandas 总体标准差 z-score 金标准。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        return zscore_population(array, offsets)
 
     def daily_pearson(
         self,

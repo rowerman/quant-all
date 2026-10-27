@@ -95,6 +95,22 @@ class NativeKernelBackend(Protocol):
     ) -> FloatArray:
         """按组对多列融合 MAD 去极值和样本标准差 z-score。"""
 
+    def daily_winsorize_quantile(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        lower_quantile: float = 0.01,
+        upper_quantile: float = 0.99,
+    ) -> FloatArray:
+        """按组使用线性插值分位裁剪极值。"""
+
+    def daily_zscore_population(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """按组计算总体标准差口径的 z-score。"""
+
     def daily_pearson(
         self,
         left: FloatArray,
@@ -263,6 +279,27 @@ def validate_n_mad(n_mad: object) -> float:
     if not np.isfinite(value) or value <= 0:
         raise KernelParameterError("n_mad 必须是有限正数")
     return value
+
+
+def validate_quantiles(
+    lower_quantile: object,
+    upper_quantile: object,
+) -> tuple[float, float]:
+    """校验分位阈值位于 `[0, 1]` 且下界小于上界。"""
+
+    for name, value in (
+        ("lower_quantile", lower_quantile),
+        ("upper_quantile", upper_quantile),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise KernelParameterError(f"{name} 必须是 0 到 1 之间的有限数")
+        if not np.isfinite(float(value)) or not 0.0 <= float(value) <= 1.0:
+            raise KernelParameterError(f"{name} 必须是 0 到 1 之间的有限数")
+    lower = float(lower_quantile)
+    upper = float(upper_quantile)
+    if lower >= upper:
+        raise KernelParameterError("lower_quantile 必须小于 upper_quantile")
+    return lower, upper
 
 
 def group_codes(group_offsets: IntArray) -> IntArray:

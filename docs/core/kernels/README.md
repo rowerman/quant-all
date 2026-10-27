@@ -2,10 +2,10 @@
 
 `core/kernels` 以顶层包名 `kernels` 提供与具体加速后端无关的批量数组契约。当前包含
 Python 回退、Numba 研究原型，以及 C++ Spearman、逐日排名、逐日 Pearson、MAD、
-z-score、单列/多列融合标准化、分位分组、多标签分位收益、分位换手和逐行 Spearman
-后端。
+z-score、单列/多列融合标准化、分位裁剪、总体标准差 z-score、分位分组、多标签分位
+收益、分位换手和逐行 Spearman 后端。
 评估相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、分位图和换手已默认走
-`auto`；模型、挖掘和回测尚未接入加速后端。
+`auto`；模型预处理和标签排名也已接入，挖掘和回测尚未接入加速后端。
 
 ## 负责什么
 
@@ -17,6 +17,7 @@ z-score、单列/多列融合标准化、分位分组、多标签分位收益、
 - 提供 C++ Spearman 完整矩阵和目标行后端。
 - 提供 C++ 逐日排名和逐日 Pearson 后端。
 - 提供 C++ 逐日 MAD、z-score 和融合标准化后端。
+- 提供 C++ 逐日 1%/99% 分位裁剪和总体标准差 z-score 后端。
 - 提供 C++ 多列融合标准化入口，供风格暴露共享一次日分组。
 - 提供 C++ 分位分组、多标签分位收益、分位换手和逐行 Spearman 后端。
 - 通过 `KERNEL-001`～`KERNEL-004` 区分数组、offset、参数和后端错误。
@@ -29,6 +30,7 @@ z-score、单列/多列融合标准化、分位分组、多标签分位收益、
 - `calculate.daily`：IC、RankIC、多周期衰减和增量 IC。
 - `calculate.exposure`：风格与因子逐日 MAD 去极值 + z-score。
 - `calculate.binning`：分位分组、多标签分位收益、组号换手和因子自相关。
+- `alpha.kernel_ops`：模型特征 rank、分位裁剪、总体 z-score 和标签 rank。
 - `tests/test_native_kernels.py`
 - `tests/test_cpp_binning.py`
 - `tests/test_cpp_native.py`
@@ -45,11 +47,13 @@ z-score、单列/多列融合标准化、分位分组、多标签分位收益、
 
 - Python 回退调用 `calculate.daily`、`calculate.normalize`、
   `calculate.correlation._daily_spearman`、`calculate.exposure` 和
-  `calculate.binning` 的现有实现。
+  `calculate.binning` 的现有实现；模型分位裁剪和总体 z-score 的 Python 金标准位于
+  `kernels.preprocess`。
 - Numba 原型的未验证核显式委托 Python 回退。
 - `CppKernelBackend` 把 `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、
   `daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore`、
-  `daily_winsorize_zscore_columns`、
+  `daily_winsorize_zscore_columns`、`daily_winsorize_quantile`、
+  `daily_zscore_population`、
   `daily_quantile_bins`、`bin_returns_multi`、`bin_turnover` 和
   `daily_row_spearman`、`daily_ols` 交给 `quant_native`。
 - 基准工具读取正式因子 Parquet 和评估面板，只读，不写业务数据。
@@ -65,6 +69,9 @@ z-score、单列/多列融合标准化、分位分组、多标签分位收益、
 - `daily_pearson` 返回 `(相关系数[组], 有效配对数[组])`，只使用两侧有限的配对。
 - `daily_winsorize_mad` 返回与输入等长的一维 MAD 裁剪结果。
 - `daily_zscore` 返回按组样本标准差计算的 z-score。
+- `daily_winsorize_quantile` 返回逐组线性插值分位裁剪结果；默认 1%/99%，NaN 保持缺失。
+- `daily_zscore_population` 返回逐组总体标准差 `ddof=0` 的 z-score；不足 2 个有效
+  样本或零方差返回 NaN。
 - `daily_winsorize_zscore` 等价于先调用 MAD 去极值、再调用 z-score，供风格暴露一次
   完成标准化。
 - `daily_winsorize_zscore_columns` 对二维矩阵逐列执行同一融合标准化，供风格列和因子
@@ -168,7 +175,7 @@ z-score、单列/多列融合标准化、分位分组、多标签分位收益、
 
 | 项目 | 当前状态 |
 |---|---|
-| 实际 C++ 替换模块数 | 10 |
+| 实际 C++ 替换模块数 | 13 |
 | C++ 扩展 | `quant_native` 已构建 |
 | 默认计算后端 | `auto`，扩展可用时选择 native |
 | P1-01 门禁 | 逐日排名门禁已通过 |
@@ -177,6 +184,9 @@ z-score、单列/多列融合标准化、分位分组、多标签分位收益、
 | 逐日 Pearson 模块 | Pearson IC 与通用日度相关已接入 |
 | 逐日 MAD 去极值模块 | Pearson IC 和风格暴露已接入 |
 | 逐日 z-score 模块 | 风格暴露经融合标准化入口接入 |
+| 模型截面排名模块 | 模型特征 rank 和标签 rank 共用 `daily_rank_pct` |
+| 模型分位去极值模块 | 模型可选 1%/99% winsorize 已接入 |
+| 模型总体标准差 z-score 模块 | 模型 zscore 模式已接入 |
 | 分位分组模块 | `assign_bins` 已接入 |
 | 多标签分位收益模块 | 多周期衰减已接入 |
 | 分位换手模块 | 换手 stage 已接入 |
@@ -197,6 +207,18 @@ V118 曾按 `1e-10` 口径停止；V119 用户确认 OLS 业务一致性门槛�
 `13.100s`；native 相对 Python 改善 `46.26%`，三后端 payload 在 `1e-5` 内一致，
 native/auto 峰值 RSS 为 Python 的 `0.998x/0.992x`。证据位于
 `AiRecord/benchmarks/V119/p1-07-20261027/`。
+
+## P2-01 模型预处理接入
+
+- `alpha.kernel_ops` 每次调用只选择一次后端，并复用同一日期分组和原行序回填。
+- 模型 rank 与标签 rank 复用 `daily_rank_pct`；1%/99% 分位裁剪和总体标准差
+  z-score 使用新增核。
+- 固定 2,138,239 行、50 列、3 次独立进程单线程基准：rank `26.095s → 7.951s`
+  （`3.282x`），zscore `6.607s → 3.509s`（`1.883x`），rank+winsorize
+  `58.726s → 17.095s`（`3.435x`），zscore+winsorize `38.841s → 12.345s`
+  （`3.146x`）。
+- python/native/auto 的 50 列 float32 哈希完全一致，native/auto 均不慢于 Python。
+  证据位于 `AiRecord/benchmarks/V120/p2-01-20261027/`。
 
 ## 修改注意
 

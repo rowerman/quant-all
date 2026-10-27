@@ -54,6 +54,8 @@ LightGBM/Ridge。当前三个历史模型仅作为实验、回退和归档产物
   `acceptance_2c80425c2cfe`、`p5_2_5494d7f2b910`、`p5_3_65282c575784`。
 - V86：后端目录自动发现，训练命令自动登记；模型索引 v3 聚合评估、账本、监控、
   生命周期和最终留出；训练恢复与评估复用补齐完整哈希校验。
+- V120：模型特征 rank、标签 rank、1%/99% 分位裁剪和总体标准差 z-score 接入统一
+  C++ 核；python/native/auto 输出逐列哈希一致，真实预处理明显加速。
 
 研究口径见 `research_contract.md`，特征审计结论见 `feature_audit.md`，
 训练后端和新增模型方式见 `training_backends.md`，模型模块边界见
@@ -63,7 +65,8 @@ P3-4 方法和结果见 `importance_ablation.md`，P3-5 决策见 `p3_decision.m
 模型监控见 `model_monitoring.md`。
 模型生命周期见 `model_lifecycle.md`，正式主模型说明见
 `model_card_lightgbm_ensemble_label_rank_6aea5c9299d5.md`。通用完整账本入口见
-`ledger_acceptance.md`。
+`ledger_acceptance.md`。截面预处理、日期分组和原生核接入见
+`preprocessing.md`。
 
 ## 常用命令
 

@@ -9,6 +9,13 @@ import pandas as pd
 
 from alpha.dataset import RESERVED_COLUMNS
 from alpha.errors import AlphaPreprocessError
+from alpha.kernel_ops import (
+    date_groups,
+    get_model_backend,
+    rank_pct_by_date,
+    winsorize_quantile_by_date,
+    zscore_population_by_date,
+)
 
 
 @dataclass(frozen=True)
@@ -41,15 +48,6 @@ class PreprocessedFrame:
     feature_names: tuple[str, ...]
     missing_columns: tuple[str, ...]
     report: dict
-
-
-def _winsorize(values: pd.Series, dates: pd.Series) -> pd.Series:
-    """按日把取值压缩到 1% / 99% 分位。"""
-
-    grouped = values.groupby(dates)
-    low = grouped.transform(lambda item: item.quantile(0.01))
-    high = grouped.transform(lambda item: item.quantile(0.99))
-    return values.clip(lower=low, upper=high)
 
 
 def _residualize_log_mv(
@@ -132,6 +130,8 @@ def transform(
     if "log_mv" not in frame.columns and "log_mv" in settings.neutralize:
         raise AlphaPreprocessError("市值中性化需要 log_mv 列")
     dates = frame["trade_date"]
+    backend = get_model_backend()
+    groups = date_groups(dates, len(frame))
     eligible = frame["eligible"].astype(bool)
     output: dict[str, pd.Series] = {
         "trade_date": dates,
@@ -154,15 +154,34 @@ def transform(
         missing_rates[name] = (
             float(missing_mask.sum() / eligible_count) if eligible_count else 0.0
         )
-        work = _winsorize(raw, dates) if settings.winsorize else raw
+        raw_values = raw.to_numpy(dtype=np.float64, na_value=np.nan)
+        work = (
+            winsorize_quantile_by_date(
+                raw_values,
+                dates,
+                backend=backend,
+                groups=groups,
+            )
+            if settings.winsorize
+            else raw_values
+        )
         if settings.method == "rank":
-            values = work.groupby(dates).rank(pct=True, method="average")
+            computed = rank_pct_by_date(
+                work,
+                dates,
+                backend=backend,
+                groups=groups,
+            )
             fill = 0.5
         else:
-            mean = work.groupby(dates).transform("mean")
-            std = work.groupby(dates).transform("std", ddof=0)
-            values = (work - mean).div(std.replace(0.0, np.nan))
+            computed = zscore_population_by_date(
+                work,
+                dates,
+                backend=backend,
+                groups=groups,
+            )
             fill = 0.0
+        values = pd.Series(computed, index=frame.index, dtype=np.float64)
         values = values.fillna(fill)
         if settings.neutralize:
             values = _neutralize(values, frame, settings)

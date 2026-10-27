@@ -18,6 +18,25 @@ from alpha.predict import _predict_loaded
 from alpha.split import Fold
 
 
+def _assert_nested_numbers_close(left, right):
+    """递归比较指标 JSON 中的数字。"""
+
+    if isinstance(left, dict) and isinstance(right, dict):
+        assert left.keys() == right.keys()
+        for key in left:
+            _assert_nested_numbers_close(left[key], right[key])
+        return
+    if isinstance(left, list) and isinstance(right, list):
+        assert len(left) == len(right)
+        for left_item, right_item in zip(left, right, strict=True):
+            _assert_nested_numbers_close(left_item, right_item)
+        return
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        assert left == pytest.approx(right, abs=1e-10, rel=1e-10)
+        return
+    assert left == right
+
+
 def _synthetic_dataset():
     """构造两折、六只股票的周频数据集。"""
 
@@ -79,7 +98,13 @@ def _synthetic_dataset():
     return frame, manifest, folds
 
 
-def _fit(tmp_path: Path, frame: pd.DataFrame, manifest: dict, folds):
+def _fit(
+    tmp_path: Path,
+    frame: pd.DataFrame,
+    manifest: dict,
+    folds,
+    preprocess: dict | None = None,
+):
     """运行合成数据训练。"""
 
     return fit_model_loaded(
@@ -93,6 +118,7 @@ def _fit(tmp_path: Path, frame: pd.DataFrame, manifest: dict, folds):
                 "alpha_grid": [0.1, 1.0],
                 "seed": 0,
             },
+            preprocess=preprocess or {},
         ),
         folds=folds,
         output_root=tmp_path,
@@ -193,3 +219,81 @@ def test_resume_rejects_corrupt_prediction_part(tmp_path, monkeypatch):
     part.write_bytes(b"corrupt")
     with pytest.raises(AlphaArtifactError, match="无法读取"):
         _fit(tmp_path, frame, manifest, folds)
+
+
+@pytest.mark.parametrize(
+    "preprocess",
+    [
+        {
+            "method": "rank",
+            "missing_indicator": True,
+            "winsorize": False,
+            "neutralize": [],
+            "clip_z": 5.0,
+        },
+        {
+            "method": "zscore",
+            "missing_indicator": True,
+            "winsorize": True,
+            "neutralize": [],
+            "clip_z": 3.0,
+        },
+    ],
+)
+def test_preprocess_backend_does_not_change_synthetic_training(
+    tmp_path,
+    monkeypatch,
+    preprocess,
+):
+    """rank 和标准化预处理不改变合成模型预测。"""
+
+    monkeypatch.setattr(
+        training_pipeline, "append_experiment", lambda *args, **kwargs: None
+    )
+    frame, manifest, folds = _synthetic_dataset()
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "python")
+    python_artifact = _fit(
+        tmp_path / "python",
+        frame,
+        manifest,
+        folds,
+        preprocess,
+    )
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "native")
+    native_artifact = _fit(
+        tmp_path / "native",
+        frame,
+        manifest,
+        folds,
+        preprocess,
+    )
+
+    python_predictions = _predict_loaded(
+        frame,
+        python_artifact.manifest,
+        root=tmp_path / "python",
+        start=python_artifact.manifest["prediction_start"],
+        end=python_artifact.manifest["prediction_end"],
+    )
+    native_predictions = _predict_loaded(
+        frame,
+        native_artifact.manifest,
+        root=tmp_path / "native",
+        start=native_artifact.manifest["prediction_start"],
+        end=native_artifact.manifest["prediction_end"],
+    )
+
+    pd.testing.assert_frame_equal(
+        native_predictions[["trade_date", "stock_code"]],
+        python_predictions[["trade_date", "stock_code"]],
+    )
+    np.testing.assert_allclose(
+        native_predictions["score"].to_numpy(),
+        python_predictions["score"].to_numpy(),
+        atol=1e-10,
+        rtol=1e-10,
+    )
+    _assert_nested_numbers_close(
+        native_artifact.metrics["test_model"],
+        python_artifact.metrics["test_model"],
+    )

@@ -114,7 +114,7 @@ python3.12 -m venv .venv
 Spearman、逐日排名、逐日 Pearson、MAD、z-score、融合标准化、分位分组、多标签分位
 收益、分位换手与逐行 Spearman 后端；它不替代 `calculate.native` 的并发锁。相关性、
 IC/RankIC、多周期衰减、增量 IC、风格暴露、OLS 和分位图/换手默认使用 `auto`，扩展
-可用时选择 native，不可导入时回退 Python。当前实际 C++ 替换模块数为 10。构建方式和
+可用时选择 native，不可导入时回退 Python。当前实际 C++ 替换模块数为 13。构建方式和
 替换状态见
 [C++ 批量计算扩展](../native/README.md) 和
 [批量计算核](../core/kernels/README.md) 中的台账。
@@ -628,6 +628,7 @@ bash tools/monitor/serve.sh
 | `browser_check.py` | 写截图 | 需要监测站和 Chromium；会执行短区间评估 |
 | `benchmark.py` | 只打印 JSON | 读取正式因子和主库，可能计算完整 IC |
 | `operator_baseline.py` | 写 `AiRecord/benchmarks/V105` 证据 | 固定真实金标准、输入哈希、逐 stage 耗时和 RSS；完整评估较慢，应独立运行 |
+| `modeling_preprocess_baseline.py` | 写 `AiRecord/benchmarks/V120` 证据 | 固定 213.8 万行开发集；三后端四次预处理、每次独立进程运行 3 次，较慢 |
 | `stress.py` | 写 `AiRecord/benchmarks` JSONL | 本地或真实 HTTP 并发/取消/背压 |
 | `mining_check.py` | 写截图，启动临时夹具 | 使用临时挖掘库和确定性候选，不调用付费模型 |
 | `backtest_check.py` | 执行真实回测并写结果库、截图 | 会改变回测历史列表 |

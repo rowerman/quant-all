@@ -22,6 +22,7 @@ from kernels.backend import (
     validate_minimum,
     validate_n_mad,
     validate_offsets,
+    validate_quantiles,
     validate_target_index,
 )
 from kernels.errors import KernelArrayError, KernelBackendError
@@ -281,6 +282,71 @@ class CppKernelBackend:
             offsets.size - 1,
             matrix.shape[1],
             multiplier,
+            threads,
+            elapsed_ms,
+        )
+        return np.asarray(result, dtype=np.float64)
+
+    def daily_winsorize_quantile(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        lower_quantile: float = 0.01,
+        upper_quantile: float = 0.99,
+    ) -> FloatArray:
+        """调用 C++ 逐日分位裁剪核；参数与统一协议一致。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        lower, upper = validate_quantiles(lower_quantile, upper_quantile)
+        threads = native_threads()
+        started = time.perf_counter()
+        try:
+            result = self._native.daily_winsorize_quantile(
+                array,
+                offsets,
+                lower,
+                upper,
+            )
+        except Exception as exc:
+            raise KernelBackendError(f"C++ 分位裁剪计算失败：{exc}") from exc
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "内核执行 kernel=daily_winsorize_quantile requested=native "
+            "backend=native rows=%d groups=%d lower=%.6g upper=%.6g "
+            "threads=%d elapsed_ms=%.3f",
+            array.size,
+            offsets.size - 1,
+            lower,
+            upper,
+            threads,
+            elapsed_ms,
+        )
+        return np.asarray(result, dtype=np.float64)
+
+    def daily_zscore_population(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """调用 C++ 逐日总体标准差 z-score 核。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        threads = native_threads()
+        started = time.perf_counter()
+        try:
+            result = self._native.daily_zscore_population(array, offsets)
+        except Exception as exc:
+            raise KernelBackendError(
+                f"C++ 总体标准差 z-score 计算失败：{exc}"
+            ) from exc
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "内核执行 kernel=daily_zscore_population requested=native "
+            "backend=native rows=%d groups=%d threads=%d elapsed_ms=%.3f",
+            array.size,
+            offsets.size - 1,
             threads,
             elapsed_ms,
         )

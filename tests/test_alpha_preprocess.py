@@ -1,9 +1,18 @@
 """截面预处理与中性化的单元测试。"""
 
+import importlib.util
+
 import numpy as np
 import pandas as pd
+import pytest
 
 from alpha.preprocess import PreprocessConfig, transform
+
+QUANT_NATIVE_AVAILABLE = importlib.util.find_spec("quant_native") is not None
+requires_native = pytest.mark.skipif(
+    not QUANT_NATIVE_AVAILABLE,
+    reason="quant_native 扩展未构建",
+)
 
 
 def _frame() -> pd.DataFrame:
@@ -69,3 +78,51 @@ def test_industry_neutralization_removes_group_means():
     first = result.data.iloc[:4]
     means = first.groupby("industry_l1")["X"].mean()
     assert np.allclose(means.to_numpy(), 0.0, atol=1e-6)
+
+
+@requires_native
+@pytest.mark.parametrize("method", ["rank", "zscore"])
+@pytest.mark.parametrize("winsorize", [False, True])
+@pytest.mark.parametrize("neutralize", [(), ("industry",), ("log_mv",)])
+def test_preprocess_backends_match(
+    monkeypatch,
+    method,
+    winsorize,
+    neutralize,
+):
+    """三后端保持预处理值、报告、缺失列和中性化语义。"""
+
+    frame = _frame()
+    config = PreprocessConfig(
+        method=method,
+        winsorize=winsorize,
+        neutralize=neutralize,
+        clip_z=2.5,
+    )
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "python")
+    expected = transform(frame, config)
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "native")
+    native = transform(frame, config)
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "auto")
+    automatic = transform(frame, config)
+
+    pd.testing.assert_frame_equal(native.data, expected.data)
+    pd.testing.assert_frame_equal(automatic.data, expected.data)
+    assert native.feature_names == expected.feature_names
+    assert native.missing_columns == expected.missing_columns
+    assert native.report == expected.report
+
+
+@requires_native
+def test_preprocess_restores_shuffled_row_order(monkeypatch):
+    """日期和行顺序打乱时仍按日期计算并恢复原位置。"""
+
+    frame = pd.concat([_frame(), _frame().assign(trade_date=pd.Timestamp("2024-01-19"))])
+    shuffled = frame.sample(frac=1.0, random_state=72)
+    config = PreprocessConfig(method="zscore", winsorize=True)
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "python")
+    expected = transform(shuffled, config)
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "native")
+    actual = transform(shuffled, config)
+
+    pd.testing.assert_frame_equal(actual.data, expected.data)

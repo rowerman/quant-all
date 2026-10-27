@@ -97,6 +97,20 @@ double validate_n_mad(double n_mad) {
     return n_mad;
 }
 
+void validate_quantiles(double lower_quantile, double upper_quantile) {
+    if (
+        !std::isfinite(lower_quantile)
+        || !std::isfinite(upper_quantile)
+        || lower_quantile < 0.0
+        || upper_quantile > 1.0
+        || lower_quantile >= upper_quantile
+    ) {
+        throw py::value_error(
+            "分位参数必须满足 0 <= lower < upper <= 1"
+        );
+    }
+}
+
 py::tuple pairwise_spearman(
     const py::array& values,
     const py::array& group_offsets,
@@ -281,6 +295,63 @@ py::array_t<double> daily_zscore(
             rows,
             static_cast<const std::int64_t*>(group_offsets.data()),
             group_count,
+            threads,
+            static_cast<double*>(result.mutable_data())
+        );
+    }
+    return result;
+}
+
+py::array_t<double> daily_zscore_population(
+    const py::array& values,
+    const py::array& group_offsets
+) {
+    validate_vector(values, "values");
+    const auto rows = static_cast<std::size_t>(values.shape(0));
+    validate_offsets(group_offsets, rows);
+    const auto group_count =
+        static_cast<std::size_t>(group_offsets.size() - 1);
+    py::array_t<double> result(static_cast<py::ssize_t>(rows));
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::daily_zscore_population(
+            static_cast<const double*>(values.data()),
+            rows,
+            static_cast<const std::int64_t*>(group_offsets.data()),
+            group_count,
+            threads,
+            static_cast<double*>(result.mutable_data())
+        );
+    }
+    return result;
+}
+
+py::array_t<double> daily_winsorize_quantile(
+    const py::array& values,
+    const py::array& group_offsets,
+    double lower_quantile,
+    double upper_quantile
+) {
+    validate_vector(values, "values");
+    validate_quantiles(lower_quantile, upper_quantile);
+    const auto rows = static_cast<std::size_t>(values.shape(0));
+    validate_offsets(group_offsets, rows);
+    const auto group_count =
+        static_cast<std::size_t>(group_offsets.size() - 1);
+    py::array_t<double> result(static_cast<py::ssize_t>(rows));
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::daily_winsorize_quantile(
+            static_cast<const double*>(values.data()),
+            rows,
+            static_cast<const std::int64_t*>(group_offsets.data()),
+            group_count,
+            lower_quantile,
+            upper_quantile,
             threads,
             static_cast<double*>(result.mutable_data())
         );
@@ -800,6 +871,22 @@ PYBIND11_MODULE(quant_native, module) {
         py::arg("values"),
         py::arg("group_offsets"),
         R"doc(按组计算样本标准差口径的截面 z-score。)doc"
+    );
+    module.def(
+        "daily_zscore_population",
+        &daily_zscore_population,
+        py::arg("values"),
+        py::arg("group_offsets"),
+        R"doc(按组计算总体标准差口径的截面 z-score。)doc"
+    );
+    module.def(
+        "daily_winsorize_quantile",
+        &daily_winsorize_quantile,
+        py::arg("values"),
+        py::arg("group_offsets"),
+        py::arg("lower_quantile") = 0.01,
+        py::arg("upper_quantile") = 0.99,
+        R"doc(按组使用线性插值分位裁剪极值。)doc"
     );
     module.def(
         "daily_winsorize_zscore",

@@ -1,10 +1,18 @@
 """周频数据集组装的单元测试。"""
 
+import importlib.util
+
 import pandas as pd
 import pytest
 
 from alpha.dataset import DatasetSpec, assemble_dataset, validate_feature_columns
 from alpha.errors import AlphaConfigError
+
+QUANT_NATIVE_AVAILABLE = importlib.util.find_spec("quant_native") is not None
+requires_native = pytest.mark.skipif(
+    not QUANT_NATIVE_AVAILABLE,
+    reason="quant_native 扩展未构建",
+)
 
 
 def _inputs():
@@ -106,3 +114,43 @@ def test_dataset_spec_rejects_holdout_by_default():
 
     with pytest.raises(AlphaConfigError, match="开发期"):
         DatasetSpec(start="2012-01-01", end="2024-01-01")
+
+
+@requires_native
+def test_label_rank_matches_python_and_native(monkeypatch):
+    """标签排名经统一 rank 核后仍保持并列和权重语义。"""
+
+    factors, daily, labels, industry, calendar = _inputs()
+    daily.loc[
+        (daily["trade_date"] == pd.Timestamp("2024-01-05"))
+        & (daily["stock_code"] == "B"),
+        "is_st",
+    ] = True
+    labels.loc[
+        (labels["trade_date"] == pd.Timestamp("2024-01-05"))
+        & (labels["stock_code"] == "C"),
+        "fwd_ret_open_5",
+    ] = 0.1
+    spec = DatasetSpec(start="2024-01-01", end="2024-01-12", allow_holdout=True)
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "python")
+    expected = assemble_dataset(
+        factors,
+        daily,
+        labels,
+        industry,
+        calendar,
+        spec,
+        ("X", "Y"),
+    )
+    monkeypatch.setenv("QUANT_KERNEL_BACKEND", "native")
+    actual = assemble_dataset(
+        factors,
+        daily,
+        labels,
+        industry,
+        calendar,
+        spec,
+        ("X", "Y"),
+    )
+
+    pd.testing.assert_frame_equal(actual, expected)
