@@ -14,6 +14,7 @@ packages = [
   "common",
   "quant",
   "factors",
+  "kernels",
   "scripts",
   "scripts.build_alpha",
   "scripts.build_db",
@@ -31,7 +32,7 @@ packages = [
   "mining",
   "mining_worker",
 ]
-package-dir = {common = "core/common", quant = "core/data/quant", scripts = "core/data/scripts", factors = "core/factors", alpha = "research/modeling/alpha", calculate = "research/evaluation/calculate", backtest = "trading/backtest", backend = "apps/monitor/backend", mining = "research/mining", mining_worker = "research/mining_worker"}
+package-dir = {common = "core/common", quant = "core/data/quant", scripts = "core/data/scripts", factors = "core/factors", kernels = "core/kernels", alpha = "research/modeling/alpha", calculate = "research/evaluation/calculate", backtest = "trading/backtest", backend = "apps/monitor/backend", mining = "research/mining", mining_worker = "research/mining_worker"}
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

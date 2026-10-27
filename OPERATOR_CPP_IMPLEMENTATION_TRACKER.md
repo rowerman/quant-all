@@ -3,7 +3,7 @@
 - 来源报告：[OPERATOR_CPP_ANALYSIS_REPORT.md](TODO_docs/OPERATOR_CPP_ANALYSIS_REPORT.md)
 - 创建日期：2026-10-27
 - 代码基线：`main` 分支 V109 工作区（P0-04 提交 `e3a142a` 之后）
-- 当前状态：P0-01～P0-06 已完成；P1-01 及后续任务按依赖继续。
+- 当前状态：P0-01～P0-06、P1-01 已完成；Spearman 专项门禁未通过，P1-02 已停止。
 
 ## 1. 使用规则
 
@@ -445,7 +445,7 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 ### P1-01 建立批量核适配层并完成 Numba 算法验证
 
-- 状态：待开始
+- 状态：已完成（V111，2026-10-27）
 - 依赖：P0-01、P0-02、P0-03
 - 建议 session 数：1～2
 
@@ -463,23 +463,23 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 详细工作：
 
-- [ ] 定义 `NativeKernelBackend` 协议和 Python 回退适配器。
-- [ ] 接口至少覆盖 `daily_rank_pct`、`daily_winsorize_mad`、`daily_pearson`、
+- [x] 定义 `NativeKernelBackend` 协议和 Python 回退适配器。
+- [x] 接口至少覆盖 `daily_rank_pct`、`daily_winsorize_mad`、`daily_pearson`、
   `pairwise_spearman`、`daily_ols`。
-- [ ] 规定输入为 C 连续 `float64` 数组、C 连续 `int64` group offsets。
-- [ ] 在 Python 适配层校验 dtype、连续性、维度、offset 单调性和最小样本数。
-- [ ] 回退适配器直接调用现有 Python/NumPy 实现，不复制业务语义。
-- [ ] 为 Spearman 和逐日排名编写 Numba 原型，不接入生产默认路径。
-- [ ] 对比逐日循环、矩阵布局、排序和缺失掩码策略。
-- [ ] 记录 Numba 首次编译成本，基准时区分冷启动和热运行。
-- [ ] 增加环境开关和显式 fallback reason。
+- [x] 规定输入为 C 连续 `float64` 数组、C 连续 `int64` group offsets。
+- [x] 在 Python 适配层校验 dtype、连续性、维度、offset 单调性和最小样本数。
+- [x] 回退适配器直接调用现有 Python/NumPy 实现，不复制业务语义。
+- [x] 为 Spearman 和逐日排名编写 Numba 原型，不接入生产默认路径。
+- [x] 对比逐日循环、矩阵布局、排序和缺失掩码策略。
+- [x] 记录 Numba 首次编译成本，基准时区分冷启动和热运行。
+- [x] 增加环境开关和显式 fallback reason。
 
 测试：
 
-- [ ] 协议与 Python 回退在边界输入上与现有实现一致。
-- [ ] 错误 dtype、非连续数组、offsets 倒置和空输入明确报错。
-- [ ] Numba 原型与 SciPy/pandas 金标准一致。
-- [ ] 并列值、NaN 和常数截面不漂移。
+- [x] 协议与 Python 回退在边界输入上与现有实现一致。
+- [x] 错误 dtype、非连续数组、offsets 倒置和空输入明确报错。
+- [x] Numba 原型与 SciPy/pandas 金标准一致。
+- [x] 并列值、NaN 和常数截面不漂移。
 
 验收：
 
@@ -491,9 +491,31 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 
 - 若 Numba 原型没有收益，保留接口和测试，不引入 C++ 编译链。
 
+完成记录：
+
+- 新增 `kernels` 包，提供 `NativeKernelBackend`、`PythonKernelBackend`、
+  `BackendSelection`、`get_backend()` 和 `KERNEL-001`～`KERNEL-004`。
+- Python 回退覆盖五个核；Numba 只实现 `daily_rank_pct` 和 `pairwise_spearman`，
+  其余方法显式委托回退。Numba 和未来的 C++ 均不进入评估默认路径。
+- 固定微基准使用 2026-08-03、5,219×47 真实因子截面和 2026-08 共 21 个交易日、
+  109,652 行排名输入，每项热运行 5 次取中位数。
+- Spearman：Python 0.155752 秒，Numba 0.872288 秒，加速 0.179x，冷启动
+  20.104 秒；结果与 Python 金标准在 `1e-10` 内一致，计数完全一致。
+- 逐日排名：Python 0.017885 秒，Numba 0.008859 秒，加速 2.019x，冷启动
+  0.585 秒；结果逐值一致。
+- 核、IC、相关性、暴露和回归定向测试 88 passed；既有基准契约 6 passed；
+  后端原生锁并发测试 11 passed；`pip check`、editable 导入和 `git diff --check`
+  通过。
+- 用户确认采用 Spearman 专项门禁。微基准未达到 `1.5x`，因此没有运行完整三年
+  stage，P1-02 停止。逐日排名的局部收益不改变该结论。
+- 证据：`AiRecord/benchmarks/V111/p1-01-20261027/`。
+- 本轮实际 C++ 替换模块数为 0，不计入 C++ 模块替换收益。
+- 回退：删除 `core/kernels`、`kernels` 包映射、核测试和基准工具，恢复文档、
+  Tracker 和 V111 记录；不涉及生产数据或业务调用路径。
+
 ### P1-02 建立 C++ 构建骨架和 Spearman 单核 POC
 
-- 状态：等待依赖 P1-01
+- 状态：已停止（V111，2026-10-27：Spearman Numba 微基准仅 0.179x，未达到 1.5x）
 - 依赖：P1-01
 - 建议 session 数：1
 
@@ -540,6 +562,13 @@ P1 只在 P0 证明优化目标和基准后开展。先做统一接口和算法�
 停止/回退：
 
 - 任一正确性、崩溃或构建门槛不通过，停止 P1-03 并删除未接入的原生路径。
+
+停止记录：
+
+- P1-01 已按用户确认的 Spearman 专项门禁完成验证；微基准和真实 stage 需同时达标，
+  但微基准本身已失败，故未进入构建链和 C++ 代码。
+- 后续只有在 Spearman 算法或 Python 实现发生实质变化并重新通过完整门禁后，才重新
+  评估 P1-02；当前不创建 `native/`、不安装 CMake/pybind11，也不修改构建依赖。
 
 ### P1-03 将 Spearman 批量核接入评估相关性
 

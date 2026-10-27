@@ -149,8 +149,15 @@ def _design_matrix(styles: pd.DataFrame, industry: np.ndarray | None) -> np.ndar
     return np.hstack(parts)
 
 
-def _daily_regression(day_codes: np.ndarray, day_count: int, design: np.ndarray,
-                      response: np.ndarray, rows: np.ndarray) -> tuple:
+def _daily_regression(
+    day_codes: np.ndarray,
+    day_count: int,
+    design: np.ndarray,
+    response: np.ndarray,
+    rows: np.ndarray,
+    *,
+    min_rows: int = MIN_REGRESSION_ROWS,
+) -> tuple:
     """按交易日逐日做截面 OLS。
 
     参数:
@@ -159,6 +166,7 @@ def _daily_regression(day_codes: np.ndarray, day_count: int, design: np.ndarray,
         design: 设计矩阵（含截距）。
         response: 被解释变量（标准化后的因子）。
         rows: 每个回归样本在残差表里的行号。
+        min_rows: 单日最少回归样本数，默认沿用 30。
     """
     order = np.argsort(day_codes, kind="stable")
     starts = np.searchsorted(day_codes[order], np.arange(day_count))
@@ -170,7 +178,7 @@ def _daily_regression(day_codes: np.ndarray, day_count: int, design: np.ndarray,
     for index in range(day_count):
         start, end = int(starts[index]), int(ends[index])
         size = end - start
-        if size < MIN_REGRESSION_ROWS:
+        if size < min_rows:
             if size:
                 skipped += 1
             continue

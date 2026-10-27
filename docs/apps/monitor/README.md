@@ -59,6 +59,16 @@ benchmark另有near_limit/full_ic/compare/concurrent/reject案例。concurrent�
 `AiRecord/benchmarks/V105/p0-01-20261027/`。完整评估只跑一次；各案例独立子进程运行，
 不要与其他重型分析并发。
 
+批量核和 Numba 原型使用独立门禁：
+
+```bash
+.venv/bin/python -m tools.monitor.kernel_baseline --case suite
+```
+
+工具先校验数据指纹，再运行固定真实截面微基准；只有 Spearman 达到 `1.5x` 才继续完整
+相关性 stage。P1-01 结果与 C++ 替换状态见
+[批量计算核](../../core/kernels/README.md)。
+
 浏览器验收依赖不进项目环境，需要时临时安装：
 
 ```bash

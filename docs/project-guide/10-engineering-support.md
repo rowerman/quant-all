@@ -97,6 +97,7 @@ python3.12 -m venv .venv
 | `core/data/quant` | `quant` |
 | `core/data/scripts` | `scripts` |
 | `core/factors` | `factors` |
+| `core/kernels` | `kernels` |
 | `research/evaluation/calculate` | `calculate` |
 | `research/modeling/alpha` | `alpha` |
 | `trading/backtest` | `backtest` |
@@ -106,6 +107,10 @@ python3.12 -m venv .venv
 
 这层映射解释了为什么文档中的命令仍使用
 `.venv/bin/python -m scripts.build_db.build`，而文件实际位于 `core/data/scripts/`。
+
+`kernels` 是批量数值核的稳定导入入口，当前包含 Python 回退和 Numba 研究原型；它不替代
+`calculate.native` 的并发锁，也没有接入评估默认路径。C++ 替换状态以
+[批量计算核](../core/kernels/README.md) 中的台账为准。
 
 ### 3.2 两套依赖锁
 
@@ -273,7 +278,7 @@ Worker：
 
 | 位置 | 当前用例数 | 主要职责 |
 |---|---:|---|
-| `tests/` | 593 | 数据、因子、模型、挖掘契约与跨模块联测 |
+| `tests/` | 656 | 数据、因子、核契约、模型、挖掘契约与跨模块联测 |
 | `research/evaluation/calculate/tests/` | 111 | 评估面板、13 指标、一致性和原生计算 |
 | `trading/backtest/tests/` | 351 | 信号、订单、账本、成本、快照、提供者和存储 |
 | `apps/monitor/backend/tests/` | 79 | API、SSE、调度、取消、并发和错误映射 |
@@ -450,6 +455,15 @@ Worker 的
 | `EVAL-101`～`EVAL-104` | 参数、面板、股票池和因子 | 未知因子为 404，其余 400 |
 | `EVAL-201` | 指标注册或计算 | 400 |
 | `EVAL-301`～`EVAL-303` | 拆分、风格和行业 | 400 |
+
+批量计算核：
+
+| 错误码 | 含义 |
+|---|---|
+| `KERNEL-001` | 数组形状、dtype 或内存连续性 |
+| `KERNEL-002` | 分组 offset 边界或单调性 |
+| `KERNEL-003` | 最小样本数或 MAD 参数 |
+| `KERNEL-004` | 后端名称或后端可用性 |
 
 模型：
 
