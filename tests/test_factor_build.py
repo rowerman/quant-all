@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from scripts.build_factors import build as build_module
+from scripts.build_factors.sql import family_file
 from scripts.config import DB_FILE
 
 
@@ -165,3 +166,163 @@ def test_non_finite_values_are_null(built):
     """).df()
     conn.close()
     assert int(frame.at[0, "bad"]) == 0
+
+
+def _assert_year_equal(left, right, names):
+    """校验两个年度文件的主键、空值和 float32 因子值完全一致。"""
+
+    columns = ", ".join(f'"{name}"' for name in ["stock_code", "trade_date", *names])
+    conn = _source_connection()
+    try:
+        missing_left, missing_right, different = conn.execute(
+            f"""
+            SELECT
+              (SELECT count(*) FROM (
+                  SELECT {columns} FROM read_parquet('{left}')
+                  EXCEPT SELECT {columns} FROM read_parquet('{right}')
+              )),
+              (SELECT count(*) FROM (
+                  SELECT {columns} FROM read_parquet('{right}')
+                  EXCEPT SELECT {columns} FROM read_parquet('{left}')
+              )),
+              (SELECT count(*) FROM read_parquet('{left}') l
+               JOIN read_parquet('{right}') r USING (stock_code, trade_date)
+               WHERE {' OR '.join(
+                   f'(l."{name}" IS DISTINCT FROM r."{name}")' for name in names
+               )})
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert (int(missing_left), int(missing_right), int(different)) == (0, 0, 0)
+
+
+def test_full_history_matches_yearly_across_year_boundary(tmp_path):
+    """全区间一次计算与旧逐年路径在跨年窗口上逐行一致。"""
+
+    import factors
+
+    yearly_dir = tmp_path / "yearly"
+    full_history_dir = tmp_path / "full_history"
+    yearly = build_module.build(
+        ["momentum"],
+        "2023-01-01",
+        "2024-12-31",
+        factor_dir=yearly_dir,
+        catalog_file=tmp_path / "yearly.duckdb",
+        write_catalog=False,
+        build_mode="yearly",
+    )
+    full_history = build_module.build(
+        ["momentum"],
+        "2023-01-01",
+        "2024-12-31",
+        factor_dir=full_history_dir,
+        catalog_file=tmp_path / "full_history.duckdb",
+        write_catalog=False,
+        build_mode="full_history",
+    )
+
+    assert yearly["build_mode"] == "yearly"
+    assert full_history["build_mode"] == "full_history"
+    assert yearly["rows_written"] == full_history["rows_written"]
+    names = [spec.name for spec in factors.family_factors("momentum")]
+    for year in (2023, 2024):
+        _assert_year_equal(
+            family_file(yearly_dir, "momentum", year),
+            family_file(full_history_dir, "momentum", year),
+            names,
+        )
+    assert not list((full_history_dir / ".staging").iterdir())
+
+
+def test_full_history_query_failure_keeps_existing_file(tmp_path, monkeypatch):
+    """查询阶段失败时不得修改正式文件或留下 staging。"""
+
+    target = family_file(tmp_path, "momentum", YEAR)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"old-factor")
+    conn, _ = build_module.open_source()
+    windows = [(YEAR, f"{YEAR}-01-01", f"{YEAR}-12-31")]
+
+    def fail_query(*args, **kwargs):
+        raise RuntimeError("query failed")
+
+    monkeypatch.setattr(build_module, "family_query", fail_query)
+    with pytest.raises(RuntimeError, match="query failed"):
+        build_module.build_family_range(conn, "momentum", windows, tmp_path)
+    conn.close()
+
+    assert target.read_bytes() == b"old-factor"
+    assert not list((tmp_path / ".staging").iterdir())
+
+
+def test_publish_rolls_back_after_midway_failure(tmp_path, monkeypatch):
+    """第二年发布失败时恢复第一年的旧文件。"""
+
+    staging = tmp_path / ".staging" / "momentum-test"
+    staged = {}
+    existing = {}
+    for year in (2023, 2024):
+        source = staging / "_partitions" / f"year={year}" / "part.parquet"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(f"new-{year}".encode())
+        staged[year] = source
+        target = family_file(tmp_path, "momentum", year)
+        target.parent.mkdir(parents=True)
+        target.write_bytes(f"old-{year}".encode())
+        existing[year] = target
+
+    real_replace = build_module.os.replace
+
+    def fail_second_publish(source, target):
+        source = build_module.Path(source)
+        if source.parent.name == "year=2024":
+            raise OSError("publish failed")
+        real_replace(source, target)
+
+    monkeypatch.setattr(build_module.os, "replace", fail_second_publish)
+    with pytest.raises(OSError, match="publish failed"):
+        build_module._publish_partitions(
+            staged,
+            family="momentum",
+            factor_dir=tmp_path,
+        )
+
+    assert existing[2023].read_bytes() == b"old-2023"
+    assert existing[2024].read_bytes() == b"old-2024"
+
+
+def test_build_mode_and_memory_limit_are_validated(monkeypatch):
+    """非法模式或内存上限在进入计算前报出明确错误。"""
+
+    with pytest.raises(build_module.FactorBuildError, match="未知构建模式"):
+        build_module.build(
+            ["momentum"],
+            f"{YEAR}-01-01",
+            f"{YEAR}-12-31",
+            write_catalog=False,
+            build_mode="unknown",
+        )
+
+    monkeypatch.setenv("QUANT_FACTOR_BUILD_MEMORY_LIMIT", "unlimited")
+    with pytest.raises(build_module.FactorBuildError, match="MB 或 GB"):
+        build_module._range_memory_limit()
+
+
+def test_multiple_families_do_not_share_staging_or_connection_state(tmp_path):
+    """同一连接连续构建多个族时，各区间的设置和 staging 不互相污染。"""
+
+    result = build_module.build(
+        ["valuation", "market"],
+        f"{YEAR}-01-01",
+        f"{YEAR}-12-31",
+        factor_dir=tmp_path,
+        catalog_file=tmp_path / "factors.duckdb",
+        write_catalog=False,
+    )
+
+    assert result["build_mode"] == "full_history"
+    for family in ("valuation", "market"):
+        assert family_file(tmp_path, family, YEAR).is_file()
+    assert not list((tmp_path / ".staging").iterdir())

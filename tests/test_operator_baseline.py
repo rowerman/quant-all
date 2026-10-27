@@ -31,6 +31,9 @@ def test_fixed_cases_lock_dates_and_parameters():
         "correlation_target",
         "history",
         "factor_build",
+        "factor_build_yearly",
+        "factor_build_full_history",
+        "factor_build_all_history",
         "mining",
         "mining_batch_serial",
         "mining_batch_dag",
@@ -46,6 +49,12 @@ def test_fixed_cases_lock_dates_and_parameters():
         "start": "2024-01-01",
         "end": "2024-12-31",
     }
+    assert CASE_DEFINITIONS["factor_build_yearly"]["build_mode"] == "yearly"
+    assert CASE_DEFINITIONS["factor_build_full_history"]["build_mode"] == "full_history"
+    assert CASE_DEFINITIONS["factor_build_yearly"]["start"] == "2023-01-01"
+    assert CASE_DEFINITIONS["factor_build_yearly"]["end"] == "2024-12-31"
+    assert CASE_DEFINITIONS["factor_build_all_history"]["start"] == "2000-01-01"
+    assert CASE_DEFINITIONS["factor_build_all_history"]["end"] == "2026-10-15"
     assert CASE_DEFINITIONS["mining"]["expression"] == "mean(close,5)"
     assert CASE_DEFINITIONS["mining"]["run_full"] is False
     assert CASE_DEFINITIONS["mining_batch_serial"]["mode"] == "serial"

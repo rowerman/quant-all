@@ -83,6 +83,24 @@ CASE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "start": "2024-01-01",
         "end": "2024-12-31",
     },
+    "factor_build_yearly": {
+        "families": ("momentum",),
+        "start": "2023-01-01",
+        "end": "2024-12-31",
+        "build_mode": "yearly",
+    },
+    "factor_build_full_history": {
+        "families": ("momentum",),
+        "start": "2023-01-01",
+        "end": "2024-12-31",
+        "build_mode": "full_history",
+    },
+    "factor_build_all_history": {
+        "families": ("momentum",),
+        "start": "2000-01-01",
+        "end": "2026-10-15",
+        "build_mode": "full_history",
+    },
     "mining": {
         "expression": "mean(close,5)",
         "direction": 1,

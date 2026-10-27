@@ -200,7 +200,7 @@ def _history_case(definition: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 def _factor_build_case(
     definition: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """在临时目录构建单族单年因子，只保留稳定摘要和文件哈希。"""
+    """在临时目录构建因子，只保留稳定摘要和全部年度文件哈希。"""
 
     with TemporaryDirectory(prefix="operator-baseline-factor-") as directory:
         root = Path(directory)
@@ -214,60 +214,67 @@ def _factor_build_case(
             factor_dir=factor_dir,
             catalog_file=catalog_file,
             write_catalog=True,
+            build_mode=definition.get("build_mode", "full_history"),
         )
         elapsed_s = time.perf_counter() - started
         family = definition["families"][0]
-        year = int(definition["start"][:4])
-        path = factor_dir / family / f"year={year}" / "part.parquet"
-        if not path.is_file():
-            raise FileNotFoundError(f"因子构建没有生成预期文件：{path}")
+        paths = sorted((factor_dir / family).glob("year=*/part.parquet"))
+        if not paths:
+            raise FileNotFoundError(f"因子构建没有生成任何年度文件：{factor_dir / family}")
 
         conn = duckdb.connect()
+        outputs = []
         try:
-            columns = [
-                row[0]
-                for row in conn.execute(
-                    "DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]
-                ).fetchall()
-            ]
-            factor_columns = [
-                name for name in columns if name not in {"stock_code", "trade_date", "year"}
-            ]
-            counts = conn.execute(
-                "SELECT count(*), count(DISTINCT stock_code), "
-                "count(DISTINCT trade_date) FROM read_parquet(?)",
-                [str(path)],
-            ).fetchone()
-            non_finite = {
-                name: int(
-                    conn.execute(
-                        f'SELECT count(*) FROM read_parquet(?) '
-                        f'WHERE isinf("{name}") OR isnan("{name}")',
-                        [str(path)],
-                    ).fetchone()[0]
-                )
-                for name in factor_columns
-            }
+            for path in paths:
+                year = int(path.parent.name.split("=")[1])
+                columns = [
+                    row[0]
+                    for row in conn.execute(
+                        "DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]
+                    ).fetchall()
+                ]
+                factor_columns = [
+                    name for name in columns
+                    if name not in {"stock_code", "trade_date", "year"}
+                ]
+                counts = conn.execute(
+                    "SELECT count(*), count(DISTINCT stock_code), "
+                    "count(DISTINCT trade_date) FROM read_parquet(?)",
+                    [str(path)],
+                ).fetchone()
+                non_finite = {
+                    name: int(
+                        conn.execute(
+                            f'SELECT count(*) FROM read_parquet(?) '
+                            f'WHERE isinf("{name}") OR isnan("{name}")',
+                            [str(path)],
+                        ).fetchone()[0]
+                    )
+                    for name in factor_columns
+                }
+                output_file = file_record(path)
+                output_file["path"] = f"{family}/year={year}/part.parquet"
+                outputs.append({
+                    "family": family,
+                    "year": year,
+                    "columns": columns,
+                    "factor_columns": factor_columns,
+                    "rows": int(counts[0]),
+                    "stocks": int(counts[1]),
+                    "trade_days": int(counts[2]),
+                    "non_finite": non_finite,
+                    "file": output_file,
+                })
         finally:
             conn.close()
 
-        output_file = file_record(path)
-        output_file["path"] = f"{family}/year={year}/part.parquet"
         golden = {
             "definition": definition,
             "build": strip_volatile(result),
-            "output": {
-                "family": family,
-                "year": year,
-                "columns": columns,
-                "factor_columns": factor_columns,
-                "rows": int(counts[0]),
-                "stocks": int(counts[1]),
-                "trade_days": int(counts[2]),
-                "non_finite": non_finite,
-                "file": output_file,
-            },
+            "output": outputs[0],
         }
+        if len(outputs) > 1:
+            golden["outputs"] = outputs
         return golden, {
             "elapsed_s": round(elapsed_s, 3),
             "rows_written": int(result["rows_written"]),
@@ -590,7 +597,12 @@ def run_case(
         return _target_correlation_case(CASE_DEFINITIONS[name])
     if name == "history":
         return _history_case(CASE_DEFINITIONS[name])
-    if name == "factor_build":
+    if name in {
+        "factor_build",
+        "factor_build_yearly",
+        "factor_build_full_history",
+        "factor_build_all_history",
+    }:
         return _factor_build_case(CASE_DEFINITIONS[name])
     if name == "mining":
         return _mining_case(CASE_DEFINITIONS[name], common)
