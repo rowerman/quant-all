@@ -4,9 +4,10 @@
 前端只展示，数据库与因子parquet均只读，评估结果不落库。
 
 批量数组接口位于 [`kernels`](../../core/kernels/README.md)。相关性、IC/RankIC、多周期
-衰减、增量 IC 和风格暴露默认使用 `auto`：扩展可用时分别走 C++ Spearman、逐日排名、
-Pearson、MAD 与 z-score，缺失时回退 Python；分箱、OLS 等其余计算仍使用原 Python/NumPy
-实现。`calculate.native` 仍只负责并发锁。
+衰减、增量 IC、风格暴露、分位图和换手默认使用 `auto`：扩展可用时分别走 C++ Spearman、
+逐日排名、Pearson、MAD、z-score、分位分组、多标签收益、换手与逐行 Spearman，缺失时
+回退 Python；OLS 等其余计算仍使用原 Python/NumPy 实现。`calculate.native` 仍只负责
+并发锁。
 
 P1-03 的正式三年相关性 stage 由 Python `217.770s` 降至 native `140.460s`。P1-04 的
 固定三年面板中，`overview` 由 `4.661s` 降至 `2.239s`，`decay` 由 `15.145s` 降至
@@ -16,6 +17,11 @@ P1-03 的正式三年相关性 stage 由 Python `217.770s` 降至 native `140.46
 P1-05 的 `overview` 由 `4.516s` 降至 native `1.782s`，`exposure` 由 `15.922s` 降至
 `13.237s`。IC 的 MAD 去极值只作用于 Pearson，RankIC 继续对原始有限配对排名；风格暴露
 对同一日分组一次，并使用融合 MAD/z-score 核。三后端 payload 在 `1e-10` 内一致。
+
+P1-06 的分位分组由 C++ 平均并列名次核完成，秩宽表复用逐日排名核；多标签收益、换手和
+因子自相关分别批量处理。固定三年 `bins`、`turnover`、`decay` 分别加速 `1.621x`、
+`1.854x`、`3.255x`，`bins + turnover` 合计改善 `43.82%`。单标签市值加权仍走 pandas
+分组求和以保持逐值语义。证据位于 `AiRecord/benchmarks/V117/p1-06-20261027/`。
 
 正式因子和自动挖掘候选通过 `FactorView` 指向各自的 Parquet 来源；`evaluate_context()`
 在已构建面板上复用同一套指标。正式入口 `evaluate()` 保持原行为，候选路径不能绕过

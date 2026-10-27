@@ -9,9 +9,9 @@
 在项目根目录 `/home/hanwen/quant` 使用 `.venv/bin/python`，或在 notebook 的项目环境里
 `import calculate`。不要在 research/evaluation/calculate/ 内直接执行 `python evaluate.py`，那会改变包导入路径。
 使用 Python 3.12；依赖 numpy、pandas、scipy、duckdb（沿用项目 .venv）。
-因子相关性、IC/RankIC、多周期衰减、增量 IC 和风格暴露默认经 `kernels` 的 `auto` 后端
-选择；扩展可用时分别使用 C++ Spearman、逐日排名、Pearson、MAD 和 z-score，不可导入时
-回退 Python。
+因子相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、分位图和换手默认经 `kernels`
+的 `auto` 后端选择；扩展可用时分别使用 C++ Spearman、逐日排名、Pearson、MAD、
+z-score、分位分组、多标签收益、换手和逐行 Spearman，不可导入时回退 Python。
 后端原生计算资源保护见
 [原生计算资源保护](../../../docs/research/evaluation/native.md)。
 
@@ -177,7 +177,7 @@ apps/monitor/frontend/   前端：纯 HTML/JS + ECharts
 | `stats.py` | 序列四件套、净值累乘、最大回撤、年化夏普 | IC 家族与 binplot 家族 | — | 加统计口径改这里，别在各指标里各写一遍 |
 | `styles.py` | 7 个 Barra 近似风格因子的取数 SQL、`IndustrySource` 协议与静态行业源 | `exposure`、`EvalContext.styles()` | DuckDB、`config`、`errors` | 窗口按有效交易日推进（与数据项目因子构建一致）；只产出**原始值**，标准化在 `exposure` 里做（同一回归样本）；BETA_60 基准写死沪深300，与已实现的 `BETA_60` 因子一致 |
 | `exposure.py` | 风格拆分核心：逐日截面 OLS、暴露系数与 t 值、残差 | `metrics/exposure.py` | `styles`、`normalize`、`daily` | 回归样本是「池内 + 因子非空」，**不看标签**；设计矩阵第 0 列是截距，风格系数从第 1 列起；风格缺失标准化后置 0 |
-| `binning.py` | 分位分箱、分位收益、换手、因子自相关、宽表透视 | `metrics/bins.py`、`metrics/turnover.py`、`metrics/decay.py` | `daily`、`normalize` | 分箱只看因子值；宽表用 factorize + numpy 填充（pandas `pivot` 要慢一倍以上）；多档收益走 `bin_returns_multi`（bincount，比逐组 pandas 分组快 10 倍以上） |
+| `binning.py` | 分位分箱、分位收益、换手、因子自相关、宽表透视 | `metrics/bins.py`、`metrics/turnover.py`、`metrics/decay.py` | `daily`、`kernels` | 分箱只看因子值；分组、秩宽表、多标签收益、换手和自相关经统一后端；单标签市值加权仍用 pandas 求和以保持逐值语义 |
 | `metrics/base.py` | 指标注册表 | 各指标、接口层、前端 | `errors` | 注册顺序 = 前端卡片顺序；重名报 `EVAL-201` |
 | `metrics/coverage.py` | 覆盖率与取值分布 | 经注册表调用 | `metrics/base` | 缺失（NaN）与非有限值（inf）分开统计，别混成一个数 |
 | `metrics/ic.py` | IC / RankIC 汇总、时序、分布 | 经注册表调用 | `daily`、`metrics/base` | 有效交易日少于 20 天只给「样本不足」标记，不给数值 |
@@ -1591,5 +1591,18 @@ offsets，Pearson 使用 MAD 裁剪值，RankIC 仍对原始有限配对排名�
 3.568x。`overview` 由 4.516 秒降至 1.782 秒，`exposure` 由 15.922 秒降至 13.237 秒；
 三后端 payload 在 `1e-10` 内一致，最高 RSS 比例 1.0195x。证据位于
 `AiRecord/benchmarks/V116/p1-05-20261027/`，本轮实际 C++ 替换模块数由 3 增至 5。
+
+P1-06 把分位分组、秩宽表、多标签分位收益、分位换手和因子自相关接入统一后端。分位分组
+使用平均并列名次，NaN 不参与、正负无穷仍参与；`rank_matrix` 复用 `daily_rank_pct`。
+多标签收益一次处理五档标签和两套权重；换手在完整交易日矩阵上比较；自相关对每个 lag
+的共同股票重新排名。单标签 `bin_daily_returns` 继续使用 pandas 分组求和，避免改变分位图
+市值加权结果。
+
+固定 3,751,348 行、727 个交易日、5,606 只股票的单线程微基准中，分位分组加速 4.422x，
+等权与市值加权收益分别 5.045x、5.016x，换手 1.723x，三档自相关 1.724x。真实 `bins`、
+`bin_curves`、`spread`、`bin_dist`、`turnover`、`decay` 分别加速 1.621x、1.575x、
+1.594x、1.509x、1.854x、3.255x；`bins + turnover` 合计改善 43.82%，最高 RSS 比例
+1.0060x。证据位于 `AiRecord/benchmarks/V117/p1-06-20261027/`，实际 C++ 替换模块数由
+5 增至 9。
 
 完整分析性能请看 `docs/apps/monitor/performance.md`，旧12指标耗时不包含本阶段。

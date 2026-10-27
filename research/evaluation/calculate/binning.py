@@ -14,13 +14,184 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 
-from calculate.daily import MIN_CROSS_SECTION
+from calculate.daily import MIN_CROSS_SECTION, _grouped_arrays
+
+if TYPE_CHECKING:
+    from kernels import BackendSelection, NativeKernelBackend
 
 # 因子自相关的滞后阶数（交易日）
 AUTOCORR_LAGS: tuple[int, ...] = (1, 5, 20)
+
+
+def _kernel_selection(
+    backend: "NativeKernelBackend | None" = None,
+) -> "BackendSelection":
+    """返回本次分位计算使用的后端。"""
+
+    from kernels import BackendSelection, get_backend
+
+    if backend is None:
+        return get_backend()
+    if isinstance(backend, BackendSelection):
+        return backend
+    return BackendSelection(backend, backend.name, None)
+
+
+def _quantile_bins_from_arrays(
+    codes: np.ndarray,
+    values: np.ndarray,
+    quantiles: int,
+) -> np.ndarray:
+    """用 pandas 金标准按组计算 0 起始分位组号。"""
+
+    result = np.full(values.size, -1, dtype="int64")
+    valid = ~np.isnan(values)
+    if not valid.any():
+        return result
+    frame = pd.DataFrame(
+        {"code": codes[valid], "value": values[valid]}
+    )
+    grouped = frame.groupby("code", sort=True)["value"]
+    average_rank = grouped.rank(method="average").to_numpy(dtype="float64")
+    size = grouped.transform("size").to_numpy(dtype="float64")
+    position = np.ceil(average_rank / size * quantiles)
+    result[valid] = np.clip(position, 1, quantiles).astype("int64") - 1
+    return result
+
+
+def _bin_returns_multi_arrays(
+    values: np.ndarray,
+    day_codes: np.ndarray,
+    bin_codes: np.ndarray,
+    weights: np.ndarray,
+    day_count: int,
+    bin_count: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """用 NumPy bincount 计算多标签分位收益和池内均值。"""
+
+    shape = (day_count, bin_count)
+    returns = np.full(
+        (day_count, bin_count, values.shape[1]),
+        np.nan,
+        dtype="float64",
+    )
+    pools = np.full((day_count, values.shape[1]), np.nan, dtype="float64")
+    if values.shape[0] == 0:
+        return returns, pools
+    base_weight = np.where(
+        np.isfinite(weights) & (weights > 0),
+        weights,
+        0.0,
+    )
+    cells = day_codes * bin_count + bin_codes
+    total_cells = day_count * bin_count
+    for label in range(values.shape[1]):
+        label_values = values[:, label]
+        valid = np.isfinite(label_values) & (base_weight > 0)
+        rows = cells[valid]
+        selected_weights = base_weight[valid]
+        numerator = np.bincount(
+            rows,
+            weights=label_values[valid] * selected_weights,
+            minlength=total_cells,
+        ).reshape(shape)
+        denominator = np.bincount(
+            rows,
+            weights=selected_weights,
+            minlength=total_cells,
+        ).reshape(shape)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            returns[:, :, label] = np.where(
+                denominator > 0,
+                numerator / denominator,
+                np.nan,
+            )
+        pool_total = denominator.sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            pools[:, label] = np.where(
+                pool_total > 0,
+                numerator.sum(axis=1) / pool_total,
+                np.nan,
+            )
+    return returns, pools
+
+
+def _bin_turnover_arrays(
+    values: np.ndarray,
+    quantiles: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """用 NumPy 计算 0 起始组号矩阵的换手。"""
+
+    current = values[1:]
+    previous = values[:-1]
+    valid = np.isfinite(current) & np.isfinite(previous)
+    overall = np.full(values.shape[0], np.nan, dtype="float64")
+    base = valid.sum(axis=1)
+    changed = (valid & (current != previous)).sum(axis=1)
+    np.divide(changed, base, out=overall[1:], where=base > 0)
+    per_bin = np.full(
+        (values.shape[0], quantiles),
+        np.nan,
+        dtype="float64",
+    )
+    for bin_id in range(quantiles):
+        member = valid & (current == bin_id)
+        stayed_base = member.sum(axis=1)
+        changed_bin = (
+            member & (previous != bin_id)
+        ).sum(axis=1)
+        np.divide(
+            changed_bin,
+            stayed_base,
+            out=per_bin[1:, bin_id],
+            where=stayed_base > 0,
+        )
+    return per_bin, overall
+
+
+def _row_spearman_arrays(
+    left: np.ndarray,
+    right: np.ndarray,
+    min_n: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """用 pandas 逐行排名计算 Spearman 和有效配对数。"""
+
+    mask = np.isfinite(left) & np.isfinite(right)
+    count = mask.sum(axis=1).astype("int64")
+    left_values = np.where(mask, left, np.nan)
+    right_values = np.where(mask, right, np.nan)
+    left_ranks = pd.DataFrame(left_values).rank(
+        axis=1,
+        method="average",
+    ).to_numpy(dtype="float64")
+    right_ranks = pd.DataFrame(right_values).rank(
+        axis=1,
+        method="average",
+    ).to_numpy(dtype="float64")
+    safe_count = np.where(count > 0, count, np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        left_dev = left_ranks - (
+            np.nansum(left_ranks, axis=1) / safe_count
+        )[:, None]
+        right_dev = right_ranks - (
+            np.nansum(right_ranks, axis=1) / safe_count
+        )[:, None]
+        covariance = np.nansum(left_dev * right_dev, axis=1) / safe_count
+        scale = np.sqrt(
+            np.nansum(left_dev ** 2, axis=1) / safe_count
+            * np.nansum(right_dev ** 2, axis=1) / safe_count
+        )
+        correlation = np.where(
+            (scale > 0) & (count >= min_n),
+            covariance / scale,
+            np.nan,
+        )
+    return correlation, count
 
 
 def assign_bins(panel: pd.DataFrame, quantiles: int, *,
@@ -45,11 +216,20 @@ def assign_bins(panel: pd.DataFrame, quantiles: int, *,
     if subset.empty:
         subset["bin"] = pd.Series(dtype="int16")
         return subset
-    grouped = subset.groupby("trade_date", sort=True)["factor"]
-    average_rank = grouped.rank(method="average").to_numpy(dtype="float64")
-    size = grouped.transform("size").to_numpy(dtype="float64")
-    position = np.ceil(average_rank / size * quantiles)
-    subset["bin"] = np.clip(position, 1, quantiles).astype("int16")
+    codes, _ = pd.factorize(subset["trade_date"], sort=True)
+    order = np.argsort(codes, kind="stable")
+    offsets, (values,) = _grouped_arrays(
+        codes,
+        subset["factor"].to_numpy(dtype="float64"),
+    )
+    bins = _kernel_selection().backend.daily_quantile_bins(
+        values,
+        offsets,
+        quantiles,
+    )
+    original_order = np.empty_like(bins)
+    original_order[order] = bins
+    subset["bin"] = (original_order + 1).astype("int16")
     return subset.reset_index(drop=True)
 
 
@@ -70,7 +250,9 @@ def bin_daily_returns(frame: pd.DataFrame, quantiles: int, *,
     work = frame.loc[frame[label_column].notna()]
     if weight_column:
         work = work.loc[work[weight_column].notna() & (work[weight_column] > 0)]
-        scaled = work.assign(_weighted=work[label_column] * work[weight_column])
+        scaled = work.assign(
+            _weighted=work[label_column] * work[weight_column]
+        )
         grouped = scaled.groupby(["trade_date", "bin"])
         daily = grouped["_weighted"].sum() / grouped[weight_column].sum()
     else:
@@ -100,44 +282,54 @@ def bin_returns_multi(frame: pd.DataFrame, quantiles: int, columns,
     """
     day_codes, days = pd.factorize(frame["trade_date"], sort=True)
     day_index = pd.Index(days, name="trade_date")
-    bin_index = frame["bin"].to_numpy(dtype="int64") - 1
-    cells = day_codes * quantiles + bin_index
-    shape = (days.size, quantiles)
-    total_cells = days.size * quantiles
+    bin_codes = frame["bin"].to_numpy(dtype="int64") - 1
     if weight_column is not None:
-        raw_weight = frame[weight_column].to_numpy(dtype="float64")
-        base_weight = np.where(np.isfinite(raw_weight) & (raw_weight > 0), raw_weight, 0.0)
-    else:
-        base_weight = np.ones(cells.size, dtype="float64")
-
-    matrices: dict[str, pd.DataFrame] = {}
-    pools: dict[str, pd.Series] = {}
-    for column in columns:
-        values = frame[column].to_numpy(dtype="float64")
-        valid = np.isfinite(values) & (base_weight > 0)
-        if not valid.any():
-            matrices[column] = pd.DataFrame(
-                np.full(shape, np.nan), index=day_index, columns=range(1, quantiles + 1)
-            )
-            pools[column] = pd.Series(np.full(days.size, np.nan), index=day_index)
-            continue
-        rows = cells[valid]
-        weights = base_weight[valid]
-        numerator = np.bincount(
-            rows, weights=values[valid] * weights, minlength=total_cells
-        ).reshape(shape)
-        denominator = np.bincount(rows, weights=weights, minlength=total_cells).reshape(shape)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            matrix = np.where(denominator > 0, numerator / denominator, np.nan)
-        matrices[column] = pd.DataFrame(
-            matrix, index=day_index, columns=range(1, quantiles + 1)
+        weights = np.ascontiguousarray(
+            frame[weight_column].to_numpy(dtype="float64")
         )
-        pool_total = denominator.sum(axis=1)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            pools[column] = pd.Series(
-                np.where(pool_total > 0, numerator.sum(axis=1) / pool_total, np.nan),
+    else:
+        weights = np.ones(frame.shape[0], dtype="float64")
+    labels = list(columns)
+    if frame.empty:
+        matrices = {
+            column: pd.DataFrame(
+                np.empty((0, quantiles), dtype="float64"),
                 index=day_index,
+                columns=range(1, quantiles + 1),
             )
+            for column in labels
+        }
+        pools = {
+            column: pd.Series(dtype="float64", index=day_index)
+            for column in labels
+        }
+        return matrices, pools
+    values = np.ascontiguousarray(
+        frame[labels].to_numpy(dtype="float64")
+    )
+    result = _kernel_selection().backend.bin_returns_multi(
+        values,
+        np.ascontiguousarray(day_codes, dtype=np.int64),
+        np.ascontiguousarray(bin_codes, dtype=np.int64),
+        np.ascontiguousarray(weights, dtype=np.float64),
+        int(days.size),
+        quantiles,
+    )
+    matrices = {
+        column: pd.DataFrame(
+            result["returns"][:, :, index],
+            index=day_index,
+            columns=range(1, quantiles + 1),
+        )
+        for index, column in enumerate(labels)
+    }
+    pools = {
+        column: pd.Series(
+            result["pools"][:, index],
+            index=day_index,
+        )
+        for index, column in enumerate(labels)
+    }
     return matrices, pools
 
 
@@ -177,7 +369,16 @@ def rank_matrix(frame: pd.DataFrame) -> pd.DataFrame:
     参数:
         frame: ``assign_bins`` 的输出。
     """
-    ranks = frame.groupby("trade_date", sort=False)["factor"].rank(pct=True).to_numpy()
+    codes, _ = pd.factorize(frame["trade_date"], sort=True)
+    order = np.argsort(codes, kind="stable")
+    offsets, (values,) = _grouped_arrays(
+        codes,
+        frame["factor"].to_numpy(dtype="float64"),
+    )
+    ranked = _kernel_selection().backend.daily_rank_pct(values, offsets)
+    original_order = np.empty_like(ranked)
+    original_order[order] = ranked
+    ranks = original_order
     return wide_matrix(frame, ranks)
 
 
@@ -193,18 +394,17 @@ def bin_turnover(matrix: pd.DataFrame,
         ``(每个分位的逐日换手表, 全池逐日换手序列)``；
         分母是「今天在池内且上一交易日也有值」的股票数，首日为空。
     """
-    previous = matrix.shift(1)
-    base = matrix.notna() & previous.notna()
-    overall = (
-        (base & (matrix != previous)).sum(axis=1) / base.sum(axis=1).replace(0, np.nan)
+    values = np.ascontiguousarray(
+        matrix.to_numpy(dtype="float64") - 1.0
     )
-    columns: dict[int, pd.Series] = {}
-    for bin_id in range(1, quantiles + 1):
-        member = matrix == bin_id
-        stayed_base = base & member
-        changed = stayed_base & (previous != bin_id)
-        columns[bin_id] = changed.sum(axis=1) / stayed_base.sum(axis=1).replace(0, np.nan)
-    return pd.DataFrame(columns), overall
+    result = _kernel_selection().backend.bin_turnover(values, quantiles)
+    per_bin = pd.DataFrame(
+        result["per_bin"],
+        index=matrix.index,
+        columns=range(1, quantiles + 1),
+    )
+    overall = pd.Series(result["overall"], index=matrix.index)
+    return per_bin, overall
 
 
 def row_correlation(current: pd.DataFrame, previous: pd.DataFrame, *, rank: bool = False) -> pd.Series:
@@ -215,6 +415,14 @@ def row_correlation(current: pd.DataFrame, previous: pd.DataFrame, *, rank: bool
         previous: 上一期取值，与 current 的行位置和股票列对应。
         rank: 真则对逐行有效配对重新排名，返回 Spearman。
     """
+    if rank:
+        correlation, _ = _kernel_selection().backend.daily_row_spearman(
+            np.ascontiguousarray(current.to_numpy(dtype="float64")),
+            np.ascontiguousarray(previous.to_numpy(dtype="float64")),
+            MIN_CROSS_SECTION,
+        )
+        return pd.Series(correlation, index=current.index)
+
     # 两侧的行索引标签不同（当期是 t、上期是 t-lag），必须按位置做逐元素运算，
     # 交给 pandas 会按标签对齐成并集，凭空多出行来
     left = current.to_numpy(dtype="float64")
@@ -224,9 +432,6 @@ def row_correlation(current: pd.DataFrame, previous: pd.DataFrame, *, rank: bool
     safe_count = np.where(count > 0, count, np.nan)
     left = np.where(mask, left, np.nan)
     right = np.where(mask, right, np.nan)
-    if rank:
-        left = pd.DataFrame(left).rank(axis=1, method="average").to_numpy()
-        right = pd.DataFrame(right).rank(axis=1, method="average").to_numpy()
     with np.errstate(invalid="ignore", divide="ignore"):
         left_dev = left - (np.nansum(left, axis=1) / safe_count)[:, None]
         right_dev = right - (np.nansum(right, axis=1) / safe_count)[:, None]

@@ -2,6 +2,8 @@
 
 from kernels.backend import (
     BackendSelection,
+    BinReturnsResult,
+    BinTurnoverResult,
     DailyOlsResult,
     NativeKernelBackend,
     get_backend,
@@ -20,6 +22,8 @@ from kernels.native import CppKernelBackend
 
 __all__ = [
     "BackendSelection",
+    "BinReturnsResult",
+    "BinTurnoverResult",
     "DailyOlsResult",
     "KernelArrayError",
     "KernelBackendError",

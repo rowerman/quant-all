@@ -13,11 +13,14 @@ from calculate.normalize import (
     _zscore_by_day_numpy,
 )
 from kernels.backend import (
+    BinReturnsResult,
+    BinTurnoverResult,
     DailyOlsResult,
     FloatArray,
     IntArray,
     group_codes,
     validate_minimum,
+    validate_codes,
     validate_float_array,
     validate_n_mad,
     validate_offsets,
@@ -199,3 +202,94 @@ class PythonKernelBackend:
             ),
             "skipped": int(result["skipped"]),
         }
+
+    def daily_quantile_bins(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        quantiles: int,
+    ) -> IntArray:
+        """按组调用 pandas 平均名次分位组金标准。"""
+
+        from calculate.binning import _quantile_bins_from_arrays
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        count = validate_minimum(quantiles, name="quantiles", minimum=2)
+        return _quantile_bins_from_arrays(
+            group_codes(offsets),
+            array,
+            count,
+        )
+
+    def bin_returns_multi(
+        self,
+        values: FloatArray,
+        day_codes: IntArray,
+        bin_codes: IntArray,
+        weights: FloatArray,
+        day_count: int,
+        bin_count: int,
+    ) -> BinReturnsResult:
+        """用现有 NumPy bincount 语义计算多标签分位收益。"""
+
+        from calculate.binning import _bin_returns_multi_arrays
+
+        matrix = validate_float_array(values, "values", ndim=2)
+        days = validate_minimum(day_count, name="day_count", minimum=1)
+        bins = validate_minimum(bin_count, name="bin_count", minimum=1)
+        day_values = validate_codes(
+            day_codes,
+            "day_codes",
+            length=matrix.shape[0],
+            maximum=days,
+        )
+        bin_values = validate_codes(
+            bin_codes,
+            "bin_codes",
+            length=matrix.shape[0],
+            maximum=bins,
+        )
+        weight_values = validate_float_array(weights, "weights", ndim=1)
+        if weight_values.size != matrix.shape[0]:
+            raise KernelArrayError("weights 长度必须与 values 行数一致")
+        returns, pools = _bin_returns_multi_arrays(
+            matrix,
+            day_values,
+            bin_values,
+            weight_values,
+            days,
+            bins,
+        )
+        return {"returns": returns, "pools": pools}
+
+    def bin_turnover(
+        self,
+        values: FloatArray,
+        quantiles: int,
+    ) -> BinTurnoverResult:
+        """用现有 NumPy 语义计算全池与各分位换手。"""
+
+        from calculate.binning import _bin_turnover_arrays
+
+        matrix = validate_float_array(values, "values", ndim=2)
+        count = validate_minimum(quantiles, name="quantiles", minimum=1)
+        per_bin, overall = _bin_turnover_arrays(matrix, count)
+        return {"per_bin": per_bin, "overall": overall}
+
+    def daily_row_spearman(
+        self,
+        left: FloatArray,
+        right: FloatArray,
+        min_n: int = 5,
+    ) -> tuple[FloatArray, IntArray]:
+        """用现有 pandas 逐行排名语义计算 Spearman。"""
+
+        from calculate.binning import _row_spearman_arrays
+
+        left_values = validate_float_array(left, "left", ndim=2)
+        right_values = validate_float_array(right, "right", ndim=2)
+        if left_values.shape != right_values.shape:
+            raise KernelArrayError("left 与 right 形状必须一致")
+        minimum = validate_minimum(min_n, name="min_n", minimum=2)
+        return _row_spearman_arrays(left_values, right_values, minimum)

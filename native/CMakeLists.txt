@@ -11,11 +11,13 @@ find_package(pybind11 CONFIG REQUIRED)
 
 pybind11_add_module(
   quant_native
+  src/binning.cpp
   src/bindings.cpp
   src/rank.cpp
   src/pearson.cpp
   src/standardize.cpp
   src/spearman.cpp
+  src/stability.cpp
 )
 
 target_include_directories(

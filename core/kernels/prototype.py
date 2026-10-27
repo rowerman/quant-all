@@ -9,6 +9,8 @@ import numpy as np
 from common.logging_conf import get_logger
 from common.paths import LOGS_DIR
 from kernels.backend import (
+    BinReturnsResult,
+    BinTurnoverResult,
     DailyOlsResult,
     FloatArray,
     IntArray,
@@ -293,3 +295,72 @@ class NumbaPrototypeBackend:
             "backend=python reason=numba_kernel_not_implemented"
         )
         return self._fallback.daily_ols(design, response, group_offsets, min_rows)
+
+    def daily_quantile_bins(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        quantiles: int,
+    ) -> IntArray:
+        """未验证核显式委托 Python 回退。"""
+
+        logger.info(
+            "内核显式回退 kernel=daily_quantile_bins requested=numba "
+            "backend=python reason=numba_kernel_not_implemented"
+        )
+        return self._fallback.daily_quantile_bins(
+            values,
+            group_offsets,
+            quantiles,
+        )
+
+    def bin_returns_multi(
+        self,
+        values: FloatArray,
+        day_codes: IntArray,
+        bin_codes: IntArray,
+        weights: FloatArray,
+        day_count: int,
+        bin_count: int,
+    ) -> BinReturnsResult:
+        """未验证核显式委托 Python 回退。"""
+
+        logger.info(
+            "内核显式回退 kernel=bin_returns_multi requested=numba "
+            "backend=python reason=numba_kernel_not_implemented"
+        )
+        return self._fallback.bin_returns_multi(
+            values,
+            day_codes,
+            bin_codes,
+            weights,
+            day_count,
+            bin_count,
+        )
+
+    def bin_turnover(
+        self,
+        values: FloatArray,
+        quantiles: int,
+    ) -> BinTurnoverResult:
+        """未验证核显式委托 Python 回退。"""
+
+        logger.info(
+            "内核显式回退 kernel=bin_turnover requested=numba "
+            "backend=python reason=numba_kernel_not_implemented"
+        )
+        return self._fallback.bin_turnover(values, quantiles)
+
+    def daily_row_spearman(
+        self,
+        left: FloatArray,
+        right: FloatArray,
+        min_n: int = 5,
+    ) -> tuple[FloatArray, IntArray]:
+        """未验证核显式委托 Python 回退。"""
+
+        logger.info(
+            "内核显式回退 kernel=daily_row_spearman requested=numba "
+            "backend=python reason=numba_kernel_not_implemented"
+        )
+        return self._fallback.daily_row_spearman(left, right, min_n)

@@ -1,8 +1,9 @@
 # C++ 批量计算扩展
 
 `native` 负责构建顶层扩展 `quant_native`，当前提供完整矩阵和目标行两种成对 Spearman
-核，以及逐日排名、Pearson、MAD、z-score 和融合标准化核。这些核都已接入评估业务路径；
-有扩展时默认 `auto` 选择 native，无扩展时回退 Python。
+核，以及逐日排名、Pearson、MAD、z-score、融合标准化、分位分组、多标签分位收益、
+分位换手和逐行 Spearman 核。这些核都已接入评估业务路径；有扩展时默认 `auto` 选择
+native，无扩展时回退 Python。
 
 ## 负责什么
 
@@ -11,6 +12,8 @@
 - 按实际配对样本剔除非有限值，使用并列平均名次，常数截面返回 `NaN`。
 - 按组计算平均名次分位和 Pearson 相关，保持原有效计数与最小样本门槛。
 - 按组计算中位数、MAD、裁剪和 z-score；z-score 使用与 pandas 相同的补偿求和顺序。
+- 按组计算平均名次分位；批量计算多标签分位收益、池内均值和分位换手。
+- 对每个 lag 的共同有限股票逐行重新排名并计算 Spearman。
 - 计算期间释放 GIL，按组使用受控线程数。
 
 不负责输入数据读取、因子目录、评估 payload、日志聚合、业务回退选择或并发阶段锁。
@@ -21,6 +24,7 @@
 - 正式完整矩阵和候选目标行经 `calculate.correlation` 调用 `kernels` 适配层。
 - IC、RankIC、多周期衰减和增量 IC 经 `calculate.daily` 调用同一适配层。
 - 风格暴露经 `calculate.exposure` 调用融合标准化核。
+- 分位分组、多标签收益、换手和自相关经 `calculate.binning` 调用同一适配层。
 - 核测试和 P1-02/P1-03 基准工具直接验证适配层或扩展。
 - 模型、OLS、挖掘表达式和回测尚未调用这些核。
 
@@ -64,6 +68,12 @@ daily_pearson(left, right, group_offsets, min_n=5)
 daily_winsorize_mad(values, group_offsets, n_mad=3.0)
 daily_zscore(values, group_offsets)
 daily_winsorize_zscore(values, group_offsets, n_mad=3.0)
+daily_quantile_bins(values, group_offsets, quantiles)
+bin_returns_multi(
+    values, day_codes, bin_codes, weights, day_count, bin_count
+)
+bin_turnover(values, quantiles)
+daily_row_spearman(left, right, min_n=5)
 ```
 
 - `values`：C 连续 `float64`，形状为 `[样本, 因子]`。
@@ -84,6 +94,16 @@ daily_winsorize_zscore(values, group_offsets, n_mad=3.0)
 - 两个日度接口的 `group_offsets` 都与 Spearman 相同，返回一维结果；Pearson 额外返回
   每组有效配对数。
 - 业务评估的最小截面继续固定为 5；底层 Pearson 接口接受不小于 2 的门槛。
+
+分位与稳定性接口约定：
+
+- `daily_quantile_bins` 返回 0 起始组号；NaN 返回 -1，正负无穷与其他有限值一起排序。
+- `bin_returns_multi` 的 `values` 为 `[样本, 标签]`，`day_codes` 与 `bin_codes` 为
+  非负 `int64`；返回 `[交易日, 分位, 标签]` 收益和 `[交易日, 标签]` 池内均值。
+- `bin_turnover` 的 `values` 为 `[交易日, 股票]` 的 0 起始组号矩阵，NaN 表示当日不在池；
+  返回逐日各分位换手和全池换手。
+- `daily_row_spearman` 的输入为两张同形矩阵；每行只使用两侧有限的配对，少于 5 个或
+  任一侧为常数时返回 NaN，并同时返回有效配对数。
 
 Python 适配层和 C++ 绑定层都会检查 dtype、维度、连续内存、offsets 和参数。原生错误
 转换为 Python 异常。显式请求 `native` 但扩展缺失时返回 `KERNEL-004`；`auto` 只在扩展
@@ -166,18 +186,47 @@ Python/native/auto 的 payload 在 `1e-10` 内一致，有效计数和 `NaN` 位
 13.237 秒（1.203x）。三后端 payload 在 `1e-10` 内一致，最高 RSS 比例 1.0195x。
 证据位于 `AiRecord/benchmarks/V116/p1-05-20261027/`。
 
+## P1-06 分位收益、换手和自相关接入
+
+`calculate.binning` 的分位分组、秩宽表、多标签分位收益、换手和自相关分别接入统一后端。
+`bin_daily_returns` 继续使用 pandas 分组求和，以保持分位图市值加权的既有逐值语义；分位图
+stage 的收益主要来自原生分位分组和秩宽表。
+
+固定 3,751,348 行、727 个交易日、5,606 只股票，单线程热运行 5 次取中位数：
+
+| 核 | Python | C++ | 加速 |
+|---|---:|---:|---:|
+| 分位分组 | 1.113666s | 0.251838s | 4.422x |
+| 等权多标签收益 | 0.236963s | 0.046971s | 5.045x |
+| 市值加权多标签收益 | 0.240939s | 0.048037s | 5.016x |
+| 分位换手 | 0.068774s | 0.039926s | 1.723x |
+| 三档自相关 | 2.454977s | 1.423984s | 1.724x |
+
+| stage | Python | native | 加速 |
+|---|---:|---:|---:|
+| `bins` | 2.353s | 1.452s | 1.621x |
+| `bin_curves` | 2.366s | 1.503s | 1.575x |
+| `spread` | 2.320s | 1.456s | 1.594x |
+| `bin_dist` | 2.591s | 1.717s | 1.509x |
+| `turnover` | 5.787s | 3.121s | 1.854x |
+| `decay` | 15.482s | 4.756s | 3.255x |
+
+`bins + turnover` 合计改善 `43.82%`；Python/native/auto 数组和 payload 在 `1e-10`
+内一致，分位组号与有效计数逐值一致，最高 RSS 比例 `1.0060x`。证据位于
+`AiRecord/benchmarks/V117/p1-06-20261027/`。
+
 ## C++ 替换台账
 
 | 项目 | 当前状态 |
 |---|---|
 | 扩展 | `quant_native` 已构建 |
-| 原生核 | `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、`daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore` |
+| 原生核 | `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、`daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore`、`daily_quantile_bins`、`bin_returns_multi`、`bin_turnover`、`daily_row_spearman` |
 | 可选后端 | `native`、`python`、`auto` |
 | 默认后端 | `auto` |
-| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露 |
-| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson`；`winsorize_by_day`；`zscore_by_day` |
-| 实际 C++ 替换模块数 | 5 |
-| 真实业务 stage 收益 | 相关性下降 35.5%；overview 加速 2.535x；exposure 加速 1.203x |
+| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、分位图、换手与自相关 |
+| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson`；`winsorize_by_day`；`zscore_by_day`；分位分组；多标签分位收益；分位换手；因子自相关 |
+| 实际 C++ 替换模块数 | 9 |
+| 真实业务 stage 收益 | 相关性下降 35.5%；overview 2.535x；bins 1.621x；turnover 1.854x；decay 3.255x |
 
 ## 修改注意
 
@@ -187,4 +236,7 @@ Python/native/auto 的 payload 在 `1e-10` 内一致，有效计数和 `NaN` 位
 - 候选路径必须使用 `target_index`，不能为单个候选重算完整矩阵。
 - 逐日核调用前必须保证各组样本连续；不能把带分组编号但未排序的面板直接传入。
 - 多标签 RankIC 必须逐档重新取有限配对，不能复用其他标签的排名结果。
+- 分位分组只把 NaN 视为缺失，正负无穷仍参与排名；秩宽表写入 `float32` 的既有语义
+  由 Python 宽表层保持。
+- 因子自相关必须对每个 lag 的共同股票重新排名，不能复用完整截面秩。
 - 新增原生核必须同时提供 Python 金标准、异常、并发、子进程压力和资源证据。

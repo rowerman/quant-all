@@ -1,3 +1,4 @@
+#include "quant_native/binning.hpp"
 #include "quant_native/daily.hpp"
 #include "quant_native/spearman.hpp"
 
@@ -36,6 +37,21 @@ void validate_vector(const py::array& values, const char* name) {
     }
     if (!values.dtype().is(py::dtype::of<double>())) {
         throw py::type_error(std::string(name) + " 必须是 float64");
+    }
+    if ((values.flags() & py::array::c_style) == 0) {
+        throw py::value_error(std::string(name) + " 必须是 C 连续数组");
+    }
+    if (values.size() == 0) {
+        throw py::value_error(std::string(name) + " 不能为空");
+    }
+}
+
+void validate_int64_vector(const py::array& values, const char* name) {
+    if (values.ndim() != 1) {
+        throw py::value_error(std::string(name) + " 必须是一维数组");
+    }
+    if (!values.dtype().is(py::dtype::of<std::int64_t>())) {
+        throw py::type_error(std::string(name) + " 必须是 int64");
     }
     if ((values.flags() & py::array::c_style) == 0) {
         throw py::value_error(std::string(name) + " 必须是 C 连续数组");
@@ -299,6 +315,169 @@ py::array_t<double> daily_winsorize_zscore(
     return result;
 }
 
+py::array_t<std::int64_t> daily_quantile_bins(
+    const py::array& values,
+    const py::array& group_offsets,
+    int quantiles
+) {
+    validate_vector(values, "values");
+    const auto rows = static_cast<std::size_t>(values.shape(0));
+    validate_offsets(group_offsets, rows);
+    if (quantiles < 2) {
+        throw py::value_error("quantiles 必须是不小于 2 的整数");
+    }
+    const auto group_count =
+        static_cast<std::size_t>(group_offsets.size() - 1);
+    py::array_t<std::int64_t> result(static_cast<py::ssize_t>(rows));
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::daily_quantile_bins(
+            static_cast<const double*>(values.data()),
+            rows,
+            static_cast<const std::int64_t*>(group_offsets.data()),
+            group_count,
+            quantiles,
+            threads,
+            static_cast<std::int64_t*>(result.mutable_data())
+        );
+    }
+    return result;
+}
+
+py::tuple bin_returns_multi(
+    const py::array& values,
+    const py::array& day_codes,
+    const py::array& bin_codes,
+    const py::array& weights,
+    int day_count,
+    int bin_count
+) {
+    validate_matrix(values);
+    validate_int64_vector(day_codes, "day_codes");
+    validate_int64_vector(bin_codes, "bin_codes");
+    validate_vector(weights, "weights");
+    const auto rows = static_cast<std::size_t>(values.shape(0));
+    const auto labels = static_cast<std::size_t>(values.shape(1));
+    if (
+        day_codes.size() != static_cast<py::ssize_t>(rows)
+        || bin_codes.size() != static_cast<py::ssize_t>(rows)
+        || weights.size() != static_cast<py::ssize_t>(rows)
+    ) {
+        throw py::value_error("values、day_codes、bin_codes 与 weights 行数必须一致");
+    }
+    if (day_count < 1 || bin_count < 1) {
+        throw py::value_error("day_count 与 bin_count 必须为正整数");
+    }
+    const auto days = static_cast<std::size_t>(day_count);
+    const auto bins = static_cast<std::size_t>(bin_count);
+    py::array_t<double> returns(
+        {
+            static_cast<py::ssize_t>(days),
+            static_cast<py::ssize_t>(bins),
+            static_cast<py::ssize_t>(labels),
+        }
+    );
+    py::array_t<double> pools(
+        {
+            static_cast<py::ssize_t>(days),
+            static_cast<py::ssize_t>(labels),
+        }
+    );
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::bin_returns_multi(
+            static_cast<const double*>(values.data()),
+            rows,
+            labels,
+            static_cast<const std::int64_t*>(day_codes.data()),
+            static_cast<const std::int64_t*>(bin_codes.data()),
+            static_cast<const double*>(weights.data()),
+            days,
+            bins,
+            threads,
+            static_cast<double*>(returns.mutable_data()),
+            static_cast<double*>(pools.mutable_data())
+        );
+    }
+    return py::make_tuple(std::move(returns), std::move(pools));
+}
+
+py::tuple bin_turnover(
+    const py::array& values,
+    int quantiles
+) {
+    validate_matrix(values);
+    if (quantiles < 1) {
+        throw py::value_error("quantiles 必须为正整数");
+    }
+    const auto rows = static_cast<std::size_t>(values.shape(0));
+    const auto columns = static_cast<std::size_t>(values.shape(1));
+    py::array_t<double> per_bin(
+        {
+            static_cast<py::ssize_t>(rows),
+            static_cast<py::ssize_t>(quantiles),
+        }
+    );
+    py::array_t<double> overall(static_cast<py::ssize_t>(rows));
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::bin_turnover(
+            static_cast<const double*>(values.data()),
+            rows,
+            columns,
+            quantiles,
+            threads,
+            static_cast<double*>(per_bin.mutable_data()),
+            static_cast<double*>(overall.mutable_data())
+        );
+    }
+    return py::make_tuple(std::move(per_bin), std::move(overall));
+}
+
+py::tuple daily_row_spearman(
+    const py::array& left,
+    const py::array& right,
+    int min_n
+) {
+    validate_matrix(left);
+    validate_matrix(right);
+    if (
+        left.shape(0) != right.shape(0)
+        || left.shape(1) != right.shape(1)
+    ) {
+        throw py::value_error("left 与 right 形状必须一致");
+    }
+    if (min_n < 2) {
+        throw py::value_error("min_n 必须是不小于 2 的整数");
+    }
+    const auto rows = static_cast<std::size_t>(left.shape(0));
+    const auto columns = static_cast<std::size_t>(left.shape(1));
+    py::array_t<double> correlation(static_cast<py::ssize_t>(rows));
+    py::array_t<std::int64_t> count(static_cast<py::ssize_t>(rows));
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::daily_row_spearman(
+            static_cast<const double*>(left.data()),
+            static_cast<const double*>(right.data()),
+            rows,
+            columns,
+            min_n,
+            threads,
+            static_cast<double*>(correlation.mutable_data()),
+            static_cast<std::int64_t*>(count.mutable_data())
+        );
+    }
+    return py::make_tuple(std::move(correlation), std::move(count));
+}
+
 }  // namespace
 
 PYBIND11_MODULE(quant_native, module) {
@@ -350,5 +529,39 @@ PYBIND11_MODULE(quant_native, module) {
         py::arg("group_offsets"),
         py::arg("n_mad") = 3.0,
         R"doc(按组融合 MAD 去极值和截面 z-score。)doc"
+    );
+    module.def(
+        "daily_quantile_bins",
+        &daily_quantile_bins,
+        py::arg("values"),
+        py::arg("group_offsets"),
+        py::arg("quantiles"),
+        R"doc(按组计算平均并列名次分位组，返回从 0 开始的组号。)doc"
+    );
+    module.def(
+        "bin_returns_multi",
+        &bin_returns_multi,
+        py::arg("values"),
+        py::arg("day_codes"),
+        py::arg("bin_codes"),
+        py::arg("weights"),
+        py::arg("day_count"),
+        py::arg("bin_count"),
+        R"doc(一次计算多标签分位收益和池内均值。)doc"
+    );
+    module.def(
+        "bin_turnover",
+        &bin_turnover,
+        py::arg("values"),
+        py::arg("quantiles"),
+        R"doc(按完整交易日矩阵计算全池与各分位换手。)doc"
+    );
+    module.def(
+        "daily_row_spearman",
+        &daily_row_spearman,
+        py::arg("left"),
+        py::arg("right"),
+        py::arg("min_n") = 5,
+        R"doc(按行对共同有限样本重新排名并计算 Spearman。)doc"
     );
 }

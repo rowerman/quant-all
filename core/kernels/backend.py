@@ -37,6 +37,20 @@ class DailyOlsResult(TypedDict):
     skipped: int
 
 
+class BinReturnsResult(TypedDict):
+    """多标签分位收益核的固定结果结构。"""
+
+    returns: FloatArray
+    pools: FloatArray
+
+
+class BinTurnoverResult(TypedDict):
+    """分位换手核的固定结果结构。"""
+
+    per_bin: FloatArray
+    overall: FloatArray
+
+
 class NativeKernelBackend(Protocol):
     """批量数值核的统一协议。"""
 
@@ -94,6 +108,40 @@ class NativeKernelBackend(Protocol):
         min_rows: int = 30,
     ) -> DailyOlsResult:
         """按组计算截面 OLS、t 值、残差和跳过原因。"""
+
+    def daily_quantile_bins(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        quantiles: int,
+    ) -> IntArray:
+        """按组计算 0 起始的分位组号，无效样本返回 -1。"""
+
+    def bin_returns_multi(
+        self,
+        values: FloatArray,
+        day_codes: IntArray,
+        bin_codes: IntArray,
+        weights: FloatArray,
+        day_count: int,
+        bin_count: int,
+    ) -> BinReturnsResult:
+        """一次计算多标签分位收益与池内均值。"""
+
+    def bin_turnover(
+        self,
+        values: FloatArray,
+        quantiles: int,
+    ) -> BinTurnoverResult:
+        """按完整交易日矩阵计算全池与各分位换手。"""
+
+    def daily_row_spearman(
+        self,
+        left: FloatArray,
+        right: FloatArray,
+        min_n: int = 5,
+    ) -> tuple[FloatArray, IntArray]:
+        """按行重新排名后计算 Spearman 和有效配对数。"""
 
 
 @dataclass(frozen=True)
@@ -165,6 +213,32 @@ def validate_target_index(target_index: object, columns: int) -> int | None:
     if type(target_index) is not int or not 0 <= target_index < columns:
         raise KernelParameterError("target_index 必须是矩阵列范围内的整数")
     return target_index
+
+
+def validate_codes(
+    values: object,
+    name: str,
+    *,
+    length: int,
+    maximum: int | None = None,
+) -> IntArray:
+    """校验一维 C 连续 int64 编码；参数 maximum 为开区间上界。"""
+
+    if not isinstance(values, np.ndarray):
+        raise KernelArrayError(f"{name} 必须是 numpy.ndarray")
+    if values.dtype != np.dtype("int64"):
+        raise KernelArrayError(f"{name} 必须是 int64，实际为 {values.dtype}")
+    if values.ndim != 1:
+        raise KernelArrayError(f"{name} 必须是一维数组")
+    if not values.flags.c_contiguous:
+        raise KernelArrayError(f"{name} 必须是 C 连续数组")
+    if values.size != length:
+        raise KernelArrayError(f"{name} 长度必须为 {length}")
+    if values.size and int(values.min()) < 0:
+        raise KernelArrayError(f"{name} 不能包含负编码")
+    if maximum is not None and values.size and int(values.max()) >= maximum:
+        raise KernelArrayError(f"{name} 编码必须小于 {maximum}")
+    return values
 
 
 def validate_n_mad(n_mad: object) -> float:

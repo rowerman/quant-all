@@ -2,8 +2,9 @@
 
 `core/kernels` 以顶层包名 `kernels` 提供与具体加速后端无关的批量数组契约。当前包含
 Python 回退、Numba 研究原型，以及 C++ Spearman、逐日排名、逐日 Pearson、MAD、
-z-score 和融合标准化后端。评估相关性、IC/RankIC、多周期衰减、增量 IC 和风格暴露
-已默认走 `auto`；模型、OLS、挖掘和回测尚未接入加速后端。
+z-score、融合标准化、分位分组、多标签分位收益、分位换手和逐行 Spearman 后端。
+评估相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、分位图和换手已默认走
+`auto`；模型、OLS、挖掘和回测尚未接入加速后端。
 
 ## 负责什么
 
@@ -15,6 +16,7 @@ z-score 和融合标准化后端。评估相关性、IC/RankIC、多周期衰减
 - 提供 C++ Spearman 完整矩阵和目标行后端。
 - 提供 C++ 逐日排名和逐日 Pearson 后端。
 - 提供 C++ 逐日 MAD、z-score 和融合标准化后端。
+- 提供 C++ 分位分组、多标签分位收益、分位换手和逐行 Spearman 后端。
 - 通过 `KERNEL-001`～`KERNEL-004` 区分数组、offset、参数和后端错误。
 
 ## 被谁调用
@@ -24,23 +26,28 @@ z-score 和融合标准化后端。评估相关性、IC/RankIC、多周期衰减
 - `calculate.correlation`：正式完整矩阵和候选目标行。
 - `calculate.daily`：IC、RankIC、多周期衰减和增量 IC。
 - `calculate.exposure`：风格与因子逐日 MAD 去极值 + z-score。
+- `calculate.binning`：分位分组、多标签分位收益、组号换手和因子自相关。
 - `tests/test_native_kernels.py`
+- `tests/test_cpp_binning.py`
 - `tests/test_cpp_native.py`
 - `tools/monitor/kernel_baseline.py`
 - `tools/monitor/native_kernel_baseline.py`
 - `tools/monitor/correlation_native_baseline.py`
 - `tools/monitor/standardize_native_baseline.py`
+- `tools/monitor/binning_native_baseline.py`
 
 业务模块不得直接导入 `quant_native` 或 Numba 原型。后续接入统一从此包选择后端。
 
 ## 调用了谁
 
 - Python 回退调用 `calculate.daily`、`calculate.normalize`、
-  `calculate.correlation._daily_spearman` 和 `calculate.exposure` 的现有实现。
+  `calculate.correlation._daily_spearman`、`calculate.exposure` 和
+  `calculate.binning` 的现有实现。
 - Numba 原型的未验证核显式委托 Python 回退。
 - `CppKernelBackend` 把 `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、
-  `daily_winsorize_mad`、`daily_zscore` 和 `daily_winsorize_zscore` 交给
-  `quant_native`；OLS 继续显式委托 Python 回退。
+  `daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore`、
+  `daily_quantile_bins`、`bin_returns_multi`、`bin_turnover` 和
+  `daily_row_spearman` 交给 `quant_native`；OLS 继续显式委托 Python 回退。
 - 基准工具读取正式因子 Parquet 和评估面板，只读，不写业务数据。
 
 ## 数据契约
@@ -56,6 +63,11 @@ z-score 和融合标准化后端。评估相关性、IC/RankIC、多周期衰减
 - `daily_zscore` 返回按组样本标准差计算的 z-score。
 - `daily_winsorize_zscore` 等价于先调用 MAD 去极值、再调用 z-score，供风格暴露一次
   完成标准化。
+- `daily_quantile_bins` 返回 0 起始分位组号；NaN 返回 -1，正负无穷仍参与排序。
+- `bin_returns_multi` 返回 `[交易日, 分位, 标签]` 收益和 `[交易日, 标签]` 池内均值；
+  等权由全 1 权重表达，市值加权只纳入有限正权重。
+- `bin_turnover` 返回 `[交易日, 分位]` 分组换手和 `[交易日]` 全池换手。
+- `daily_row_spearman` 每行只取共同有限样本，分别计算平均并列秩后返回相关和有效计数。
 - 可选 `target_index` 只返回目标行、目标列和对角线；其他位置相关值为 `NaN`、计数为 0。
 - Spearman 的最小样本参数不得小于当前评估口径 5。
 - `daily_ols` 返回日期索引、系数、t 值、R²、样本数、残差行号和残差值。
@@ -126,13 +138,30 @@ z-score 和融合标准化后端。评估相关性、IC/RankIC、多周期衰减
   最高 RSS 比例 `1.0195x`。
 - 证据位于 `AiRecord/benchmarks/V116/p1-05-20261027/`。
 
+## P1-06 分位与稳定性业务接入
+
+- `assign_bins` 经 `daily_quantile_bins` 完成平均并列名次分位；`rank_matrix` 复用
+  `daily_rank_pct`，不再逐日调用 pandas 分组排名。
+- `bin_returns_multi` 一次计算五档标签的等权或市值加权收益与池内均值，服务多周期衰减。
+  单标签 `bin_daily_returns` 仍保留 pandas 求和，以维持分位图既有逐值语义。
+- `bin_turnover` 批量比较完整交易日矩阵；`daily_row_spearman` 对每个 lag 的共同股票
+  重新排名，避免三次 pandas 逐行排名。
+- 固定 3,751,348 行分位样本、727 个交易日和 5,606 只股票的单线程微基准：
+  分位分组 `4.422x`、等权收益 `5.045x`、市值加权收益 `5.016x`、换手 `1.723x`、
+  三个 lag 自相关 `1.724x`。
+- 真实 `bins`、`bin_curves`、`spread`、`bin_dist`、`turnover`、`decay` 分别加速
+  `1.621x`、`1.575x`、`1.594x`、`1.509x`、`1.854x`、`3.255x`；
+  `bins + turnover` 合计改善 `43.82%`，最高 RSS 比例 `1.0060x`。
+- Python/native/auto 数组和 payload 在 `1e-10` 内一致，分位组号与有效计数逐值一致。
+  证据位于 `AiRecord/benchmarks/V117/p1-06-20261027/`。
+
 ## C++ 替换台账
 
 只有真实替换、接入并留下正确性和性能证据的模块才计入替换数。
 
 | 项目 | 当前状态 |
 |---|---|
-| 实际 C++ 替换模块数 | 5 |
+| 实际 C++ 替换模块数 | 9 |
 | C++ 扩展 | `quant_native` 已构建 |
 | 默认计算后端 | `auto`，扩展可用时选择 native |
 | P1-01 门禁 | 逐日排名门禁已通过 |
@@ -141,6 +170,10 @@ z-score 和融合标准化后端。评估相关性、IC/RankIC、多周期衰减
 | 逐日 Pearson 模块 | Pearson IC 与通用日度相关已接入 |
 | 逐日 MAD 去极值模块 | Pearson IC 和风格暴露已接入 |
 | 逐日 z-score 模块 | 风格暴露经融合标准化入口接入 |
+| 分位分组模块 | `assign_bins` 已接入 |
+| 多标签分位收益模块 | 多周期衰减已接入 |
+| 分位换手模块 | 换手 stage 已接入 |
+| 因子自相关模块 | lag 1/5/20 逐行 Spearman 已接入 |
 
 后续登记每个 C++ 模块时必须写明：C++ 模块名、替换的原 Python 函数、默认/可选后端、
 Python 回退路径、真实 stage 耗时、峰值 RSS、正确性证据和对应 Tracker 任务。
@@ -148,7 +181,7 @@ Python 回退路径、真实 stage 耗时、峰值 RSS、正确性证据和对�
 ## 修改注意
 
 - `calculate.native` 是评估并发锁，不是计算后端；不要合并两套职责。
-- 不复制排名、MAD、Pearson 或 OLS 公式，回退必须继续调用现有实现。
+- 不复制排名、MAD、Pearson、分位或 OLS 公式，回退必须继续调用现有实现。
 - 不让 `auto` 吞掉已加载原生核的计算错误。
 - 矩阵第一维始终是组；不要按股票或单元格逐次调用。
 - 新增核必须同时覆盖空组、NaN、正负无穷、并列、常数和最小样本边界。
