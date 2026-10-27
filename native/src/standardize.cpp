@@ -287,4 +287,58 @@ void daily_winsorize_zscore(
     );
 }
 
+void daily_winsorize_zscore_columns(
+    const double* values,
+    std::size_t rows,
+    std::size_t columns,
+    const std::int64_t* group_offsets,
+    std::size_t group_count,
+    double n_mad,
+    int threads,
+    double* result
+) {
+    validate_inputs(rows, group_count, threads, n_mad);
+    if (columns == 0) {
+        throw std::invalid_argument("daily_winsorize_zscore_columns 列数非法");
+    }
+    run_groups(
+        group_count,
+        threads,
+        [&](std::size_t worker_index, std::size_t worker_count) {
+            for (std::size_t group = worker_index;
+                 group < group_count;
+                 group += worker_count) {
+                const std::size_t start =
+                    static_cast<std::size_t>(group_offsets[group]);
+                const std::size_t end =
+                    static_cast<std::size_t>(group_offsets[group + 1]);
+                std::vector<double> column_values(end - start);
+                std::vector<double> standardized(end - start);
+                for (std::size_t column = 0; column < columns; ++column) {
+                    for (std::size_t row = start; row < end; ++row) {
+                        column_values[row - start] =
+                            values[row * columns + column];
+                    }
+                    const std::vector<double> clipped = winsorize_group(
+                        column_values.data(),
+                        0,
+                        column_values.size(),
+                        n_mad
+                    );
+                    zscore_group(
+                        clipped.data(),
+                        0,
+                        clipped.size(),
+                        standardized.data()
+                    );
+                    for (std::size_t row = start; row < end; ++row) {
+                        result[row * columns + column] =
+                            standardized[row - start];
+                    }
+                }
+            }
+        }
+    );
+}
+
 }  // namespace quant_native

@@ -166,14 +166,41 @@ def style_sql(params: EvalParams, window_start: str) -> str:
     )
 
 
-def build_styles(params: EvalParams, *, db_file: Path | str = DB_FILE,
-                 conn: duckdb.DuckDBPyConnection | None = None) -> pd.DataFrame:
+def compact_style_sql(params: EvalParams, window_start: str) -> str:
+    """生成以整数股票编码输出的风格取数 SQL。
+
+    参数:
+        params: 评估参数。
+        window_start: 市场回看起点。
+    """
+
+    columns = ", ".join(("stock_id", "trade_date", *RAW_COLUMNS))
+    return (
+        "WITH styles AS ("
+        + style_sql(params, window_start)
+        + "), numbered AS ("
+        " SELECT dense_rank() OVER (ORDER BY stock_code) - 1 AS stock_id, *"
+        " FROM styles"
+        ") SELECT "
+        + columns
+        + " FROM numbered"
+    )
+
+
+def build_styles(
+    params: EvalParams,
+    *,
+    db_file: Path | str = DB_FILE,
+    conn: duckdb.DuckDBPyConnection | None = None,
+    compact: bool = False,
+) -> pd.DataFrame:
     """取评估区间内全部股票的风格因子原始值。
 
     参数:
         params: 评估参数。
         db_file: 日线主库路径。
         conn: 已有的主库连接；留空则自行打开并在结束时关闭。
+        compact: 是否保留类别股票列；评估上下文的内部暴露链路使用 True。
     """
     owns_connection = conn is None
     if owns_connection:
@@ -182,7 +209,7 @@ def build_styles(params: EvalParams, *, db_file: Path | str = DB_FILE,
             raise StyleFactorError(f"主库不存在: {target}")
         conn = duckdb.connect()
         conn.execute("SET memory_limit='1GB'")
-        conn.execute('SET threads=2')
+        conn.execute('SET threads=4')
         conn.execute(f"ATTACH '{target}' AS src (READ_ONLY)")
     try:
         tables = {row[0] for row in conn.execute(
@@ -194,7 +221,13 @@ def build_styles(params: EvalParams, *, db_file: Path | str = DB_FILE,
                 f"md schema 现有表：{sorted(tables)}"
             )
         window_start = lookback_start(conn, params.start)
-        frame = conn.execute(style_sql(params, window_start)).df()
+        frame = conn.execute(compact_style_sql(params, window_start)).df()
+        categories = conn.execute(
+            "SELECT DISTINCT stock_code FROM src.md.daily_hfq"
+            " WHERE status = 'trading'"
+            f" AND trade_date BETWEEN DATE '{params.start}'"
+            f" AND DATE '{params.end}' ORDER BY stock_code"
+        ).df()["stock_code"].astype(str).to_numpy()
     finally:
         if owns_connection and conn is not None:
             conn.close()
@@ -202,7 +235,19 @@ def build_styles(params: EvalParams, *, db_file: Path | str = DB_FILE,
         raise StyleFactorError(
             f"{params.start} ~ {params.end} 没有可用的交易日行，算不出风格因子"
         )
-    frame["stock_code"] = frame["stock_code"].astype(str)
+    stock_ids = frame.pop("stock_id").to_numpy(dtype="int64")
+    if stock_ids.size and (
+        int(stock_ids.min()) < 0 or int(stock_ids.max()) >= categories.size
+    ):
+        raise StyleFactorError("风格股票编码超出映射范围")
+    frame.insert(
+        0,
+        "stock_code",
+        pd.Categorical.from_codes(stock_ids, categories=categories),
+    )
+    frame = frame[["stock_code", "trade_date", *RAW_COLUMNS]]
+    if not compact:
+        frame["stock_code"] = frame["stock_code"].astype(str)
     for column in RAW_COLUMNS:
         frame[column] = frame[column].astype("float64")
     logger.info(

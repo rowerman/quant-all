@@ -2,8 +2,8 @@
 
 `native` 负责构建顶层扩展 `quant_native`，当前提供完整矩阵和目标行两种成对 Spearman
 核，以及逐日排名、Pearson、MAD、z-score、融合标准化、分位分组、多标签分位收益、
-分位换手和逐行 Spearman 核。这些核都已接入评估业务路径；有扩展时默认 `auto` 选择
-native，无扩展时回退 Python。
+分位换手、逐行 Spearman 和逐日 OLS 核。融合标准化同时支持单列和多列批量入口。
+这些核都已接入评估业务路径；有扩展时默认 `auto` 选择 native，无扩展时回退 Python。
 
 ## 负责什么
 
@@ -12,8 +12,10 @@ native，无扩展时回退 Python。
 - 按实际配对样本剔除非有限值，使用并列平均名次，常数截面返回 `NaN`。
 - 按组计算平均名次分位和 Pearson 相关，保持原有效计数与最小样本门槛。
 - 按组计算中位数、MAD、裁剪和 z-score；z-score 使用与 pandas 相同的补偿求和顺序。
+- 一次处理风格暴露的多列标准化，共享日分组和 offsets。
 - 按组计算平均名次分位；批量计算多标签分位收益、池内均值和分位换手。
 - 对每个 lag 的共同有限股票逐行重新排名并计算 Spearman。
+- 按日计算截面 OLS、active mask、t 值、R² 和残差；病态矩阵按日回退 Python。
 - 计算期间释放 GIL，按组使用受控线程数。
 
 不负责输入数据读取、因子目录、评估 payload、日志聚合、业务回退选择或并发阶段锁。
@@ -24,9 +26,10 @@ native，无扩展时回退 Python。
 - 正式完整矩阵和候选目标行经 `calculate.correlation` 调用 `kernels` 适配层。
 - IC、RankIC、多周期衰减和增量 IC 经 `calculate.daily` 调用同一适配层。
 - 风格暴露经 `calculate.exposure` 调用融合标准化核。
+- 风格暴露经 `calculate.exposure` 调用逐日 OLS。
 - 分位分组、多标签收益、换手和自相关经 `calculate.binning` 调用同一适配层。
 - 核测试和 P1-02/P1-03 基准工具直接验证适配层或扩展。
-- 模型、OLS、挖掘表达式和回测尚未调用这些核。
+- 模型、挖掘表达式和回测尚未调用这些核。
 
 业务模块不得直接导入 `quant_native`。后续接入必须经过 `kernels.get_backend()` 和统一
 `NativeKernelBackend` 协议。
@@ -42,6 +45,7 @@ native，无扩展时回退 Python。
 | Ninja | 1.13.2 | 构建执行 |
 | pybind11 | 3.1.0 | Python 绑定、NumPy 数组和异常转换 |
 | scikit-build-core | 1.1.1 | setuptools 兼容构建后端 |
+| Eigen | 3.4.0 | OLS QR 和协方差计算；源码内置，MPL2 |
 
 安装主环境后执行：
 
@@ -68,12 +72,14 @@ daily_pearson(left, right, group_offsets, min_n=5)
 daily_winsorize_mad(values, group_offsets, n_mad=3.0)
 daily_zscore(values, group_offsets)
 daily_winsorize_zscore(values, group_offsets, n_mad=3.0)
+daily_winsorize_zscore_columns(values, group_offsets, n_mad=3.0)
 daily_quantile_bins(values, group_offsets, quantiles)
 bin_returns_multi(
     values, day_codes, bin_codes, weights, day_count, bin_count
 )
 bin_turnover(values, quantiles)
 daily_row_spearman(left, right, min_n=5)
+daily_ols(design, response, group_offsets, min_rows=30)
 ```
 
 - `values`：C 连续 `float64`，形状为 `[样本, 因子]`。
@@ -91,6 +97,8 @@ daily_row_spearman(left, right, min_n=5)
 - `daily_winsorize_mad`：返回与输入等长的裁剪数组；MAD 为零或无法裁剪时保持原值。
 - `daily_zscore`：样本标准差 `ddof=1`；有效样本不足 2 或标准差为零时返回 `NaN`。
 - `daily_winsorize_zscore`：对裁剪结果继续计算 z-score，供风格暴露一次完成标准化。
+- `daily_winsorize_zscore_columns`：输入二维 C 连续矩阵，对每一列执行与
+  `daily_winsorize_zscore` 相同的融合标准化；用于风格列和因子共享一次分组。
 - 两个日度接口的 `group_offsets` 都与 Spearman 相同，返回一维结果；Pearson 额外返回
   每组有效配对数。
 - 业务评估的最小截面继续固定为 5；底层 Pearson 接口接受不小于 2 的门槛。
@@ -104,6 +112,8 @@ daily_row_spearman(left, right, min_n=5)
   返回逐日各分位换手和全池换手。
 - `daily_row_spearman` 的输入为两张同形矩阵；每行只使用两侧有限的配对，少于 5 个或
   任一侧为常数时返回 NaN，并同时返回有效配对数。
+- `daily_ols` 返回有效日期、完整列系数和 t、R²、样本数、active mask、分类跳过计数，
+  以及成功回归日的残差行号和值。正常矩阵走 QR，病态矩阵按日回退 Python。
 
 Python 适配层和 C++ 绑定层都会检查 dtype、维度、连续内存、offsets 和参数。原生错误
 转换为 Python 异常。显式请求 `native` 但扩展缺失时返回 `KERNEL-004`；`auto` 只在扩展
@@ -220,13 +230,13 @@ stage 的收益主要来自原生分位分组和秩宽表。
 | 项目 | 当前状态 |
 |---|---|
 | 扩展 | `quant_native` 已构建 |
-| 原生核 | `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、`daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore`、`daily_quantile_bins`、`bin_returns_multi`、`bin_turnover`、`daily_row_spearman` |
+| 原生核 | `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、`daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore`、`daily_winsorize_zscore_columns`、`daily_quantile_bins`、`bin_returns_multi`、`bin_turnover`、`daily_row_spearman`、`daily_ols` |
 | 可选后端 | `native`、`python`、`auto` |
 | 默认后端 | `auto` |
-| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、分位图、换手与自相关 |
-| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson`；`winsorize_by_day`；`zscore_by_day`；分位分组；多标签分位收益；分位换手；因子自相关 |
-| 实际 C++ 替换模块数 | 9 |
-| 真实业务 stage 收益 | 相关性下降 35.5%；overview 2.535x；bins 1.621x；turnover 1.854x；decay 3.255x |
+| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、OLS、分位图、换手与自相关 |
+| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson`；`winsorize_by_day`；`zscore_by_day`；分位分组；多标签分位收益；分位换手；因子自相关；`_daily_regression` |
+| 实际 C++ 替换模块数 | 10 |
+| 真实业务 stage 收益 | 相关性下降 35.5%；overview 2.535x；bins 1.621x；turnover 1.854x；decay 3.255x；OLS 链路 native 相对 Python 改善 46.26% |
 
 ## 修改注意
 
@@ -240,3 +250,24 @@ stage 的收益主要来自原生分位分组和秩宽表。
   由 Python 宽表层保持。
 - 因子自相关必须对每个 lag 的共同股票重新排名，不能复用完整截面秩。
 - 新增原生核必须同时提供 Python 金标准、异常、并发、子进程压力和资源证据。
+
+## P1-07 OLS 与暴露链路优化
+
+V118 曾按 `1e-10` 口径停止原生 OLS。V119 用户确认 OLS 业务一致性门槛调整为
+`1e-5`，因此恢复 Eigen 3.4.0 和逐日 OLS。正常条件数使用列主元 Householder QR，
+协方差由 SVD 计算；病态矩阵按日显式回退 Python。真实矩阵核耗时由 `0.749s` 降至
+`0.322s`（`2.33x`），系数、R²、残差和业务消费的风格 t 在 `1e-5` 内一致。
+
+保留的暴露链路优化不改变公式：
+
+- 风格取数在 DuckDB 内生成整数股票编码，pandas 再还原为类别列，避免把 390 万行字符串
+  直接转换为 object。
+- 风格窗口查询使用 4 个 DuckDB 线程；该阶段结束后才进入 native 计算，不与
+  `QUANT_NATIVE_THREADS` 叠加。
+- 8 个原始风格列和因子一次取成连续矩阵，经 `daily_winsorize_zscore_columns` 标准化，
+  共用稳定日序和 offsets。
+
+固定三年 `exposure + incremental_ic`：Python `24.375s`、native `12.935s`、auto
+`13.100s`；native 相对 Python 改善 `46.26%`。三后端 payload 在 `1e-5` 内一致，
+native/auto 峰值 RSS 为 Python 的 `0.998x/0.992x`。证据位于
+`AiRecord/benchmarks/V119/p1-07-20261027/`。

@@ -240,6 +240,24 @@ class NumbaPrototypeBackend:
             n_mad,
         )
 
+    def daily_winsorize_zscore_columns(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """未验证多列核显式委托 Python 回退。"""
+
+        logger.info(
+            "内核显式回退 kernel=daily_winsorize_zscore_columns "
+            "requested=numba backend=python reason=numba_kernel_not_implemented"
+        )
+        return self._fallback.daily_winsorize_zscore_columns(
+            values,
+            group_offsets,
+            n_mad,
+        )
+
     def daily_pearson(
         self,
         left: FloatArray,

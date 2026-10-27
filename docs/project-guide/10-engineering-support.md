@@ -113,8 +113,9 @@ python3.12 -m venv .venv
 `kernels` 是批量数值核的稳定导入入口，当前包含 Python 回退、Numba 研究原型和 C++
 Spearman、逐日排名、逐日 Pearson、MAD、z-score、融合标准化、分位分组、多标签分位
 收益、分位换手与逐行 Spearman 后端；它不替代 `calculate.native` 的并发锁。相关性、
-IC/RankIC、多周期衰减、增量 IC、风格暴露和分位图/换手默认使用 `auto`，扩展可用时
-选择 native，不可导入时回退 Python。当前实际 C++ 替换模块数为 9。构建方式和替换状态见
+IC/RankIC、多周期衰减、增量 IC、风格暴露、OLS 和分位图/换手默认使用 `auto`，扩展
+可用时选择 native，不可导入时回退 Python。当前实际 C++ 替换模块数为 10。构建方式和
+替换状态见
 [C++ 批量计算扩展](../native/README.md) 和
 [批量计算核](../core/kernels/README.md) 中的台账。
 

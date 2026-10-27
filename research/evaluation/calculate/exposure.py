@@ -23,7 +23,6 @@ import pandas as pd
 from calculate.daily import MIN_CROSS_SECTION, daily_corr
 from calculate.errors import DecomposeError
 from calculate.logging_conf import get_logger
-from calculate.normalize import standardize_by_day
 from calculate.panel import open_source
 from calculate.styles import (
     INDUSTRY_OFF,
@@ -70,50 +69,6 @@ class ExposureResult:
     skipped_days: int
     residual: pd.DataFrame
     industry: dict
-
-
-def _standardized_block(values: np.ndarray, days: np.ndarray) -> np.ndarray:
-    """一列取值先按交易日 MAD 去极值，再做截面 z-score。
-
-    参数:
-        values: 一维取值。
-        days: 与 values 等长的交易日序列。
-    """
-    return standardize_by_day(days, values)
-
-
-def _standardized_columns(
-    sample: pd.DataFrame,
-    columns: tuple[str, ...],
-    days: np.ndarray,
-) -> pd.DataFrame:
-    """按日分组一次后标准化多列，并保持样本原顺序。"""
-
-    from kernels import get_backend
-    from calculate.normalize import _grouped_values
-
-    first = sample[columns[0]].to_numpy(dtype="float64")
-    grouped = _grouped_values(days, first, finite_dates_only=True)
-    if grouped is None:
-        return pd.DataFrame({
-            column: _standardized_block(
-                sample[column].to_numpy(dtype="float64"),
-                days,
-            )
-            for column in columns
-        })
-    order, offsets, _ = grouped
-    backend = get_backend().backend
-    standardized: dict[str, np.ndarray] = {}
-    for column in columns:
-        ordered = np.ascontiguousarray(
-            sample[column].to_numpy(dtype="float64")[order]
-        )
-        computed = backend.daily_winsorize_zscore(ordered, offsets)
-        result = np.empty_like(computed)
-        result[order] = computed
-        standardized[column] = result
-    return pd.DataFrame(standardized)
 
 
 def _combine_value(z_bp: np.ndarray, z_ep: np.ndarray) -> np.ndarray:
@@ -166,23 +121,6 @@ def _industry_frame(context, industry_key: str) -> tuple[pd.DataFrame | None, di
     return mapping, block
 
 
-def _design_matrix(styles: pd.DataFrame, industry: np.ndarray | None) -> np.ndarray:
-    """拼设计矩阵：截距 + 7 个风格（+ 行业哑变量）。
-
-    参数:
-        styles: 标准化后的 7 列风格。
-        industry: 行业列（字符串类别），None 表示不加行业层。
-    """
-    parts = [np.ones((len(styles), 1), dtype="float64")]
-    parts.append(styles[list(STYLE_KEYS)].to_numpy(dtype="float64"))
-    if industry is not None:
-        categories = pd.Categorical(industry)
-        # 丢掉第一类，避免与截距完全共线
-        dummies = pd.get_dummies(categories, drop_first=True, dtype="float64")
-        parts.append(dummies.to_numpy(dtype="float64"))
-    return np.hstack(parts)
-
-
 def _daily_regression(
     day_codes: np.ndarray,
     day_count: int,
@@ -207,20 +145,26 @@ def _daily_regression(
     ends = np.append(starts[1:], day_codes.size)
     n_columns = design.shape[1]
     coefficients, t_stats, r2, sample_rows, used_days = [], [], [], [], []
+    active_masks = []
     residual_rows, residual_values = [], []
     skipped = 0
+    skipped_insufficient_rows = 0
+    skipped_invalid_response = 0
+    skipped_rank_deficient = 0
     for index in range(day_count):
         start, end = int(starts[index]), int(ends[index])
         size = end - start
         if size < min_rows:
             if size:
                 skipped += 1
+                skipped_insufficient_rows += 1
             continue
         positions = order[start:end]
         design_day = design[positions]
         response_day = response[positions]
         if not np.isfinite(response_day).all() or np.ptp(response_day) == 0:
             skipped += 1
+            skipped_invalid_response += 1
             continue
         # 非截距列整日为常数时不可估计，只删除该列，不放弃其他风格。
         active = np.ptp(design_day, axis=0) > 1e-12
@@ -229,6 +173,7 @@ def _daily_regression(
         beta_active, _, rank, _ = np.linalg.lstsq(reduced, response_day, rcond=None)
         if rank < reduced.shape[1] or size <= rank:  # 剩余风格共线或自由度不足，当天不用
             skipped += 1
+            skipped_rank_deficient += 1
             continue
         fitted = reduced @ beta_active
         residual_day = response_day - fitted
@@ -248,6 +193,7 @@ def _daily_regression(
         r2_day = 1.0 - float(residual_day @ residual_day) / total if total > 0 else np.nan
         coefficients.append(beta)
         t_stats.append(t_day)
+        active_masks.append(active)
         r2.append(r2_day)
         sample_rows.append(size)
         used_days.append(index)
@@ -260,6 +206,10 @@ def _daily_regression(
             "r2": np.empty(0), "rows": np.empty(0, dtype="int64"),
             "residual_rows": np.empty(0, dtype="int64"), "residual_values": np.empty(0),
             "skipped": skipped,
+            "skip_insufficient_rows": skipped_insufficient_rows,
+            "skip_invalid_response": skipped_invalid_response,
+            "skip_rank_deficient": skipped_rank_deficient,
+            "active": np.empty((0, n_columns), dtype=np.bool_),
         }
     return {
         "days": used_days,
@@ -270,6 +220,10 @@ def _daily_regression(
         "residual_rows": np.concatenate(residual_rows),
         "residual_values": np.concatenate(residual_values),
         "skipped": skipped,
+        "skip_insufficient_rows": skipped_insufficient_rows,
+        "skip_invalid_response": skipped_invalid_response,
+        "skip_rank_deficient": skipped_rank_deficient,
+        "active": np.vstack(active_masks),
     }
 
 
@@ -302,24 +256,54 @@ def run_exposure(context, industry_key: str = INDUSTRY_OFF) -> ExposureResult:
             "md.index_daily 是否齐全"
         )
 
-    standardized = _standardized_columns(sample, RAW_COLUMNS, days)
-    styles_std = pd.DataFrame({
-        "SIZE": standardized["SIZE"],
-        "VALUE": _combine_value(
-            standardized["BP"].to_numpy(), standardized["EP"].to_numpy()
-        ),
-        "MOMENTUM": standardized["MOMENTUM"],
-        "SHORT_REV": standardized["SHORT_REV"],
-        "VOL": standardized["VOL"],
-        "LIQUIDITY": standardized["LIQUIDITY"],
-        "BETA_60": standardized["BETA_60"],
-    })
+    day_codes, day_levels = pd.factorize(days, sort=True)
+    if day_codes.size and np.any(np.diff(day_codes) < 0):
+        order = np.argsort(day_codes, kind="stable")
+    else:
+        order = None
+    ordered_codes = day_codes if order is None else day_codes[order]
+    ordered_rows = (
+        np.arange(len(sample), dtype="int64")
+        if order is None
+        else order.astype(np.int64, copy=False)
+    )
+    counts = np.bincount(ordered_codes, minlength=day_levels.size)
+    offsets = np.concatenate(
+        (
+            np.array([0], dtype=np.int64),
+            np.cumsum(counts, dtype=np.int64),
+        )
+    ).astype(np.int64, copy=False)
+    from kernels import get_backend
+
+    selection = get_backend()
+    raw_matrix = sample[
+        [*RAW_COLUMNS, "factor"]
+    ].to_numpy(dtype="float64")
+    if order is not None:
+        raw_matrix = raw_matrix[order]
+    standardized = selection.backend.daily_winsorize_zscore_columns(
+        np.ascontiguousarray(raw_matrix),
+        offsets,
+    )
+    style_values = np.empty(
+        (standardized.shape[0], len(STYLE_KEYS)),
+        dtype="float64",
+    )
+    style_values[:, STYLE_KEYS.index("SIZE")] = standardized[:, 0]
+    style_values[:, STYLE_KEYS.index("VALUE")] = _combine_value(
+        standardized[:, 1],
+        standardized[:, 2],
+    )
+    style_values[:, STYLE_KEYS.index("MOMENTUM")] = standardized[:, 3]
+    style_values[:, STYLE_KEYS.index("SHORT_REV")] = standardized[:, 4]
+    style_values[:, STYLE_KEYS.index("VOL")] = standardized[:, 5]
+    style_values[:, STYLE_KEYS.index("LIQUIDITY")] = standardized[:, 6]
+    style_values[:, STYLE_KEYS.index("BETA_60")] = standardized[:, 7]
     # 风格算不出来的样本（次新股没满 250 日、亏损股没有正 pe）标准化后置 0，
     # 等价于「不暴露」，保留该股票参与回归与增量 IC
-    styles_std = styles_std.fillna(0.0)
-    response = _standardized_columns(sample, ("factor",), days)["factor"].to_numpy(
-        dtype="float64"
-    )
+    style_values[np.isnan(style_values)] = 0.0
+    response = standardized[:, 8]
 
     mapping, industry_block = _industry_frame(context, industry_key)
     industry_column = None
@@ -328,23 +312,45 @@ def run_exposure(context, industry_key: str = INDUSTRY_OFF) -> ExposureResult:
         industry_column = merged["industry"].fillna("未知").to_numpy()
         industry_block["coverage"] = float(np.mean(industry_column != "未知"))
         industry_block["categories"] = int(pd.unique(industry_column).size)
+        if order is not None:
+            industry_column = industry_column[order]
 
-    design = _design_matrix(styles_std, industry_column)
+    design_parts = [
+        np.ones((len(sample), 1), dtype="float64"),
+        style_values,
+    ]
+    if industry_column is not None:
+        categories = pd.Categorical(industry_column)
+        dummies = pd.get_dummies(
+            categories,
+            drop_first=True,
+            dtype="float64",
+        )
+        design_parts.append(dummies.to_numpy(dtype="float64"))
+    design = np.hstack(design_parts)
     industry_block["columns"] = int(design.shape[1] - len(STYLE_KEYS) - 1)
-    rows = np.arange(len(sample), dtype="int64")
-    day_codes, day_levels = pd.factorize(days, sort=True)
-    result = _daily_regression(day_codes, day_levels.size, design, response, rows)
+    result = selection.backend.daily_ols(
+        np.ascontiguousarray(design),
+        np.ascontiguousarray(response),
+        offsets,
+    )
+    residual_rows = ordered_rows[result["residual_rows"]]
 
     residual = pd.DataFrame({
-        "trade_date": days[result["residual_rows"]],
+        "trade_date": days[residual_rows],
         "residual": result["residual_values"],
-        "label": sample["label"].to_numpy(dtype="float64")[result["residual_rows"]],
-        "factor": sample["factor"].to_numpy(dtype="float64")[result["residual_rows"]],
+        "label": sample["label"].to_numpy(dtype="float64")[residual_rows],
+        "factor": sample["factor"].to_numpy(dtype="float64")[residual_rows],
     })
     dates = [pd.Timestamp(day_levels[index]) for index in result["days"]]
     logger.info(
-        "风格拆分完成：池=%s 样本=%d 回归日=%d 跳过=%d 行业层=%s 设计矩阵列=%d",
+        "风格拆分完成：池=%s 样本=%d 回归日=%d 跳过=%d "
+        "少样本=%d 无效响应=%d 秩亏=%d 后端=%s 行业层=%s 设计矩阵列=%d",
         context.params.universe, len(sample), len(dates), result["skipped"],
+        result["skip_insufficient_rows"],
+        result["skip_invalid_response"],
+        result["skip_rank_deficient"],
+        selection.name,
         industry_block["chosen"], design.shape[1],
     )
     return ExposureResult(

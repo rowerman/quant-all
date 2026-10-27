@@ -5,8 +5,8 @@
 
 批量数组接口位于 [`kernels`](../../core/kernels/README.md)。相关性、IC/RankIC、多周期
 衰减、增量 IC、风格暴露、分位图和换手默认使用 `auto`：扩展可用时分别走 C++ Spearman、
-逐日排名、Pearson、MAD、z-score、分位分组、多标签收益、换手与逐行 Spearman，缺失时
-回退 Python；OLS 等其余计算仍使用原 Python/NumPy 实现。`calculate.native` 仍只负责
+逐日排名、Pearson、MAD、z-score、分位分组、多标签收益、换手、逐行 Spearman 与 OLS，
+缺失时回退 Python。`calculate.native` 仍只负责
 并发锁。
 
 P1-03 的正式三年相关性 stage 由 Python `217.770s` 降至 native `140.460s`。P1-04 的
@@ -22,6 +22,12 @@ P1-06 的分位分组由 C++ 平均并列名次核完成，秩宽表复用逐日
 因子自相关分别批量处理。固定三年 `bins`、`turnover`、`decay` 分别加速 `1.621x`、
 `1.854x`、`3.255x`，`bins + turnover` 合计改善 `43.82%`。单标签市值加权仍走 pandas
 分组求和以保持逐值语义。证据位于 `AiRecord/benchmarks/V117/p1-06-20261027/`。
+
+V119 用户确认 OLS 业务一致性门槛为 `1e-5` 后，C++ OLS 已接入；正常矩阵走 QR，病态
+日回退 Python。OLS 核由 `0.749s` 降至 `0.322s`（`2.33x`）。固定三年
+`exposure + incremental_ic` 的 native 为 `12.935s`，相对 Python 改善 `46.26%`；
+三后端 payload 在 `1e-5` 内一致，最高 RSS 比例约 `0.998x`。证据位于
+`AiRecord/benchmarks/V119/p1-07-20261027/`。
 
 正式因子和自动挖掘候选通过 `FactorView` 指向各自的 Parquet 来源；`evaluate_context()`
 在已构建面板上复用同一套指标。正式入口 `evaluate()` 保持原行为，候选路径不能绕过

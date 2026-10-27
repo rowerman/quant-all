@@ -84,6 +84,26 @@ class PythonKernelBackend:
             n_mad=validate_n_mad(n_mad),
         )
 
+    def daily_winsorize_zscore_columns(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """逐列复用现有融合标准化实现；参数与统一协议一致。"""
+
+        matrix = validate_float_array(values, "values", ndim=2)
+        offsets = validate_offsets(group_offsets, matrix.shape[0])
+        multiplier = validate_n_mad(n_mad)
+        return np.column_stack([
+            self.daily_winsorize_zscore(
+                np.ascontiguousarray(matrix[:, column]),
+                offsets,
+                multiplier,
+            )
+            for column in range(matrix.shape[1])
+        ])
+
     def daily_pearson(
         self,
         left: FloatArray,
@@ -201,6 +221,16 @@ class PythonKernelBackend:
                 dtype=np.float64,
             ),
             "skipped": int(result["skipped"]),
+            "skip_insufficient_rows": int(
+                result["skip_insufficient_rows"]
+            ),
+            "skip_invalid_response": int(
+                result["skip_invalid_response"]
+            ),
+            "skip_rank_deficient": int(
+                result["skip_rank_deficient"]
+            ),
+            "active": np.asarray(result["active"], dtype=np.bool_),
         }
 
     def daily_quantile_bins(

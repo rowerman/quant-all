@@ -90,6 +90,30 @@ def test_cpp_standardize_kernels_match_pandas_gold():
 
 
 @requires_native
+def test_cpp_multi_column_standardize_matches_single_column():
+    """多列融合核逐列复用原融合标准化语义。"""
+
+    values, offsets = _edge_values()
+    matrix = np.column_stack([values, -values, np.full(values.size, 3.0)])
+    backend = CppKernelBackend()
+
+    actual = backend.daily_winsorize_zscore_columns(matrix, offsets)
+
+    for column in range(matrix.shape[1]):
+        expected = backend.daily_winsorize_zscore(
+            np.ascontiguousarray(matrix[:, column]),
+            offsets,
+        )
+        np.testing.assert_allclose(
+            actual[:, column],
+            expected,
+            atol=1e-12,
+            rtol=1e-12,
+            equal_nan=True,
+        )
+
+
+@requires_native
 def test_public_standardize_routes_restore_original_order(monkeypatch):
     """公开函数经 native 后端计算并恢复打乱后的输入顺序。"""
 

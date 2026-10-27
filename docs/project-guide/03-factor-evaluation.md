@@ -308,8 +308,16 @@ payload 可以变化细节字段，但 `key`、所属 stage 和外部入口不�
 `bin_daily_returns` 继续使用 pandas 分组求和，以保持分位图市值加权的既有逐值语义。
 路由层必须先按交易日稳定整理为连续分组；全历史轻量 IC 仍在 DuckDB 内聚合，不经过这组
 数组核。P1-05 后固定三年 `overview` 加速 `2.535x`、`exposure` 加速 `1.203x`；
-P1-06 后 `bins`、`turnover` 和 `decay` 分别加速 `1.621x`、`1.854x`、`3.255x`，
-实际 C++ 替换模块数累计为 9。
+P1-06 后 `bins`、`turnover` 和 `decay` 分别加速 `1.621x`、`1.854x`、`3.255x`。
+
+V119 按用户确认的 `1e-5` 业务一致性门槛接入 C++ 逐日 OLS。正常矩阵走列主元
+Householder QR，病态矩阵按日回退 Python；真实矩阵 OLS 加速 `2.33x`。暴露链路同时保留
+整数股票编码、4 线程风格取数、多列 C++ MAD/z-score 和共享稳定日序。固定三年
+`exposure + incremental_ic`：Python 24.375 秒、native 12.935 秒、auto 13.100 秒，
+native 相对 Python 改善 46.26%；三后端 payload 在 `1e-5` 内一致，最高 RSS 比例约
+0.998x。
+实际 C++ 替换模块数累计为 10。证据位于
+`AiRecord/benchmarks/V119/p1-07-20261027/`。
 
 ## 4. 执行路径
 

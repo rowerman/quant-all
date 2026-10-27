@@ -55,4 +55,15 @@ void daily_winsorize_zscore(
     double* result
 );
 
+void daily_winsorize_zscore_columns(
+    const double* values,
+    std::size_t rows,
+    std::size_t columns,
+    const std::int64_t* group_offsets,
+    std::size_t group_count,
+    double n_mad,
+    int threads,
+    double* result
+);
+
 }  // namespace quant_native

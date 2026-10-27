@@ -11,6 +11,13 @@ IC 高不代表这个因子「自己」有用：它可能只是替规模、动�
 实现分两块：`research/evaluation/calculate/styles.py` 负责按 SQL 算出风格**原始值**，
 `research/evaluation/calculate/exposure.py` 负责在同一个回归样本上标准化、逐日回归、算残差。
 
+风格 SQL 在 DuckDB 内用整数编码输出股票，pandas 再还原为类别列，避免转换数百万行重复
+字符串；`build_styles(..., compact=False)` 的公开默认仍返回原有 object 股票列，
+`EvalContext.styles()` 内部使用紧凑类别列。窗口查询使用 4 个 DuckDB 线程。暴露阶段把
+8 个原始风格列和因子一次取成连续矩阵，经多列 C++ 融合 MAD/z-score 核处理，并复用同一
+稳定日序与 offsets。V119 起逐日 OLS 默认走 C++，业务一致性门槛为 `1e-5`；病态矩阵
+按日回退 Python。
+
 ## 7 个风格因子
 
 窗口按**有效交易日**推进（`status = 'trading'`，停牌不占窗口），与数据项目的因子构建口径一致。

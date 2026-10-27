@@ -375,8 +375,8 @@ def test_auto_backend_falls_back_only_when_extension_is_missing(monkeypatch):
 
 
 @requires_native
-def test_native_backend_unsupported_ols_logs_explicit_fallback(monkeypatch):
-    """未实现核记录 native 到 Python 的明确回退原因。"""
+def test_native_backend_ols_uses_cpp_with_1e5_contract(monkeypatch):
+    """OLS 走 C++，结果按 1e-5 业务门槛与 Python 一致。"""
 
     messages = []
     monkeypatch.setattr(
@@ -390,7 +390,7 @@ def test_native_backend_unsupported_ols_logs_explicit_fallback(monkeypatch):
             np.array([1.0, 2.0, 3.0, 4.0]),
         )
     )
-    response = np.array([2.0, 4.0, 6.0, 8.0])
+    response = np.array([2.0, 4.0, 6.0, 8.2])
     offsets = np.array([0, 4], dtype=np.int64)
     actual = CppKernelBackend().daily_ols(design, response, offsets, min_rows=1)
     expected = get_backend("python").backend.daily_ols(
@@ -400,13 +400,32 @@ def test_native_backend_unsupported_ols_logs_explicit_fallback(monkeypatch):
         min_rows=1,
     )
     np.testing.assert_array_equal(actual["days"], expected["days"])
-    np.testing.assert_allclose(actual["coefficients"], expected["coefficients"])
+    np.testing.assert_allclose(
+        actual["coefficients"],
+        expected["coefficients"],
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    np.testing.assert_allclose(
+        actual["t_stats"],
+        expected["t_stats"],
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    np.testing.assert_allclose(
+        actual["r2"],
+        expected["r2"],
+        atol=1e-5,
+        rtol=1e-5,
+    )
     np.testing.assert_array_equal(actual["residual_rows"], expected["residual_rows"])
     np.testing.assert_allclose(
         actual["residual_values"],
         expected["residual_values"],
+        atol=1e-5,
+        rtol=1e-5,
     )
-    assert messages == [
-        "内核显式回退 kernel=daily_ols requested=native "
-        "backend=python reason=cpp_kernel_not_implemented"
-    ]
+    np.testing.assert_array_equal(actual["active"], expected["active"])
+    assert messages[0].startswith(
+        "内核执行 kernel=daily_ols requested=native backend=native"
+    )

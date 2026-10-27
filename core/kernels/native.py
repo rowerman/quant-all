@@ -30,6 +30,84 @@ from kernels.fallback import PythonKernelBackend
 logger = get_logger("kernels.native", LOGS_DIR / "core")
 
 
+def _merge_ols_results(
+    native_result: DailyOlsResult,
+    fallback_results: list[tuple[int, int, DailyOlsResult]],
+) -> DailyOlsResult:
+    """合并原生正常日与 Python 回退日的 OLS 结果。"""
+
+    if not fallback_results:
+        return native_result
+    day_results = []
+    for position, day in enumerate(native_result["days"]):
+        day_results.append({
+            "day": int(day),
+            "coefficients": native_result["coefficients"][position],
+            "t_stats": native_result["t_stats"][position],
+            "r2": native_result["r2"][position],
+            "rows": native_result["rows"][position],
+            "active": native_result["active"][position],
+        })
+    residual_rows = [native_result["residual_rows"]]
+    residual_values = [native_result["residual_values"]]
+    skip_insufficient_rows = native_result["skip_insufficient_rows"]
+    skip_invalid_response = native_result["skip_invalid_response"]
+    skip_rank_deficient = native_result["skip_rank_deficient"]
+    for group, start, result in fallback_results:
+        for position, relative_day in enumerate(result["days"]):
+            day_results.append({
+                "day": group + int(relative_day),
+                "coefficients": result["coefficients"][position],
+                "t_stats": result["t_stats"][position],
+                "r2": result["r2"][position],
+                "rows": result["rows"][position],
+                "active": result["active"][position],
+            })
+        residual_rows.append(result["residual_rows"] + start)
+        residual_values.append(result["residual_values"])
+        skip_insufficient_rows += result["skip_insufficient_rows"]
+        skip_invalid_response += result["skip_invalid_response"]
+        skip_rank_deficient += result["skip_rank_deficient"]
+
+    day_results.sort(key=lambda item: item["day"])
+    rows = np.concatenate(residual_rows)
+    values = np.concatenate(residual_values)
+    order = np.argsort(rows, kind="stable")
+    return {
+        "days": np.asarray([item["day"] for item in day_results], dtype=np.int64),
+        "coefficients": (
+            np.vstack([item["coefficients"] for item in day_results])
+            if day_results
+            else np.empty((0, native_result["coefficients"].shape[1]))
+        ),
+        "t_stats": (
+            np.vstack([item["t_stats"] for item in day_results])
+            if day_results
+            else np.empty((0, native_result["t_stats"].shape[1]))
+        ),
+        "r2": np.asarray([item["r2"] for item in day_results], dtype=np.float64),
+        "rows": np.asarray([item["rows"] for item in day_results], dtype=np.int64),
+        "residual_rows": rows[order].astype(np.int64, copy=False),
+        "residual_values": values[order],
+        "skipped": (
+            skip_insufficient_rows
+            + skip_invalid_response
+            + skip_rank_deficient
+        ),
+        "skip_insufficient_rows": skip_insufficient_rows,
+        "skip_invalid_response": skip_invalid_response,
+        "skip_rank_deficient": skip_rank_deficient,
+        "active": (
+            np.vstack([item["active"] for item in day_results])
+            if day_results
+            else np.empty(
+                (0, native_result["active"].shape[1]),
+                dtype=np.bool_,
+            )
+        ),
+    }
+
+
 class CppKernelBackend:
     """显式调用 C++ 扩展的批量核后端。"""
 
@@ -171,6 +249,43 @@ class CppKernelBackend:
         )
         return np.asarray(result, dtype=np.float64)
 
+    def daily_winsorize_zscore_columns(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """调用 C++ 多列融合标准化核；参数与统一协议一致。"""
+
+        matrix = validate_float_array(values, "values", ndim=2)
+        offsets = validate_offsets(group_offsets, matrix.shape[0])
+        multiplier = validate_n_mad(n_mad)
+        threads = native_threads()
+        started = time.perf_counter()
+        try:
+            result = self._native.daily_winsorize_zscore_columns(
+                matrix,
+                offsets,
+                multiplier,
+            )
+        except Exception as exc:
+            raise KernelBackendError(
+                f"C++ 多列融合 MAD/z-score 计算失败：{exc}"
+            ) from exc
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "内核执行 kernel=daily_winsorize_zscore_columns "
+            "requested=native backend=native rows=%d groups=%d columns=%d "
+            "n_mad=%.6g threads=%d elapsed_ms=%.3f",
+            matrix.shape[0],
+            offsets.size - 1,
+            matrix.shape[1],
+            multiplier,
+            threads,
+            elapsed_ms,
+        )
+        return np.asarray(result, dtype=np.float64)
+
     def daily_pearson(
         self,
         left: FloatArray,
@@ -259,16 +374,86 @@ class CppKernelBackend:
         group_offsets: IntArray,
         min_rows: int = 30,
     ) -> DailyOlsResult:
-        """OLS 暂未使用 C++，显式委托 Python 回退。"""
+        """调用 C++ 逐日 OLS；病态矩阵按日显式回退 Python。"""
 
-        return self._fallback_unsupported(
-            "daily_ols",
-            self._fallback.daily_ols,
-            design,
-            response,
-            group_offsets,
-            min_rows,
+        design_values = validate_float_array(design, "design", ndim=2)
+        response_values = validate_float_array(response, "response", ndim=1)
+        if design_values.shape[0] != response_values.size:
+            raise KernelArrayError("design 行数必须与 response 长度一致")
+        offsets = validate_offsets(group_offsets, response_values.size)
+        minimum = validate_minimum(min_rows, name="min_rows", minimum=1)
+        threads = native_threads()
+        started = time.perf_counter()
+        try:
+            result = self._native.daily_ols(
+                design_values,
+                response_values,
+                offsets,
+                minimum,
+            )
+        except Exception as exc:
+            raise KernelBackendError(f"C++ OLS 计算失败：{exc}") from exc
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "内核执行 kernel=daily_ols requested=native backend=native "
+            "rows=%d groups=%d columns=%d min_rows=%d threads=%d elapsed_ms=%.3f",
+            design_values.shape[0],
+            offsets.size - 1,
+            design_values.shape[1],
+            minimum,
+            threads,
+            elapsed_ms,
         )
+        converted: DailyOlsResult = {
+            "days": np.asarray(result["days"], dtype=np.int64),
+            "coefficients": np.asarray(
+                result["coefficients"],
+                dtype=np.float64,
+            ),
+            "t_stats": np.asarray(result["t_stats"], dtype=np.float64),
+            "r2": np.asarray(result["r2"], dtype=np.float64),
+            "rows": np.asarray(result["rows"], dtype=np.int64),
+            "residual_rows": np.asarray(
+                result["residual_rows"],
+                dtype=np.int64,
+            ),
+            "residual_values": np.asarray(
+                result["residual_values"],
+                dtype=np.float64,
+            ),
+            "skipped": int(result["skipped"]),
+            "skip_insufficient_rows": int(
+                result["skip_insufficient_rows"]
+            ),
+            "skip_invalid_response": int(
+                result["skip_invalid_response"]
+            ),
+            "skip_rank_deficient": int(
+                result["skip_rank_deficient"]
+            ),
+            "active": np.asarray(result["active"], dtype=np.bool_),
+        }
+        fallback_results = []
+        for group in np.asarray(result["fallback_days"], dtype=np.int64):
+            start = int(offsets[group])
+            end = int(offsets[group + 1])
+            fallback_results.append((
+                int(group),
+                start,
+                self._fallback.daily_ols(
+                    np.ascontiguousarray(design_values[start:end]),
+                    np.ascontiguousarray(response_values[start:end]),
+                    np.asarray([0, end - start], dtype=np.int64),
+                    minimum,
+                ),
+            ))
+        if fallback_results:
+            logger.info(
+                "内核逐日回退 kernel=daily_ols requested=native backend=python "
+                "reason=native_condition_guard groups=%d",
+                len(fallback_results),
+            )
+        return _merge_ols_results(converted, fallback_results)
 
     def daily_quantile_bins(
         self,

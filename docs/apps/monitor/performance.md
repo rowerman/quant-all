@@ -245,6 +245,52 @@ V105 的 `turnover`、`decay` 与金标准一致；分位图市值加权统计�
 “评估分位换手”和“评估因子自相关”，实际 C++ 替换模块数由 5 增至 9。证据位于
 `AiRecord/benchmarks/V117/p1-06-20261027/`。
 
+## P1-07 暴露链路优化与 OLS 停止（V118 历史记录）
+
+原生 OLS 在真实矩阵上核耗时约由 `0.748s` 降至 `0.231s`，但近似并列残差的排序差异
+使增量 IC 均值偏离约 `3e-6`，不满足 `1e-10` 一致性要求。因此不接入 C++ OLS，不增加
+替换模块数。
+
+保留的数值无关优化包括：风格 SQL 输出整数股票编码并恢复为 pandas 类别列，风格窗口
+查询使用 4 个 DuckDB 线程，8 个原始风格列和因子一次进入多列 MAD/z-score 核，并复用
+同一稳定日序与 offsets。
+
+固定三年 `exposure + incremental_ic` 在独立进程中重复 3 次：
+
+| 后端 | exposure | incremental_ic | 合计 | 峰值 RSS |
+|---|---:|---:|---:|---:|
+| Python | 11.255s | 5.276s | 16.495s | 2906.3MB |
+| native | 8.607s | 1.287s | 9.888s | 2900.1MB |
+| auto | 8.535s | 1.284s | 9.820s | 2902.0MB |
+
+改动前 auto 为 `14.523s`，当前改善 `32.39%`；Python/native/auto payload 在 `1e-10`
+内一致，native/auto 峰值 RSS 约 `1.001x`。OLS 仍显式走 Python。证据位于
+`AiRecord/benchmarks/V118/p1-07-20261027/retained/`，停止记录位于同目录 `final/stop.md`。
+
+## P1-07 C++ OLS 完成（V119，2026-10-27）
+
+用户确认 OLS 业务一致性门槛由 `1e-10` 调整为 `1e-5`，此前停止的 Eigen/C++ OLS 已恢复。
+正常条件数使用 QR，病态矩阵按日回退 Python。真实 3,751,348 行、8 列、727 组 OLS：
+
+| 后端 | OLS 中位 | 峰值 RSS |
+|---|---:|---:|
+| Python | 0.749s | 1958.8MB |
+| native | 0.322s | 1714.2MB |
+
+核加速 `2.33x`；系数、R²、残差和业务消费的风格 t 在 `1e-5` 内一致。固定三年
+`exposure + incremental_ic` 在独立进程中重复 3 次：
+
+| 后端 | exposure | incremental_ic | 合计 | 峰值 RSS |
+|---|---:|---:|---:|---:|
+| Python | 16.570s | 7.253s | 24.375s | 2901.8MB |
+| native | 11.431s | 1.504s | 12.935s | 2897.3MB |
+| auto | 11.449s | 1.624s | 13.100s | 2878.4MB |
+
+auto 相对改动前 `14.523s` 的补充观测为改善 `9.80%`；native 相对 Python 改善
+`46.26%`。三后端 payload 在 `1e-5` 内一致，native/auto 峰值 RSS 为 Python 的
+`0.998x/0.992x`。实际 C++ 替换模块数由 9 增至
+10。证据位于 `AiRecord/benchmarks/V119/p1-07-20261027/`。
+
 ---
 
 ## V11 资源实测与并发验收（2026-10-13 复测）

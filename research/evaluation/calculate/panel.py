@@ -398,7 +398,11 @@ class EvalContext:
         from calculate.styles import build_styles
 
         if "styles" not in self._cache:
-            self._cache["styles"] = build_styles(self.params, db_file=self.db_file)
+            self._cache["styles"] = build_styles(
+                self.params,
+                db_file=self.db_file,
+                compact=True,
+            )
         return self._cache["styles"]
 
     def exposures(self, industry_key: str = "off"):

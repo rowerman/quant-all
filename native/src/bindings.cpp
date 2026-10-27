@@ -1,7 +1,9 @@
 #include "quant_native/binning.hpp"
 #include "quant_native/daily.hpp"
+#include "quant_native/ols.hpp"
 #include "quant_native/spearman.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <limits>
@@ -315,6 +317,42 @@ py::array_t<double> daily_winsorize_zscore(
     return result;
 }
 
+py::array_t<double> daily_winsorize_zscore_columns(
+    const py::array& values,
+    const py::array& group_offsets,
+    double n_mad
+) {
+    validate_matrix(values);
+    const double multiplier = validate_n_mad(n_mad);
+    const auto rows = static_cast<std::size_t>(values.shape(0));
+    const auto columns = static_cast<std::size_t>(values.shape(1));
+    validate_offsets(group_offsets, rows);
+    const auto group_count =
+        static_cast<std::size_t>(group_offsets.size() - 1);
+    py::array_t<double> result(
+        {
+            static_cast<py::ssize_t>(rows),
+            static_cast<py::ssize_t>(columns),
+        }
+    );
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::daily_winsorize_zscore_columns(
+            static_cast<const double*>(values.data()),
+            rows,
+            columns,
+            static_cast<const std::int64_t*>(group_offsets.data()),
+            group_count,
+            multiplier,
+            threads,
+            static_cast<double*>(result.mutable_data())
+        );
+    }
+    return result;
+}
+
 py::array_t<std::int64_t> daily_quantile_bins(
     const py::array& values,
     const py::array& group_offsets,
@@ -478,6 +516,247 @@ py::tuple daily_row_spearman(
     return py::make_tuple(std::move(correlation), std::move(count));
 }
 
+py::dict daily_ols(
+    const py::array& design,
+    const py::array& response,
+    const py::array& group_offsets,
+    int min_rows
+) {
+    validate_matrix(design);
+    validate_vector(response, "response");
+    const auto rows = static_cast<std::size_t>(design.shape(0));
+    const auto columns = static_cast<std::size_t>(design.shape(1));
+    if (response.size() != static_cast<py::ssize_t>(rows)) {
+        throw py::value_error("design 行数必须与 response 长度一致");
+    }
+    validate_offsets(group_offsets, rows);
+    if (min_rows < 1) {
+        throw py::value_error("min_rows 必须是不小于 1 的整数");
+    }
+    const auto group_count =
+        static_cast<std::size_t>(group_offsets.size() - 1);
+    const auto coefficient_count = group_count * columns;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    py::array_t<double> full_coefficients(
+        {
+            static_cast<py::ssize_t>(group_count),
+            static_cast<py::ssize_t>(columns),
+        }
+    );
+    py::array_t<double> full_t_stats(
+        {
+            static_cast<py::ssize_t>(group_count),
+            static_cast<py::ssize_t>(columns),
+        }
+    );
+    py::array_t<double> full_r2(static_cast<py::ssize_t>(group_count));
+    py::array_t<std::int64_t> full_rows(static_cast<py::ssize_t>(group_count));
+    py::array_t<std::uint8_t> full_active(
+        {
+            static_cast<py::ssize_t>(group_count),
+            static_cast<py::ssize_t>(columns),
+        }
+    );
+    py::array_t<std::uint8_t> group_used(
+        static_cast<py::ssize_t>(group_count)
+    );
+    py::array_t<std::uint8_t> group_fallback(
+        static_cast<py::ssize_t>(group_count)
+    );
+    py::array_t<double> full_residual_values(static_cast<py::ssize_t>(rows));
+    py::array_t<std::uint8_t> residual_used(
+        static_cast<py::ssize_t>(rows)
+    );
+    py::array_t<std::int64_t> skip_counts(3);
+
+    std::fill_n(
+        static_cast<double*>(full_coefficients.mutable_data()),
+        coefficient_count,
+        nan
+    );
+    std::fill_n(
+        static_cast<double*>(full_t_stats.mutable_data()),
+        coefficient_count,
+        nan
+    );
+    std::fill_n(
+        static_cast<double*>(full_r2.mutable_data()),
+        group_count,
+        nan
+    );
+    std::fill_n(
+        static_cast<std::int64_t*>(full_rows.mutable_data()),
+        group_count,
+        std::int64_t{0}
+    );
+    std::fill_n(
+        static_cast<std::uint8_t*>(full_active.mutable_data()),
+        coefficient_count,
+        std::uint8_t{0}
+    );
+    std::fill_n(
+        static_cast<std::uint8_t*>(group_used.mutable_data()),
+        group_count,
+        std::uint8_t{0}
+    );
+    std::fill_n(
+        static_cast<std::uint8_t*>(group_fallback.mutable_data()),
+        group_count,
+        std::uint8_t{0}
+    );
+    std::fill_n(
+        static_cast<double*>(full_residual_values.mutable_data()),
+        rows,
+        nan
+    );
+    std::fill_n(
+        static_cast<std::uint8_t*>(residual_used.mutable_data()),
+        rows,
+        std::uint8_t{0}
+    );
+    const int threads = quant_native::threads_from_environment();
+
+    {
+        py::gil_scoped_release release;
+        quant_native::daily_ols(
+            static_cast<const double*>(design.data()),
+            static_cast<const double*>(response.data()),
+            rows,
+            columns,
+            static_cast<const std::int64_t*>(group_offsets.data()),
+            group_count,
+            min_rows,
+            threads,
+            static_cast<double*>(full_coefficients.mutable_data()),
+            static_cast<double*>(full_t_stats.mutable_data()),
+            static_cast<double*>(full_r2.mutable_data()),
+            static_cast<std::int64_t*>(full_rows.mutable_data()),
+            static_cast<std::uint8_t*>(full_active.mutable_data()),
+            static_cast<std::uint8_t*>(group_used.mutable_data()),
+            static_cast<std::uint8_t*>(group_fallback.mutable_data()),
+            static_cast<double*>(full_residual_values.mutable_data()),
+            static_cast<std::uint8_t*>(residual_used.mutable_data()),
+            static_cast<std::int64_t*>(skip_counts.mutable_data())
+        );
+    }
+
+    const auto* used_values =
+        static_cast<const std::uint8_t*>(group_used.data());
+    const auto* residual_flags =
+        static_cast<const std::uint8_t*>(residual_used.data());
+    const auto* fallback_flags =
+        static_cast<const std::uint8_t*>(group_fallback.data());
+    const auto used_count = static_cast<std::size_t>(
+        std::count(used_values, used_values + group_count, 1)
+    );
+    const auto residual_count = static_cast<std::size_t>(
+        std::count(residual_flags, residual_flags + rows, 1)
+    );
+    const auto fallback_count = static_cast<std::size_t>(
+        std::count(fallback_flags, fallback_flags + group_count, 1)
+    );
+    py::array_t<std::int64_t> days(static_cast<py::ssize_t>(used_count));
+    py::array_t<double> coefficients(
+        {
+            static_cast<py::ssize_t>(used_count),
+            static_cast<py::ssize_t>(columns),
+        }
+    );
+    py::array_t<double> t_stats(
+        {
+            static_cast<py::ssize_t>(used_count),
+            static_cast<py::ssize_t>(columns),
+        }
+    );
+    py::array_t<double> r2(static_cast<py::ssize_t>(used_count));
+    py::array_t<std::int64_t> result_rows(
+        static_cast<py::ssize_t>(used_count)
+    );
+    py::array_t<bool> active(
+        {
+            static_cast<py::ssize_t>(used_count),
+            static_cast<py::ssize_t>(columns),
+        }
+    );
+    py::array_t<std::int64_t> residual_rows(
+        static_cast<py::ssize_t>(residual_count)
+    );
+    py::array_t<double> residual_values(
+        static_cast<py::ssize_t>(residual_count)
+    );
+    py::array_t<std::int64_t> fallback_days(
+        static_cast<py::ssize_t>(fallback_count)
+    );
+
+    std::size_t output_row = 0;
+    for (std::size_t group = 0; group < group_count; ++group) {
+        if (!used_values[group]) {
+            continue;
+        }
+        static_cast<std::int64_t*>(days.mutable_data())[output_row] =
+            static_cast<std::int64_t>(group);
+        static_cast<double*>(r2.mutable_data())[output_row] =
+            static_cast<const double*>(full_r2.data())[group];
+        static_cast<std::int64_t*>(result_rows.mutable_data())[output_row] =
+            static_cast<const std::int64_t*>(full_rows.data())[group];
+        for (std::size_t column = 0; column < columns; ++column) {
+            const auto flat = group * columns + column;
+            static_cast<double*>(coefficients.mutable_data())[
+                output_row * columns + column
+            ] = static_cast<const double*>(full_coefficients.data())[flat];
+            static_cast<double*>(t_stats.mutable_data())[
+                output_row * columns + column
+            ] = static_cast<const double*>(full_t_stats.data())[flat];
+            static_cast<bool*>(active.mutable_data())[
+                output_row * columns + column
+            ] = static_cast<const std::uint8_t*>(full_active.data())[flat] != 0;
+        }
+        ++output_row;
+    }
+    std::size_t residual_index = 0;
+    for (std::size_t row = 0; row < rows; ++row) {
+        if (!residual_flags[row]) {
+            continue;
+        }
+        static_cast<std::int64_t*>(residual_rows.mutable_data())[
+            residual_index
+        ] = static_cast<std::int64_t>(row);
+        static_cast<double*>(residual_values.mutable_data())[
+            residual_index
+        ] = static_cast<const double*>(full_residual_values.data())[row];
+        ++residual_index;
+    }
+    std::size_t fallback_index = 0;
+    for (std::size_t group = 0; group < group_count; ++group) {
+        if (!fallback_flags[group]) {
+            continue;
+        }
+        static_cast<std::int64_t*>(fallback_days.mutable_data())[
+            fallback_index
+        ] = static_cast<std::int64_t>(group);
+        ++fallback_index;
+    }
+
+    const auto* skip_values =
+        static_cast<const std::int64_t*>(skip_counts.data());
+    py::dict result;
+    result["days"] = std::move(days);
+    result["coefficients"] = std::move(coefficients);
+    result["t_stats"] = std::move(t_stats);
+    result["r2"] = std::move(r2);
+    result["rows"] = std::move(result_rows);
+    result["residual_rows"] = std::move(residual_rows);
+    result["residual_values"] = std::move(residual_values);
+    result["skipped"] = skip_values[0] + skip_values[1] + skip_values[2];
+    result["skip_insufficient_rows"] = skip_values[0];
+    result["skip_invalid_response"] = skip_values[1];
+    result["skip_rank_deficient"] = skip_values[2];
+    result["active"] = std::move(active);
+    result["fallback_days"] = std::move(fallback_days);
+    return result;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(quant_native, module) {
@@ -531,6 +810,14 @@ PYBIND11_MODULE(quant_native, module) {
         R"doc(按组融合 MAD 去极值和截面 z-score。)doc"
     );
     module.def(
+        "daily_winsorize_zscore_columns",
+        &daily_winsorize_zscore_columns,
+        py::arg("values"),
+        py::arg("group_offsets"),
+        py::arg("n_mad") = 3.0,
+        R"doc(按组融合多列 MAD 去极值和截面 z-score。)doc"
+    );
+    module.def(
         "daily_quantile_bins",
         &daily_quantile_bins,
         py::arg("values"),
@@ -563,5 +850,14 @@ PYBIND11_MODULE(quant_native, module) {
         py::arg("right"),
         py::arg("min_n") = 5,
         R"doc(按行对共同有限样本重新排名并计算 Spearman。)doc"
+    );
+    module.def(
+        "daily_ols",
+        &daily_ols,
+        py::arg("design"),
+        py::arg("response"),
+        py::arg("group_offsets"),
+        py::arg("min_rows") = 30,
+        R"doc(按组计算截面 OLS、系数、t 值、R2、active mask 和残差。)doc"
     );
 }

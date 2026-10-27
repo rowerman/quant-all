@@ -14,6 +14,7 @@ pybind11_add_module(
   src/binning.cpp
   src/bindings.cpp
   src/rank.cpp
+  src/ols.cpp
   src/pearson.cpp
   src/standardize.cpp
   src/spearman.cpp
@@ -24,6 +25,13 @@ target_include_directories(
   quant_native
   PRIVATE
     include
+    third_party/eigen
+)
+
+target_compile_definitions(
+  quant_native
+  PRIVATE
+    EIGEN_MPL2_ONLY
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

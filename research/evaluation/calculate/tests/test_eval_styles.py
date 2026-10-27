@@ -104,6 +104,7 @@ def test_style_values_match_pandas_hand_computation():
     mine = build_styles(params)
     mine = mine[mine["stock_code"].isin(STOCKS)]
     assert set(mine.columns) >= set(RAW_COLUMNS)
+    assert mine["stock_code"].dtype == object
 
     joined = mine.merge(
         expected, on=["stock_code", "trade_date"], suffixes=("_mine", "_hand")
@@ -113,6 +114,30 @@ def test_style_values_match_pandas_hand_computation():
         left = joined[f"{column}_mine"].to_numpy(dtype="float64")
         right = joined[f"{column}_hand"].to_numpy(dtype="float64")
         assert np.allclose(left, right, rtol=1e-10, atol=1e-12, equal_nan=True), column
+
+
+def test_compact_styles_preserve_values_as_categories():
+    """内部紧凑模式只改变股票列类型，不改变任何风格值。"""
+
+    params = EvalParams(factor="MOM_20", start=START, end=END)
+    public = build_styles(params)
+    compact = build_styles(params, compact=True)
+
+    assert isinstance(compact["stock_code"].dtype, pd.CategoricalDtype)
+    joined = public.merge(
+        compact,
+        on=["trade_date", "stock_code"],
+        suffixes=("_public", "_compact"),
+    )
+    assert len(joined) == len(public) == len(compact)
+    for column in RAW_COLUMNS:
+        np.testing.assert_allclose(
+            joined[f"{column}_public"],
+            joined[f"{column}_compact"],
+            rtol=1e-10,
+            atol=1e-12,
+            equal_nan=True,
+        )
 
 
 def test_short_lookback_leaves_long_window_null():

@@ -22,6 +22,7 @@ logger = get_logger("kernels.backend", LOGS_DIR / "core")
 
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
+BoolArray = NDArray[np.bool_]
 
 
 class DailyOlsResult(TypedDict):
@@ -35,6 +36,10 @@ class DailyOlsResult(TypedDict):
     residual_rows: IntArray
     residual_values: FloatArray
     skipped: int
+    skip_insufficient_rows: int
+    skip_invalid_response: int
+    skip_rank_deficient: int
+    active: BoolArray
 
 
 class BinReturnsResult(TypedDict):
@@ -81,6 +86,14 @@ class NativeKernelBackend(Protocol):
         n_mad: float = 3.0,
     ) -> FloatArray:
         """按组融合 MAD 去极值和样本标准差 z-score。"""
+
+    def daily_winsorize_zscore_columns(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """按组对多列融合 MAD 去极值和样本标准差 z-score。"""
 
     def daily_pearson(
         self,

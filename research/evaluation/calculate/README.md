@@ -175,8 +175,8 @@ apps/monitor/frontend/   前端：纯 HTML/JS + ECharts
 | `normalize.py` | MAD 去极值、分位、zscore | `daily`、`exposure`、后续风格因子 | `kernels` | 都按交易日分组调用，NaN 原样保留；逐日 MAD/z-score 经统一后端选择 |
 | `stages.py` | `STAGE_ORDER`（stage 顺序契约） | `evaluate`、指标注册表 | — | 单独成模块是为了让注册表能按它排序又不与评估入口循环依赖 |
 | `stats.py` | 序列四件套、净值累乘、最大回撤、年化夏普 | IC 家族与 binplot 家族 | — | 加统计口径改这里，别在各指标里各写一遍 |
-| `styles.py` | 7 个 Barra 近似风格因子的取数 SQL、`IndustrySource` 协议与静态行业源 | `exposure`、`EvalContext.styles()` | DuckDB、`config`、`errors` | 窗口按有效交易日推进（与数据项目因子构建一致）；只产出**原始值**，标准化在 `exposure` 里做（同一回归样本）；BETA_60 基准写死沪深300，与已实现的 `BETA_60` 因子一致 |
-| `exposure.py` | 风格拆分核心：逐日截面 OLS、暴露系数与 t 值、残差 | `metrics/exposure.py` | `styles`、`normalize`、`daily` | 回归样本是「池内 + 因子非空」，**不看标签**；设计矩阵第 0 列是截距，风格系数从第 1 列起；风格缺失标准化后置 0 |
+| `styles.py` | 7 个 Barra 近似风格因子的取数 SQL、`IndustrySource` 协议与静态行业源 | `exposure`、`EvalContext.styles()` | DuckDB、`config`、`errors` | 窗口按有效交易日推进；SQL 输出整数股票编码，公开默认恢复 object、评估内部保留类别列；DuckDB 使用 4 线程；只产出**原始值**，标准化在 `exposure` 里做；BETA_60 基准写死沪深300 |
+| `exposure.py` | 风格拆分核心：逐日截面 OLS、暴露系数与 t 值、残差 | `metrics/exposure.py` | `styles`、`kernels`、`daily` | 回归样本是「池内 + 因子非空」，**不看标签**；风格列和因子一次取成连续矩阵，复用同一稳定日序与 offsets；设计矩阵第 0 列是截距；风格缺失标准化后置 0；OLS 默认走 native，病态日回退 Python |
 | `binning.py` | 分位分箱、分位收益、换手、因子自相关、宽表透视 | `metrics/bins.py`、`metrics/turnover.py`、`metrics/decay.py` | `daily`、`kernels` | 分箱只看因子值；分组、秩宽表、多标签收益、换手和自相关经统一后端；单标签市值加权仍用 pandas 求和以保持逐值语义 |
 | `metrics/base.py` | 指标注册表 | 各指标、接口层、前端 | `errors` | 注册顺序 = 前端卡片顺序；重名报 `EVAL-201` |
 | `metrics/coverage.py` | 覆盖率与取值分布 | 经注册表调用 | `metrics/base` | 缺失（NaN）与非有限值（inf）分开统计，别混成一个数 |
@@ -736,7 +736,8 @@ calculate.normalize.standardize_by_day(dates, values, n_mad: float=3.0) -> np.nd
 ```
 
 按交易日融合 MAD 去极值和 z-score。默认经 `kernels` 后端调用
-`daily_winsorize_zscore`，供风格暴露避免对同一列重复执行 pandas 分组。
+`daily_winsorize_zscore`。风格暴露另行调用多列入口
+`daily_winsorize_zscore_columns`，避免每列重复执行 pandas 分组。
 
 ### calculate.panel
 
@@ -1113,7 +1114,7 @@ calculate.styles.style_sql(params: EvalParams, window_start: str) -> str
 #### `build_styles`
 
 ```python
-calculate.styles.build_styles(params: EvalParams, *, db_file: Path | str=DB_FILE, conn: duckdb.DuckDBPyConnection | None=None) -> pd.DataFrame
+calculate.styles.build_styles(params: EvalParams, *, db_file: Path | str=DB_FILE, conn: duckdb.DuckDBPyConnection | None=None, compact: bool=False) -> pd.DataFrame
 ```
 
 取评估区间内全部股票的风格因子原始值。
@@ -1122,6 +1123,8 @@ calculate.styles.build_styles(params: EvalParams, *, db_file: Path | str=DB_FILE
     params: 评估参数。
     db_file: 日线主库路径。
     conn: 已有的主库连接；留空则自行打开并在结束时关闭。
+    compact: 是否保留类别型 `stock_code`。默认 `False` 维持原有 object 返回；
+        `EvalContext.styles()` 内部使用 `True`，减少大表字符串转换。
 
 #### `style_specs`
 
@@ -1604,5 +1607,11 @@ P1-06 把分位分组、秩宽表、多标签分位收益、分位换手和因�
 1.594x、1.509x、1.854x、3.255x；`bins + turnover` 合计改善 43.82%，最高 RSS 比例
 1.0060x。证据位于 `AiRecord/benchmarks/V117/p1-06-20261027/`，实际 C++ 替换模块数由
 5 增至 9。
+
+P1-07 在 V119 按用户确认的 `1e-5` 业务门槛完成。逐日 OLS 默认走 native，正常矩阵
+使用 QR，病态矩阵按日回退 Python；核耗时由 0.749 秒降至 0.322 秒（2.33x）。固定三年
+`exposure + incremental_ic` 的 native 为 12.935 秒，相对 Python 改善 46.26%；三后端
+payload 在 1e-5 内一致，最高 RSS 比例约 0.998x。证据位于
+`AiRecord/benchmarks/V119/p1-07-20261027/`。
 
 完整分析性能请看 `docs/apps/monitor/performance.md`，旧12指标耗时不包含本阶段。
