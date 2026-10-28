@@ -66,7 +66,8 @@ z-score、单列/多列融合标准化、分位裁剪、总体标准差 z-score�
 - 空组可以保留，但整体空输入明确失败。
 - 允许通过 `float64` 中的 NaN/inf 表达非有限值，各核按现有评估语义过滤。
 - `pairwise_spearman` 返回 `(相关系数[组, 因子, 因子], 有效计数[组, 因子, 因子])`。
-- `daily_rank_pct` 返回与输入等长的一维分位排名；NaN 保持原位。
+- `daily_rank_pct` 返回与输入等长的一维分位排名；NaN 保持原位，正负无穷作为有效值
+  参与平均并列名次排名，Python、Numba 和 native 语义一致。
 - `daily_pearson` 返回 `(相关系数[组], 有效配对数[组])`，只使用两侧有限的配对。
 - `daily_winsorize_mad` 返回与输入等长的一维 MAD 裁剪结果。
 - `daily_zscore` 返回按组样本标准差计算的 z-score。

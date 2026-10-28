@@ -61,6 +61,28 @@ def test_rank_matches_existing_numpy_and_numba():
     np.testing.assert_array_equal(numba_actual, expected)
 
 
+def test_rank_inf_semantics_match_python_numba_and_native():
+    """逐日排名只排除 NaN，正负无穷参与并列平均名次和常数截面。"""
+
+    values = np.array(
+        [1.0, np.inf, -np.inf, 2.0, np.nan, 1.0, 5.0, 5.0, 5.0],
+        dtype=np.float64,
+    )
+    offsets = np.array([0, 0, 6, 9], dtype=np.int64)
+    expected = np.array(
+        [0.5, 1.0, 0.2, 0.8, np.nan, 0.5, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0]
+    )
+
+    python_actual = PythonKernelBackend().daily_rank_pct(values, offsets)
+    numba_actual = NumbaPrototypeBackend().daily_rank_pct(values, offsets)
+
+    np.testing.assert_array_equal(python_actual, expected)
+    np.testing.assert_array_equal(numba_actual, expected)
+    if importlib.util.find_spec("quant_native") is not None:
+        native_actual = get_backend("native").backend.daily_rank_pct(values, offsets)
+        np.testing.assert_array_equal(native_actual, expected)
+
+
 def test_winsorize_matches_current_daily_implementation():
     """Python 回退的逐组 MAD 裁剪与当前日期分组实现一致。"""
 

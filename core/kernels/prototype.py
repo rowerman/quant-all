@@ -36,7 +36,7 @@ def _rank_pct(values: np.ndarray, offsets: np.ndarray) -> np.ndarray:
         valid_count = 0
         for position in range(start, end):
             value = values[position]
-            if np.isfinite(value):
+            if not np.isnan(value):
                 valid[valid_count] = position
                 valid_count += 1
         if valid_count == 0:
