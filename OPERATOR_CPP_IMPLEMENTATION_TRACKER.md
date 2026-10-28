@@ -1246,7 +1246,7 @@ P3 当前只做剖析和 I/O 优化。C++ 回测账本不是既定交付，必�
   替换模块数保持 14，`docs/native/README.md` 台账不修改；Python 数据准备瓶颈另留后续
   任务，不在本轮优化。
 - 定向测试 48 passed（含项目布局）；`compileall`、`git diff --check` 通过。
-- 实现 commit：未提交（本轮未执行 Git commit）。
+- 实现 commit：`0c462ee`。
 - 回退：删除 `tools/monitor/clean_profile*.py`、`tests/test_clean_profile.py` 和证据，
   恢复 Tracker、清洗文档、工具说明和 V124 记录；不涉及生产数据。
 
