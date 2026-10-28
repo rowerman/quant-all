@@ -347,6 +347,16 @@ rank(mean(close, 5) + lag(close, 1))
 找不到任何正式因子对照时返回 `passed=true` 和 `reason=no_formal_peers`；这是现有实现
 边界，不应解释成候选经过了相关性验证。
 
+[evaluation_correlation.py](../../research/mining/evaluation_correlation.py) 将目标与
+正式 peer 对齐为日期股票矩阵后，通过统一 `kernels` 后端调用 `daily_row_spearman`。
+默认 `auto` 使用 C++，扩展不可用时回退 Python。单次筛选只缓存一次正式 peer 网格，
+不跨运行共享，也不计算同一批候选之间的相关性。
+
+固定四候选、批量物化后筛选时，技术阶段相对未缓存 Python 由 `40.941s` 降至 auto
+`32.890s`，改善 `19.66%`；缓存后候选相关性由 Python `4.411s` 降至 native
+`3.243s`（`1.360x`）。证据位于
+`AiRecord/benchmarks/V121/p2-02-20261028/`。
+
 门禁不通过是正常研究结论，通过 `TechnicalGate.passed=false` 和逐项 `checks` 保留证据。
 评估引擎自身异常才会使用 `MINING-106`。每个阶段报告的 `input_hash` 包含候选、上下文、
 因子树哈希、阶段参数和完整质量规则，阈值或产物变化会使旧证据失效。
@@ -372,6 +382,8 @@ rank(mean(close, 5) + lag(close, 1))
 
 轻量筛选直接在 DuckDB 内取得逐日 RankIC，不构建完整面板。完整评估另走
 `build_panel()` 和全部 stage，因此两条路径共享口径，但计算成本和前置规模检查不同。
+固定研究期 C++ 对照中位 `0.755s`，慢于 SQL `0.658s`，所以轻量 RankIC 继续保留
+DuckDB 路径，不计入 C++ 替换。
 
 ### 6.3 完整评估
 

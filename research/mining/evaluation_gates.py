@@ -6,20 +6,18 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 
-import factors
 from calculate.panel import open_source
 from mining.candidate_materialization import CandidateComputation
+from mining.evaluation_correlation import (
+    CandidateCorrelationCache,
+    target_correlation,
+)
 from mining.evaluation_contract import QualityPolicy
 from mining.logging_conf import format_event, get_mining_logger
-from scripts.build_factors.sql import family_query, family_glob
+from scripts.build_factors.sql import family_query
 
 _LOGGER = get_mining_logger("mining.evaluation.gates")
-_POOL_FILTER = (
-    "b.can_buy_close AND NOT b.is_st "
-    "AND datediff('day', b.list_date, b.trade_date) >= 60"
-)
 
 
 def _quoted(path: Path | str) -> str:
@@ -188,12 +186,6 @@ def _forward_look_check(
     }
 
 
-def _sample_date_sql(dates: list[str]) -> str:
-    """把受控日期样本写为 SQL 列表。"""
-
-    return ", ".join(f"DATE '{day}'" for day in dates)
-
-
 def _target_correlation(
     conn,
     *,
@@ -203,132 +195,20 @@ def _target_correlation(
     start: str,
     end: str,
     policy: QualityPolicy,
+    correlation_cache: CandidateCorrelationCache | None = None,
 ) -> dict[str, Any]:
     """计算候选对正式因子的抽样逐日秩相关。"""
 
     dates = _sample_dates(conn, start, end, policy.correlation_sample_days)
-    if not dates:
-        return {
-            "passed": False,
-            "reason": "no_trade_dates",
-            "sample_days": 0,
-            "max_absolute": None,
-            "peer": None,
-        }
-    date_sql = _sample_date_sql(dates)
-    target = conn.execute(
-        f"""
-        SELECT b.stock_code, b.trade_date,
-               CAST(f.{target_name} AS DOUBLE) AS {target_name}
-        FROM read_parquet('{_quoted(target_glob)}', hive_partitioning=1) f
-        JOIN src.md.daily_hfq b USING(stock_code, trade_date)
-        WHERE b.trade_date IN ({date_sql}) AND {_POOL_FILTER}
-        """
-    ).df()
-    if target.empty:
-        return {
-            "passed": False,
-            "reason": "empty_target",
-            "sample_days": len(dates),
-            "max_absolute": None,
-            "peer": None,
-        }
-    peers: list[str] = []
-    frame = target
-    for family in factors.ALL_FAMILIES:
-        if family == "mined":
-            specs = [
-                item
-                for item in factors.available_specs(peer_factor_dir)
-                if item.family == family
-            ]
-        else:
-            specs = list(factors.family_factors(family))
-        specs = [
-            spec
-            for spec in specs
-            if spec.name != target_name
-        ]
-        family_dir = Path(peer_factor_dir) / family
-        glob = family_glob(peer_factor_dir, family)
-        if not specs or not tuple(family_dir.glob("year=*/part.parquet")):
-            continue
-        columns = ", ".join(
-            f'CAST(f."{spec.name}" AS DOUBLE) AS "{spec.name}"' for spec in specs
-        )
-        values = conn.execute(
-            f"""
-            SELECT b.stock_code, b.trade_date, {columns}
-            FROM read_parquet('{_quoted(glob)}', hive_partitioning=1, union_by_name=1) f
-            JOIN src.md.daily_hfq b USING(stock_code, trade_date)
-            WHERE b.trade_date IN ({date_sql}) AND {_POOL_FILTER}
-            """
-        ).df()
-        if values.empty:
-            continue
-        frame = frame.merge(
-            values,
-            on=["stock_code", "trade_date"],
-            how="left",
-            validate="one_to_one",
-        )
-        peers.extend(spec.name for spec in specs)
-    if not peers:
-        return {
-            "passed": True,
-            "reason": "no_formal_peers",
-            "sample_days": len(dates),
-            "max_absolute": None,
-            "peer": None,
-            "observed_days": 0,
-        }
-    sums = np.zeros(len(peers))
-    days = np.zeros(len(peers), dtype=np.int64)
-    for _, daily in frame.groupby("trade_date", sort=False):
-        target_values = daily[[target_name, *peers]].to_numpy(dtype="float64")
-        for index, peer in enumerate(peers, start=1):
-            pair = target_values[:, [0, index]]
-            pair = pair[np.isfinite(pair).all(axis=1)]
-            if len(pair) < policy.correlation_min_stocks:
-                continue
-            left = pd.Series(pair[:, 0]).rank(method="average").to_numpy()
-            right = pd.Series(pair[:, 1]).rank(method="average").to_numpy()
-            if np.std(left) == 0 or np.std(right) == 0:
-                continue
-            correlation = float(np.corrcoef(left, right)[0, 1])
-            if np.isfinite(correlation):
-                sums[index - 1] += correlation
-                days[index - 1] += 1
-    means = np.divide(
-        sums,
-        days,
-        out=np.full(sums.shape, np.nan),
-        where=days >= policy.correlation_min_days,
+    return target_correlation(
+        conn,
+        target_name=target_name,
+        target_glob=target_glob,
+        peer_factor_dir=peer_factor_dir,
+        dates=dates,
+        policy=policy,
+        cache=correlation_cache,
     )
-    finite = np.isfinite(means)
-    if not finite.any():
-        return {
-            "passed": False,
-            "reason": "insufficient_days",
-            "sample_days": len(dates),
-            "max_absolute": None,
-            "peer": None,
-            "min_days": policy.correlation_min_days,
-        }
-    positions = np.flatnonzero(finite)
-    best = int(positions[np.argmax(np.abs(means[positions]))])
-    maximum = float(abs(means[best]))
-    return {
-        "passed": maximum < policy.correlation_max_absolute,
-        "reason": None,
-        "sample_days": len(dates),
-        "observed_days": int(days[best]),
-        "min_days": policy.correlation_min_days,
-        "peer": peers[best],
-        "correlation": float(means[best]),
-        "max_absolute": maximum,
-        "threshold": policy.correlation_max_absolute,
-    }
 
 
 def evaluate_technical_checks(
@@ -341,6 +221,7 @@ def evaluate_technical_checks(
     end: str,
     min_coverage: float,
     policy: QualityPolicy,
+    correlation_cache: CandidateCorrelationCache | None = None,
 ) -> tuple[bool, dict[str, Any], tuple[str, ...]]:
     """执行全部硬门禁并返回可供审批绑定的证据。"""
 
@@ -367,6 +248,7 @@ def evaluate_technical_checks(
             start=start,
             end=end,
             policy=policy,
+            correlation_cache=correlation_cache,
         )
     finally:
         conn.close()

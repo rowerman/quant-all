@@ -308,6 +308,27 @@ auto 相对改动前 `14.523s` 的补充观测为改善 `9.80%`；native 相对 
 实际 C++ 替换模块数由 10 增至 13。证据位于
 `AiRecord/benchmarks/V120/p2-01-20261027/`。
 
+## P2-02 挖掘候选相关性接入（V121，2026-10-28）
+
+候选对正式因子的抽样 Spearman 改由 `mining.evaluation_correlation` 对齐日期股票矩阵，
+经统一 `kernels` 后端调用 `daily_row_spearman`。单次挖掘筛选复用正式 peer 网格，缓存
+不跨运行共享；轻量 RankIC 仍使用 DuckDB SQL。
+
+固定四候选、批量物化后筛选：
+
+| 路径 | 技术阶段 | 总耗时 | 峰值 RSS |
+|---|---:|---:|---:|
+| 未缓存 Python | 40.941s | 44.863s | 1170.246MB |
+| 缓存后 Python | 34.744s | 38.700s | 1250.445MB |
+| native | 33.055s | 37.009s | 1251.336MB |
+| auto | 32.890s | 36.882s | 1249.973MB |
+
+缓存后相关性阶段由 Python `4.411s` 降至 native `3.243s`（`1.360x`）；技术阶段相对
+未缓存 Python 改善 `19.66%`，auto 总耗时加速 `1.216x`。native/auto 稳定 payload
+与 Python 一致，峰值 RSS 为缓存后 Python 的 `1.001x/1.000x`。轻量 RankIC 的 SQL/C++
+中位耗时分别为 `0.658s/0.755s`，保留 SQL。实际 C++ 替换模块数由 13 增至 14，证据
+位于 `AiRecord/benchmarks/V121/p2-02-20261028/`。
+
 ---
 
 ## V11 资源实测与并发验收（2026-10-13 复测）

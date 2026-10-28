@@ -291,6 +291,8 @@ class MiningOrchestrator(
         run: Mapping[str, Any],
         candidate: Mapping[str, Any],
         context: Any,
+        *,
+        correlation_cache: Any | None = None,
     ) -> CandidateEvaluationInput:
         """构造单候选评估输入。"""
 
@@ -302,6 +304,7 @@ class MiningOrchestrator(
             candidate_root=self.store.candidate_dir(
                 run["run_id"], candidate["candidate_id"]
             ),
+            correlation_cache=correlation_cache,
         )
 
     def _materialize_batches(

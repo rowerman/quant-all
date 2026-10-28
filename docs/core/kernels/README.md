@@ -5,7 +5,7 @@ Python 回退、Numba 研究原型，以及 C++ Spearman、逐日排名、逐日
 z-score、单列/多列融合标准化、分位裁剪、总体标准差 z-score、分位分组、多标签分位
 收益、分位换手和逐行 Spearman 后端。
 评估相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、分位图和换手已默认走
-`auto`；模型预处理和标签排名也已接入，挖掘和回测尚未接入加速后端。
+`auto`；模型预处理、标签排名和挖掘候选相关性也已接入，回测尚未接入加速后端。
 
 ## 负责什么
 
@@ -31,6 +31,7 @@ z-score、单列/多列融合标准化、分位裁剪、总体标准差 z-score�
 - `calculate.exposure`：风格与因子逐日 MAD 去极值 + z-score。
 - `calculate.binning`：分位分组、多标签分位收益、组号换手和因子自相关。
 - `alpha.kernel_ops`：模型特征 rank、分位裁剪、总体 z-score 和标签 rank。
+- `mining.evaluation_correlation`：候选对正式因子的逐日逐行 Spearman。
 - `tests/test_native_kernels.py`
 - `tests/test_cpp_binning.py`
 - `tests/test_cpp_native.py`
@@ -175,7 +176,7 @@ z-score、单列/多列融合标准化、分位裁剪、总体标准差 z-score�
 
 | 项目 | 当前状态 |
 |---|---|
-| 实际 C++ 替换模块数 | 13 |
+| 实际 C++ 替换模块数 | 14 |
 | C++ 扩展 | `quant_native` 已构建 |
 | 默认计算后端 | `auto`，扩展可用时选择 native |
 | P1-01 门禁 | 逐日排名门禁已通过 |
@@ -192,6 +193,7 @@ z-score、单列/多列融合标准化、分位裁剪、总体标准差 z-score�
 | 分位换手模块 | 换手 stage 已接入 |
 | 因子自相关模块 | lag 1/5/20 逐行 Spearman 已接入 |
 | 逐日 OLS 模块 | 风格暴露与增量 IC 已接入，病态日回退 Python |
+| 挖掘候选相关性模块 | 候选对正式因子的抽样逐行 Spearman 已接入，单次筛选复用 peer 网格 |
 
 后续登记每个 C++ 模块时必须写明：C++ 模块名、替换的原 Python 函数、默认/可选后端、
 Python 回退路径、真实 stage 耗时、峰值 RSS、正确性证据和对应 Tracker 任务。
@@ -227,3 +229,4 @@ native/auto 峰值 RSS 为 Python 的 `0.998x/0.992x`。证据位于
 - 不让 `auto` 吞掉已加载原生核的计算错误。
 - 矩阵第一维始终是组；不要按股票或单元格逐次调用。
 - 新增核必须同时覆盖空组、NaN、正负无穷、并列、常数和最小样本边界。
+- 挖掘候选相关性只能计算候选对正式因子；peer 缓存必须限制在单次筛选内。

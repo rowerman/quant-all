@@ -262,6 +262,7 @@ def evaluate_candidate(
             end=evaluation_input.quick_window[1],
             min_coverage=evaluation_input.context.budget.min_coverage,
             policy=policy,
+            correlation_cache=evaluation_input.correlation_cache,
         )
         checks["elapsed_ms"] = round(
             (time.perf_counter() - technical_timer) * 1000,

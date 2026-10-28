@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any
@@ -134,6 +134,11 @@ class CandidateEvaluationInput:
     run_full: bool = False
     quick_window: tuple[str, str] | None = None
     full_window: tuple[str, str] | None = None
+    correlation_cache: Any | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_id", identifier(self.run_id, "run_id"))

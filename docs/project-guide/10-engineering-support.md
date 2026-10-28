@@ -114,7 +114,8 @@ python3.12 -m venv .venv
 Spearman、逐日排名、逐日 Pearson、MAD、z-score、融合标准化、分位分组、多标签分位
 收益、分位换手与逐行 Spearman 后端；它不替代 `calculate.native` 的并发锁。相关性、
 IC/RankIC、多周期衰减、增量 IC、风格暴露、OLS 和分位图/换手默认使用 `auto`，扩展
-可用时选择 native，不可导入时回退 Python。当前实际 C++ 替换模块数为 13。构建方式和
+可用时选择 native，不可导入时回退 Python；挖掘候选相关性也复用同一后端。
+当前实际 C++ 替换模块数为 14。构建方式和
 替换状态见
 [C++ 批量计算扩展](../native/README.md) 和
 [批量计算核](../core/kernels/README.md) 中的台账。

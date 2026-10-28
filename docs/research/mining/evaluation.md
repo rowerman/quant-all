@@ -83,6 +83,15 @@ artifact hash。批量拆分与串行路径要求年度 Parquet 字节和 tree h
 候选相关性只计算候选对正式因子，避免在 S5 中重复构建正式因子两两全矩阵。监测站
 正式因子的完整相关性行为不变。
 
+[evaluation_correlation.py](../../research/mining/evaluation_correlation.py) 把候选和
+正式 peer 对齐为“交易日 × 股票”矩阵，经统一 `kernels` 后端调用
+`daily_row_spearman`。每次 `auto` 默认使用 C++，扩展不可导入时回退 Python。单次挖掘
+筛选使用独立的 `CandidateCorrelationCache` 复用正式 peer 网格，缓存不跨运行或请求
+共享。业务代码不直接导入 `quant_native`。
+
+轻量 RankIC 继续由 `calculate.history.load_daily_ic()` 在 DuckDB 内完成。固定研究期
+实测 SQL 中位 `0.658s`、C++ 对照 `0.755s`，因此该路径不接入 C++。
+
 ## 质量门禁
 
 配置位于 `configs/mining/evaluation.json`，当前规则版本为 `mining_quality_v1`：
@@ -97,6 +106,25 @@ artifact hash。批量拆分与串行路径要求年度 Parquet 字节和 tree h
 
 无法建立足够相关性样本时 fail-closed。RankIC 均值、ICIR 和年度同号率只作为筛选指标
 与警告；有效交易日不足 20 天时快速筛选判失败。
+
+## 性能与一致性
+
+固定 4 个候选、`2024-03-01`～`2024-12-31`、单进程单线程，先执行 P0-05 批量物化再
+进入快速筛选：
+
+| 路径 | 技术阶段 | 总耗时 | 峰值 RSS |
+|---|---:|---:|---:|
+| 未缓存 Python | 40.941s | 44.863s | 1170.246MB |
+| 缓存后 Python | 34.744s | 38.700s | 1250.445MB |
+| native | 33.055s | 37.009s | 1251.336MB |
+| auto | 32.890s | 36.882s | 1249.973MB |
+
+- 候选相关性缓存后中位耗时由 Python `4.411s` 降至 native `3.243s`，加速 `1.360x`。
+- 四候选技术阶段相对未缓存 Python 改善 `19.66%`，auto 总耗时加速 `1.216x`。
+- python/native/auto 的候选 artifact、门禁、technical 和 quick 稳定 payload 一致。
+- native/auto 峰值 RSS 分别为缓存后 Python 的 `1.001x/1.000x`。
+- 证据位于 `AiRecord/benchmarks/V121/p2-02-20261028/`。
+- 实际 C++ 替换模块新增“挖掘候选正式因子相关性”，累计替换模块数为 14。
 
 ## 输入哈希
 

@@ -3,8 +3,8 @@
 `native` 负责构建顶层扩展 `quant_native`，当前提供完整矩阵和目标行两种成对 Spearman
 核，以及逐日排名、Pearson、MAD、z-score、融合标准化、分位裁剪、总体标准差
 z-score、分位分组、多标签分位收益、分位换手、逐行 Spearman 和逐日 OLS 核。
-融合标准化同时支持单列和多列批量入口。评估路径和模型预处理均已接入；有扩展时默认
-`auto` 选择 native，无扩展时回退 Python。
+融合标准化同时支持单列和多列批量入口。评估路径、模型预处理和挖掘候选相关性均已
+接入；有扩展时默认 `auto` 选择 native，无扩展时回退 Python。
 
 ## 负责什么
 
@@ -32,8 +32,10 @@ z-score、分位分组、多标签分位收益、分位换手、逐行 Spearman 
 - 风格暴露经 `calculate.exposure` 调用逐日 OLS。
 - 分位分组、多标签收益、换手和自相关经 `calculate.binning` 调用同一适配层。
 - 模型特征和标签排名、分位裁剪、总体 z-score 经 `alpha.kernel_ops` 调用同一适配层。
+- 挖掘候选对正式因子的抽样相关性经 `mining.evaluation_correlation` 调用逐行
+  Spearman。
 - 核测试和 P1-02/P1-03 基准工具直接验证适配层或扩展。
-- 模型、挖掘表达式和回测尚未调用这些核。
+- 模型训练、挖掘表达式执行和回测尚未调用这些核。
 
 业务模块不得直接导入 `quant_native`。后续接入必须经过 `kernels.get_backend()` 和统一
 `NativeKernelBackend` 协议。
@@ -245,10 +247,25 @@ stage 的收益主要来自原生分位分组和秩宽表。
 | 原生核 | `pairwise_spearman`、`daily_rank_pct`、`daily_pearson`、`daily_winsorize_mad`、`daily_zscore`、`daily_winsorize_zscore`、`daily_winsorize_zscore_columns`、`daily_winsorize_quantile`、`daily_zscore_population`、`daily_quantile_bins`、`bin_returns_multi`、`bin_turnover`、`daily_row_spearman`、`daily_ols` |
 | 可选后端 | `native`、`python`、`auto` |
 | 默认后端 | `auto` |
-| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、OLS、分位图、换手、自相关和模型预处理 |
-| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson`；`winsorize_by_day`；`zscore_by_day`；分位分组；多标签分位收益；分位换手；因子自相关；`_daily_regression`；模型 groupby rank/quantile/std |
-| 实际 C++ 替换模块数 | 13 |
-| 真实业务 stage 收益 | 相关性下降 35.5%；overview 2.535x；bins 1.621x；turnover 1.854x；decay 3.255x；OLS 链路改善 46.26%；模型 rank 3.282x |
+| 业务接入 | 相关性、IC/RankIC、多周期衰减、增量 IC、风格暴露、OLS、分位图、换手、自相关、模型预处理和挖掘候选相关性 |
+| 替换原实现 | `_daily_spearman`；`rank_pct_by_day`；`_daily_pearson`；`winsorize_by_day`；`zscore_by_day`；分位分组；多标签分位收益；分位换手；因子自相关；`_daily_regression`；模型 groupby rank/quantile/std；挖掘候选逐日逐 peer pandas 排名 |
+| 实际 C++ 替换模块数 | 14 |
+| 真实业务 stage 收益 | 相关性下降 35.5%；overview 2.535x；bins 1.621x；turnover 1.854x；decay 3.255x；OLS 链路改善 46.26%；模型 rank 3.282x；挖掘候选相关性 1.360x |
+
+## P2-02 挖掘候选相关性接入
+
+`mining.evaluation_correlation` 把候选目标和正式 peer 对齐成连续日期股票矩阵，复用
+`daily_row_spearman`。单次筛选的正式 peer 网格由 `CandidateCorrelationCache` 复用，
+不跨运行或请求保存。
+
+- 固定四候选、批量物化后筛选：未缓存 Python 技术阶段 `40.941s`，native `33.055s`，
+  改善 `19.66%`；auto 总耗时由未缓存 Python `44.863s` 降至 `36.882s`（`1.216x`）。
+- 缓存后相关性阶段 Python `4.411s`、native `3.243s`，加速 `1.360x`。
+- native/auto 稳定 payload 与 Python 一致，峰值 RSS 为缓存后 Python 的
+  `1.001x/1.000x`。
+- 轻量 RankIC 的 C++ 对照中位 `0.755s`，慢于 DuckDB SQL `0.658s`，因此继续保留
+  SQL 路径，不登记为 C++ 替换。
+- 证据位于 `AiRecord/benchmarks/V121/p2-02-20261028/`。
 
 ## 修改注意
 

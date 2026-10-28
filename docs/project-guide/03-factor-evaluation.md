@@ -316,9 +316,9 @@ Householder QR，病态矩阵按日回退 Python；真实矩阵 OLS 加速 `2.33
 `exposure + incremental_ic`：Python 24.375 秒、native 12.935 秒、auto 13.100 秒，
 native 相对 Python 改善 46.26%；三后端 payload 在 `1e-5` 内一致，最高 RSS 比例约
 0.998x。V120 又把模型 rank、分位裁剪和总体标准差 z-score 登记为三个 C++ 替换模块；
-实际 C++ 替换模块数累计为 13。证据位于
+P2-02 再把挖掘候选正式因子相关性登记为一个替换模块，当前累计为 14。证据位于
 `AiRecord/benchmarks/V119/p1-07-20261027/` 和
-`AiRecord/benchmarks/V120/p2-01-20261027/`。
+`AiRecord/benchmarks/V120/p2-01-20261027/`、`AiRecord/benchmarks/V121/p2-02-20261028/`。
 
 ## 4. 执行路径
 

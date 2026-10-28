@@ -5,7 +5,9 @@ from __future__ import annotations
 from threading import Event
 from typing import Any, Mapping
 
+from common.paths import FACTOR_DIR
 from mining.errors import MiningEvaluationError
+from mining.evaluation_correlation import CandidateCorrelationCache
 from mining.orchestration_support import context_from_run
 
 _FAILED_CANDIDATE_STATUSES = {
@@ -46,6 +48,7 @@ class ScreeningPhaseMixin:
             start=context.research_start,
             end=context.research_end,
         )
+        correlation_cache = CandidateCorrelationCache(FACTOR_DIR)
         for item in self.store.list_candidates(run_id):
             self._check_cancelled(run_id, cancellation)
             failure = batch_failures.get(item["candidate_id"])
@@ -97,7 +100,12 @@ class ScreeningPhaseMixin:
                     "quality_check_started",
                 )
                 result = self.evaluator(
-                    self._evaluation_input(run, item, context),
+                    self._evaluation_input(
+                        run,
+                        item,
+                        context,
+                        correlation_cache=correlation_cache,
+                    ),
                     policy=None,
                 )
                 self._check_cancelled(run_id, cancellation)
@@ -126,7 +134,12 @@ class ScreeningPhaseMixin:
                 if quick is None:
                     if result is None:
                         result = self.evaluator(
-                            self._evaluation_input(run, item, context),
+                            self._evaluation_input(
+                                run,
+                                item,
+                                context,
+                                correlation_cache=correlation_cache,
+                            ),
                             policy=None,
                         )
                         self._check_cancelled(run_id, cancellation)
