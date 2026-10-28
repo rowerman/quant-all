@@ -43,6 +43,33 @@
 - 依赖 `core/data/quant/codes.py`（代码归一与板块判定）、`core/data/scripts/config.py`、`core/data/scripts/errors.py`、`core/data/scripts/logging_conf.py`；
 - `pipeline.py` 是唯一编排入口，其余模块之间不互相调用。
 
+## 性能与 C++ 决策（P3-02）
+
+`tools/monitor/clean_profile.py` 在临时目录中运行完整年度清洗，按单层叶调用拆出 Parquet
+输入、pandas 面板组装、生命周期/ST、复权/昨收、涨跌停、封板、可交易标记、长表组装和
+Parquet 写出耗时。工具不会调用正式 `pipeline.run()`，清洗结果和隔离 DuckDB 均写入临时
+目录；worker 在导入清洗模块前关闭日志输出。
+
+固定基准使用 `2015` 和最新完整年度 `2025`，每案先无计时生成上一年度 `carry_close`，
+目标年度运行 3 次取中位数：
+
+| 案例 | 行数 | 中位总耗时 | 峰值 RSS | 最大纯数组规则 | 占比 | DuckDB 日线三表 |
+|---|---:|---:|---:|---|---:|---:|
+| 2015 | 665,185 | 8.674s | 1341.5MB | `limit_prices` | 0.20% | 4.521s |
+| 2025 | 1,317,342 | 18.874s | 2377.0MB | `limit_prices` | 0.17% | 8.557s |
+
+2025 的主要耗时是 `panel_normalize` 的 pandas 代码/日期规整，占 `74.82%`；全部纯数组
+规则合计约 `0.151s`。没有任何单一纯数组规则达到清洗总耗时的 `20%`，因此清洗层不实施
+C++ 替换，累计替换模块数保持 14。解析出的 Python 数据准备瓶颈不在 P3-02 内修改。
+
+复现命令：
+
+```bash
+.venv/bin/python -m tools.monitor.clean_profile --case all --repeats 3
+```
+
+证据位于 `AiRecord/benchmarks/V124/p3-02-20261028/`。
+
 ## 校验口径（A1~A8，2026-09-28 全量实测）
 
 - **A1**：`status` 无 NULL、取值只有 `trading` / `suspended`，

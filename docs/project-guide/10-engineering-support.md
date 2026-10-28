@@ -652,6 +652,7 @@ bash tools/monitor/serve.sh
 | `audit_sw_industry.py` | 只读 | 默认仍是旧 `db/quant.duckdb`，应显式覆盖 `--db` |
 | `audit_indexes.py` | 只读 | 截止日期仍是 `2026-09-28`，不是动态 manifest 日期 |
 | `audit_checks.py` | 只读 | 仍读取旧根目录 `clean/`，当前产物在 `data/clean/` |
+| `tools/monitor/clean_profile.py` | 只读输入，写 `AiRecord/benchmarks/V124` 证据 | 清洗和 DuckDB 结果均隔离到临时目录；两案三轮约 3 分钟；不修改正式清洗产物 |
 | `run_clean_build.sh` | 重建清洗和正式主库 | 会覆盖主要数据产物，且只跑 `tests` 根测试 |
 | `run_full_chain.sh` | 取数、清洗、建库 | 截止日仍是 `20260928`，可能数小时，不应当作日常只读命令 |
 | `apply_fix_20260928_2.py` | 直接改写源码 | 历史定点修复脚本，已执行；不得重复运行 |
