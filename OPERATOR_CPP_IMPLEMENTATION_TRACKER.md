@@ -1303,6 +1303,7 @@ P3 当前只做剖析和 I/O 优化。C++ 回测账本不是既定交付，必�
 - 本轮未修改 `ledger.py`、`allocation.py`、`orders.py`、`risk.py`、测试、
   `quant_native` 或生产数据，实际 C++ 替换模块数保持 14；`docs/native/README.md`
   替换台账不修改。
+- 实现 commit：`d749ebb`。
 - 回退：删除 V125 证据和记录，恢复 Tracker、回测模块文档和项目指南；不涉及数据库或
   生产数据迁移。
 
