@@ -14,7 +14,7 @@ from tools.monitor.mining_dsl_analysis import (
     summarize_corpus,
     summarize_profile,
 )
-from tools.monitor.mining_dsl_decision import summarize_runs
+from tools.monitor.mining_dsl_report import summarize_runs
 
 
 def test_corpus_covers_every_frozen_operator_and_is_deduplicated():

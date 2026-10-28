@@ -20,6 +20,7 @@ from mining.expression_ast import (
 from mining.expression_parser import parse_expression
 from mining.expression_validation import validate_expression
 
+SCHEMA_VERSION = "mining_dsl_decision_v1"
 EXPRESSION_SHARE_THRESHOLD = 0.50
 ZERO_COST_IMPROVEMENT_THRESHOLD = 0.20
 
