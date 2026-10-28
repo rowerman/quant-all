@@ -1111,7 +1111,7 @@ P2 只复用 P1 已验收的稳定核，不新增未经评估的算法。
   替换台账不变。
 - 定向测试 6 passed；三轮候选稳定 payload 哈希一致。
 - 复现：`.venv/bin/python -m tools.monitor.mining_dsl_decision --output AiRecord/benchmarks/V122/p2-03-20261028`。
-- commit：待首次提交后回填。
+- commit：实现 `c2b7c3e`；基准模块拆分与最终证据口径 `138460a`。
 
 停止/回退：
 
