@@ -1056,6 +1056,9 @@ P2 只复用 P1 已验收的稳定核，不新增未经评估的算法。
 - 定向测试 18 passed；现有真实评估一致性 3 passed。证据：
   `AiRecord/benchmarks/V121/p2-02-20261028/`；复现：
   `.venv/bin/python -m tools.monitor.mining_native_baseline --output AiRecord/benchmarks/V121/p2-02-20261028`。
+- 定向测试累计 40 passed，模块拆分后的最终相关测试 37 passed；普通 wheel SHA-256：
+  `7de2be08c652da5c801f06d5428116a1d3f69bd8067c90805e4a726d380bf071`。
+- commit：`d5d3888`。
 - 回退：移除挖掘相关性缓存和 `evaluation_correlation` 路由，恢复原逐日逐 peer pandas
   实现，台账减回 13；不涉及生产数据或正式因子。
 
