@@ -129,7 +129,9 @@ PYTHONPATH=/tmp/monitor-browser-deps PLAYWRIGHT_BROWSERS_PATH=/tmp/monitor-brows
 .venv/bin/python -m tools.monitor.backtest_profile --case dual
 ```
 
-证据追加写入 `AiRecord/benchmarks/V57/`；`dual` 使用两个 worker 同时提交两份回测。
+追加 `--resources` 可记录取数调用、`MarketData` 形状/dtype/内存、切片次数和重复查询
+签名；诊断包装器会扰动墙钟，不能用于性能门禁。证据目录由 `--output` 指定，例如
+`AiRecord/benchmarks/V123/p3-01-20261028/`；`dual` 使用两个 worker 同时提交两份回测。
 
 ## 申万行业覆盖自检
 

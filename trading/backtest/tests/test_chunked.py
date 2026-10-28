@@ -251,6 +251,26 @@ def test_chunked_matches_single_block(make_data):
     _assert_same(single, chunked)
 
 
+def test_segmented_run_builds_report_and_snapshot_only_after_stitch(
+    make_data, monkeypatch
+):
+    """段执行不再重复生成整段指标和输入快照。"""
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("段执行不应重复生成完整报告或输入快照")
+
+    monkeypatch.setattr("backtest.engine.build_report", unexpected)
+    monkeypatch.setattr("backtest.engine.build_input_snapshot", unexpected)
+    data = _panel(make_data)
+    strategy = _strategy()
+    params = BacktestParams(str(DATES[0].date()), str(DATES[-1].date()), 300_000.0)
+
+    result = _run_single(data, strategy, params)
+
+    assert result.metrics
+    assert result.metadata["snapshot_id"]
+
+
 def test_chunked_matches_single_block_with_provider(make_data):
     """提供者策略跨资源块时目标权重和全部结果表逐位一致。"""
     data = _panel(make_data)

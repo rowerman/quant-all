@@ -735,16 +735,15 @@ def load_market_data(
             f"面板规模 {len(index)}×{len(columns)} 超过上限 {MAX_PANEL_CELLS} 个单元格；请缩短区间"
         )
     aligned = {}
-    for name, frame in frames.items():
+    for name in list(frames):
+        frame = frames.pop(name)
         if name in FLAG_FIELDS:
-            value = frame.reindex(index=index, columns=columns, fill_value=False).astype(bool)
+            value = frame.reindex(index=index, columns=columns, fill_value=False)
         elif name in PRICE_FIELDS or name in VALUE_FIELDS:
             value = frame.reindex(index=index, columns=columns)
-            value = value.astype("float32")
         else:
             value = frame.reindex(index=index, columns=columns)
         aligned[name] = value
-    frames = aligned
     factors = {
         name: _load_factor(name, start, end, index, columns, stocks, factor_dir)
         for name in factor_names
@@ -847,6 +846,6 @@ def load_market_data(
         versions=_load_versions(db_path),
         corporate_actions=corporate_actions,
         data_snapshot=data_snapshot,
-        **frames,
+        **aligned,
     )
 

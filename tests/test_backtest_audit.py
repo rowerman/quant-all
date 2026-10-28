@@ -120,3 +120,48 @@ def test_legacy_daily_without_impact_column_still_audits(tmp_path):
     result = audit(run_id, tmp_path / "legacy.duckdb")
     ok, detail = _check(result, "日成本分项可加总")
     assert ok, detail
+
+
+def test_empty_result_tables_with_only_run_id_still_audit(tmp_path):
+    """全新库里没有明细时，空表只有 run_id 也不能阻断审计。"""
+    path = tmp_path / "empty_schema.duckdb"
+    run_id = "empty-run"
+    metadata = {
+        "calibration": {
+            "allocation_converged": True,
+            "nonconverged_segments": 0,
+            "fee_matrix_max_diff": 0.0,
+            "cash_clipped_cells": 0,
+            "final_orders": 0,
+            "fallback_fee_orders": 0,
+            "delisting_residual_shares_at_end": 0.0,
+            "delisting_buy_orders": 0,
+        }
+    }
+    con = duckdb.connect(str(path))
+    con.execute("CREATE SCHEMA bt")
+    con.execute(
+        "CREATE TABLE bt.run (run_id VARCHAR, status VARCHAR, metadata_json VARCHAR, started_at TIMESTAMP)"
+    )
+    con.execute(
+        "INSERT INTO bt.run VALUES (?, 'success', ?, ?)",
+        [run_id, json.dumps(metadata), datetime(2026, 10, 28)],
+    )
+    for table in (
+        "daily",
+        "order",
+        "rejection",
+        "target_weight",
+        "holding",
+        "allocation",
+        "liquidation",
+        "corporate_action",
+    ):
+        con.execute(f"CREATE TABLE bt.{table} (run_id VARCHAR)")
+    con.close()
+
+    result = audit(run_id, path)
+
+    assert all(ok for _, ok, _ in result["checks"])
+    assert result["rejections"] == []
+    assert result["allocation"] == []

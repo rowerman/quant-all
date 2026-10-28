@@ -13,6 +13,7 @@ worker 同时提交两份回测，测量生产并发下的组合驻留内存。�
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
@@ -31,8 +32,10 @@ from backend import backtest_service
 from backend.scheduler import Scheduler
 from backtest.builtin import MOM20_ID, MULTIFACTOR_ID
 from backtest.store import BacktestStore
+from tools.monitor.backtest_profile_fingerprint import result_fingerprints
+from tools.monitor.backtest_profile_resource import ResourceProfiler
 
-EVIDENCE_DIR = PROJECT_ROOT / "AiRecord/benchmarks/V57"
+EVIDENCE_DIR = PROJECT_ROOT / "AiRecord/benchmarks/V123"
 
 
 def case_payloads(case: str) -> list[dict]:
@@ -93,6 +96,39 @@ def summarize_stages(stages: list[dict]) -> dict[str, dict]:
     return summary
 
 
+def summarize_hierarchy(stages: list[dict]) -> dict:
+    """按资源块、调仓段和顶层阶段归组，保证每个事件只累计一次。"""
+    groups: dict[str, dict] = {}
+    children: dict[str, dict] = {}
+    current_group: str | None = None
+    for item in stages:
+        stage = str(item["stage"])
+        elapsed = float(item["elapsed_s"])
+        if stage == "chunk":
+            phase = str(item.get("phase") or "unknown")
+            group = f"chunk.{phase}"
+            current_group = group
+        elif stage in {"meta", "load", "provider_state", "done"}:
+            group = stage
+            current_group = None
+        else:
+            group = current_group or "unattributed"
+            child = children.setdefault(stage, {"count": 0, "elapsed_s": 0.0})
+            child["count"] += 1
+            child["elapsed_s"] = round(child["elapsed_s"] + elapsed, 3)
+        target = groups.setdefault(group, {"count": 0, "elapsed_s": 0.0})
+        target["count"] += 1
+        target["elapsed_s"] = round(target["elapsed_s"] + elapsed, 3)
+    accounted = round(sum(float(item["elapsed_s"]) for item in stages), 3)
+    grouped = round(sum(item["elapsed_s"] for item in groups.values()), 3)
+    return {
+        "accounted_elapsed_s": accounted,
+        "grouped_elapsed_s": grouped,
+        "groups": groups,
+        "children": children,
+    }
+
+
 def _write_evidence(record: dict, output: Path | None) -> Path:
     """把一条剖析结果追加到证据文件。"""
     path = output or (
@@ -104,7 +140,13 @@ def _write_evidence(record: dict, output: Path | None) -> Path:
     return path
 
 
-def profile(case: str, *, evidence: bool = True, output: Path | None = None) -> dict:
+def profile(
+    case: str,
+    *,
+    evidence: bool = True,
+    output: Path | None = None,
+    resource_metrics: bool = False,
+) -> dict:
     """运行一个剖析案例并返回可落盘的记录。"""
     payloads = case_payloads(case)
     started_at = datetime.now(timezone.utc).isoformat()
@@ -115,90 +157,107 @@ def profile(case: str, *, evidence: bool = True, output: Path | None = None) -> 
 
     with tempfile.TemporaryDirectory(prefix="backtest-profile-") as directory:
         store_path = Path(directory) / "backtest.duckdb"
+        preflight_started = time.perf_counter()
         requests = [
             backtest_service.prepare(payload, str(store_path))
             for payload in payloads
         ]
-        scheduler = Scheduler(workers=max(1, len(requests)), waiting=1)
-        jobs = []
-        try:
-            for index, request in enumerate(requests):
-                job = scheduler.reserve()
+        preflight_s = round(time.perf_counter() - preflight_started, 3)
+        profiler_context = ResourceProfiler() if resource_metrics else nullcontext(None)
+        with profiler_context as resource_profiler:
+            scheduler = Scheduler(workers=max(1, len(requests)), waiting=1)
+            jobs = []
+            try:
+                for index, request in enumerate(requests):
+                    job = scheduler.reserve()
 
-                def factory(index=index, request=request, job=job):
-                    last = time.perf_counter()
-                    for stage, payload in backtest_service.stream_strategy(
-                        request, job.cancelled.is_set, str(store_path)
-                    ):
-                        now = time.perf_counter()
-                        stages[index].append(
-                            {
+                    def factory(index=index, request=request, job=job):
+                        last = time.perf_counter()
+                        for stage, payload in backtest_service.stream_strategy(
+                            request, job.cancelled.is_set, str(store_path)
+                        ):
+                            now = time.perf_counter()
+                            record = {
                                 "stage": stage,
                                 "elapsed_s": round(now - last, 3),
+                                "at_s": round(now - started, 3),
                             }
-                        )
-                        last = now
-                        yield stage, payload
+                            if stage == "chunk":
+                                record["phase"] = payload.get("phase")
+                                record["chunk_index"] = payload.get("chunk_index")
+                                record["chunk_count"] = payload.get("chunk_count")
+                            stages[index].append(record)
+                            last = now
+                            yield stage, payload
 
-                scheduler.start(job, factory)
-                jobs.append(job)
+                    scheduler.start(job, factory)
+                    jobs.append(job)
 
-            stop = threading.Event()
-            peak = [read_vm_mb("VmRSS") or 0.0]
-            monitor = threading.Thread(
-                target=_sample_rss, args=(stop, peak), daemon=True
-            )
-            monitor.start()
+                stop = threading.Event()
+                peak = [read_vm_mb("VmRSS") or 0.0]
+                monitor = threading.Thread(
+                    target=_sample_rss, args=(stop, peak), daemon=True
+                )
+                monitor.start()
 
-            def consume(index: int, job) -> None:
-                try:
-                    results[index] = scheduler.wait(job)
-                except BaseException as error:
-                    errors[index] = error
+                def consume(index: int, job) -> None:
+                    try:
+                        results[index] = scheduler.wait(job)
+                    except BaseException as error:
+                        errors[index] = error
 
-            waiters = [
-                threading.Thread(target=consume, args=(index, job), daemon=True)
-                for index, job in enumerate(jobs)
-            ]
-            for waiter in waiters:
-                waiter.start()
-            for waiter in waiters:
-                waiter.join()
-            stop.set()
-            monitor.join()
-        finally:
-            scheduler.close()
+                waiters = [
+                    threading.Thread(target=consume, args=(index, job), daemon=True)
+                    for index, job in enumerate(jobs)
+                ]
+                for waiter in waiters:
+                    waiter.start()
+                for waiter in waiters:
+                    waiter.join()
+                stop.set()
+                monitor.join()
+            finally:
+                scheduler.close()
 
-        store = BacktestStore(store_path)
-        jobs_payload = []
-        for index, (payload, result, error) in enumerate(
-            zip(payloads, results, errors, strict=True)
-        ):
-            run_id = result.get("run_id") if result else None
-            status = store.get_run(run_id)["status"] if run_id else None
-            jobs_payload.append(
-                {
-                    **payload,
-                    "run_id": run_id,
-                    "status": status,
-                    "orders": result.get("orders") if result else None,
-                    "elapsed_seconds": (
-                        result.get("elapsed_seconds") if result else None
-                    ),
-                    "stages": stages[index],
-                    "stage_summary": summarize_stages(stages[index]),
-                    "error": (
-                        f"{type(error).__name__}: {error}" if error else None
-                    ),
-                }
+            store = BacktestStore(store_path)
+            jobs_payload = []
+            for index, (payload, result, error) in enumerate(
+                zip(payloads, results, errors, strict=True)
+            ):
+                run_id = result.get("run_id") if result else None
+                status = store.get_run(run_id)["status"] if run_id else None
+                jobs_payload.append(
+                    {
+                        **payload,
+                        "run_id": run_id,
+                        "status": status,
+                        "orders": result.get("orders") if result else None,
+                        "elapsed_seconds": (
+                            result.get("elapsed_seconds") if result else None
+                        ),
+                        "stages": stages[index],
+                        "stage_summary": summarize_stages(stages[index]),
+                        "hierarchy": summarize_hierarchy(stages[index]),
+                        "result_fingerprints": (
+                            result_fingerprints(store, run_id) if run_id else {}
+                        ),
+                        "error": (
+                            f"{type(error).__name__}: {error}" if error else None
+                        ),
+                    }
+                )
+            resource_summary = (
+                resource_profiler.summary() if resource_profiler is not None else None
             )
 
     record = {
         "case": case,
         "started_at": started_at,
         "elapsed_s": round(time.perf_counter() - started, 3),
+        "preflight_s": preflight_s,
         "peak_rss_mb": read_vm_mb("VmHWM"),
         "sampled_peak_rss_mb": round(peak[0], 1),
+        "resource_profile": resource_summary,
         "jobs": jobs_payload,
         "ok": all(
             item["status"] == "success" and item["error"] is None
@@ -216,6 +275,11 @@ def main() -> None:
     parser.add_argument(
         "--case", choices=("all_a_3y", "index_10y", "dual"), required=True
     )
+    parser.add_argument(
+        "--resources",
+        action="store_true",
+        help="记录取数调用和 MarketData 切片；会扰动墙钟，不作为性能门禁",
+    )
     parser.add_argument("--no-evidence", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -223,6 +287,7 @@ def main() -> None:
         args.case,
         evidence=not args.no_evidence,
         output=args.output,
+        resource_metrics=args.resources,
     )
     display = {
         **record,

@@ -16,8 +16,10 @@ from pathlib import Path
 
 import duckdb
 
+from common.paths import BACKTEST_DB_FILE
+
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DB = ROOT / "db" / "backtest.duckdb"
+DEFAULT_DB = BACKTEST_DB_FILE
 
 # 与前端「执行校准」卡片同一套标签
 CALIBRATION_LABELS = {
@@ -184,30 +186,61 @@ def audit(run_id: str | None, db_path: Path) -> dict:
     record = dict(zip(columns, row))
     metadata = json.loads(record["metadata_json"]) if record.get("metadata_json") else {}
     calibration = metadata.get("calibration", {})
+    table_columns = {
+        table: {
+            item[0]
+            for item in conn.execute(f"DESCRIBE bt.{table}").fetchall()
+        }
+        for table in (
+            "daily",
+            "order",
+            "rejection",
+            "target_weight",
+            "holding",
+            "allocation",
+            "liquidation",
+            "corporate_action",
+        )
+    }
 
-    rejections = conn.execute(
-        "SELECT reason, count(*) FROM bt.rejection WHERE run_id = ? GROUP BY 1 ORDER BY 2 DESC",
-        [run_id],
-    ).fetchall()
-    allocation = conn.execute(
-        "SELECT status, count(*), sum(target_weight), sum(allocated_shares) "
-        "FROM bt.allocation WHERE run_id = ? GROUP BY 1 ORDER BY 2 DESC",
-        [run_id],
-    ).fetchall()
-    deviations = conn.execute(
-        "SELECT t.trade_date, t.stock_code, t.target_weight, coalesce(h.weight, 0.0) AS weight, "
-        "abs(coalesce(h.weight, 0.0) - t.target_weight) AS deviation "
-        "FROM bt.target_weight t LEFT JOIN bt.holding h ON h.run_id = t.run_id "
-        "AND h.trade_date = t.trade_date AND h.stock_code = t.stock_code "
-        "WHERE t.run_id = ? ORDER BY deviation DESC LIMIT 10",
-        [run_id],
-    ).fetchall()
+    rejections = (
+        conn.execute(
+            "SELECT reason, count(*) FROM bt.rejection WHERE run_id = ? GROUP BY 1 ORDER BY 2 DESC",
+            [run_id],
+        ).fetchall()
+        if "reason" in table_columns["rejection"]
+        else []
+    )
+    allocation = (
+        conn.execute(
+            "SELECT status, count(*), sum(target_weight), sum(allocated_shares) "
+            "FROM bt.allocation WHERE run_id = ? GROUP BY 1 ORDER BY 2 DESC",
+            [run_id],
+        ).fetchall()
+        if {"status", "target_weight", "allocated_shares"}
+        <= table_columns["allocation"]
+        else []
+    )
+    deviations = (
+        conn.execute(
+            "SELECT t.trade_date, t.stock_code, t.target_weight, coalesce(h.weight, 0.0) AS weight, "
+            "abs(coalesce(h.weight, 0.0) - t.target_weight) AS deviation "
+            "FROM bt.target_weight t LEFT JOIN bt.holding h ON h.run_id = t.run_id "
+            "AND h.trade_date = t.trade_date AND h.stock_code = t.stock_code "
+            "WHERE t.run_id = ? ORDER BY deviation DESC LIMIT 10",
+            [run_id],
+        ).fetchall()
+        if {"trade_date", "stock_code", "target_weight"}
+        <= table_columns["target_weight"]
+        and {"trade_date", "stock_code", "weight"} <= table_columns["holding"]
+        else []
+    )
     counts = {
         table: conn.execute(f"SELECT count(*) FROM bt.{table} WHERE run_id = ?", [run_id]).fetchone()[0]
         for table in ("daily", "order", "rejection", "holding", "allocation", "liquidation", "corporate_action")
     }
-    order_columns = {item[0] for item in conn.execute("DESCRIBE bt.order").fetchall()}
-    daily_columns = {item[0] for item in conn.execute("DESCRIBE bt.daily").fetchall()}
+    order_columns = table_columns["order"]
+    daily_columns = table_columns["daily"]
     order_cost_error = None
     daily_cost_error = None
     if {"commission", "stamp_tax", "transfer_fee", "slippage_cost"} <= order_columns:
@@ -227,9 +260,7 @@ def audit(run_id: str | None, db_path: Path) -> dict:
     has_board_audit = "Board" in order_columns
     invalid_board_buys = None
     board_orders = []
-    liquidation_columns = {
-        item[0] for item in conn.execute("DESCRIBE bt.liquidation").fetchall()
-    }
+    liquidation_columns = table_columns["liquidation"]
     writeoff_cash_rows = None
     if {"price", "value"} <= liquidation_columns:
         reason_filter = (
@@ -263,14 +294,16 @@ def audit(run_id: str | None, db_path: Path) -> dict:
             "(Board IN ('主板', '创业板') AND abs(Size % 100) > 1e-9))",
             [run_id],
         ).fetchone()[0]
-    else:
+    elif {"Side", "Size"} <= order_columns:
         off_lot = conn.execute(
             "SELECT count(*) FROM bt.order WHERE run_id = ? AND Side = 'Buy' "
             "AND (Size IS NULL OR abs(Size % 100) > 1e-9)",
             [run_id],
         ).fetchone()[0]
+    else:
+        off_lot = 0
     # 老库的 bt.allocation 没有 cash_limited 列，缺列时不查这一项
-    allocation_columns = {item[0] for item in conn.execute("DESCRIBE bt.allocation").fetchall()}
+    allocation_columns = table_columns["allocation"]
     invalid_allocation_orders = None
     if "order_valid" in allocation_columns:
         invalid_allocation_orders = conn.execute(
@@ -279,7 +312,12 @@ def audit(run_id: str | None, db_path: Path) -> dict:
             [run_id],
         ).fetchone()[0]
     cash_limited = None
-    if "cash_limited" in allocation_columns:
+    if {
+        "cash_limited",
+        "cash_shrunk_shares",
+        "trade_date",
+        "price",
+    } <= allocation_columns:
         cash_limited = conn.execute(
             "SELECT count(*) FILTER (WHERE cash_shrunk_shares > 0), "
             "count(*) FILTER (WHERE cash_limited), count(DISTINCT trade_date) "

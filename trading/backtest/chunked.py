@@ -528,6 +528,8 @@ def run_windows(
             liquidations=liquidations,
             chunk_boundary=position < len(segments),
             target_override=override,
+            build_full_report=False,
+            build_snapshot=False,
         )
         if result.final_state is None:
             raise ResourceLimitError("调仓段执行没有返回可交接状态")

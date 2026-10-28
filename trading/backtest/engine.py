@@ -41,7 +41,7 @@ from backtest.allocation import (
     pending_carry,
     liquidity_retry_filled,
 )
-from backtest.attribution import build_report
+from backtest.attribution import build_report, industry_exposure_frame
 from backtest.config import MAX_ALLOCATION_ITERATIONS
 from backtest.costs import cost_model_summary, order_cost_frame
 from backtest.data import PRICE_ADJUST, MarketData
@@ -791,6 +791,8 @@ def run_backtest(
     target_override: tuple[pd.DataFrame, pd.DataFrame] | None = None,
     provider_state: ProviderState | None = None,
     shift_targets: bool = True,
+    build_full_report: bool = True,
+    build_snapshot: bool = True,
 ) -> BacktestResult:
     """执行一次 VectorBT 回测。
 
@@ -810,6 +812,9 @@ def run_backtest(
         provider_state: 上一遍账本给出的执行状态；仅状态提供者在现场生成信号时使用。
         shift_targets: 目标矩阵是否还需要平移一个交易日。逐日事件驱动模式传入已经
             对齐到执行日的目标时设为 False。
+        build_full_report: 是否在本段生成绩效指标和归因。因果分段执行只需明细，
+            由整段拼接后统一生成，避免每段重复计算。
+        build_snapshot: 是否在本段构造完整输入快照。分段执行由整段拼接阶段生成一次。
     """
     if not data.index.size:
         raise ExecutionError("回测数据为空")
@@ -1232,11 +1237,15 @@ def run_backtest(
     uses_position_state = bool(signal_info.get("uses_position_state", False))
     if uses_position_state:
         execution_metadata["provider_state_model"] = STATE_MODEL_VERSION
-    snapshot = build_input_snapshot(
-        strategy,
-        data.data_snapshot
-        if data.data_snapshot is not None
-        else data_snapshot_from_market_data(data),
+    snapshot = (
+        build_input_snapshot(
+            strategy,
+            data.data_snapshot
+            if data.data_snapshot is not None
+            else data_snapshot_from_market_data(data),
+        )
+        if build_snapshot
+        else None
     )
     metadata = {
         "strategy": strategy.to_dict(),
@@ -1255,8 +1264,8 @@ def run_backtest(
         "signal": signal_info,
         "execution": execution_metadata,
         "versions": data.versions,
-        "snapshot": snapshot.to_dict(),
-        "snapshot_id": snapshot.snapshot_id,
+        "snapshot": None if snapshot is None else snapshot.to_dict(),
+        "snapshot_id": None if snapshot is None else snapshot.snapshot_id,
         "execution_backend": "ledger",
         "cost_model": cost_model_summary(strategy.costs),
         "vectorbt_version": getattr(__import__("vectorbt"), "__version__", "unknown"),
@@ -1281,15 +1290,26 @@ def run_backtest(
             if code in final_carry.index
         ]
         final_carry[written_columns] = np.nan
-    report = build_report(
-        daily,
-        orders=orders,
-        holdings=holdings,
-        industry_l1=data.industry_l1,
-        industry_labels=data.industry_labels,
-        risk_free_rate=params.risk_free_rate,
-        impact_model=strategy.costs.impact_model,
-    )
+    if build_full_report:
+        report = build_report(
+            daily,
+            orders=orders,
+            holdings=holdings,
+            industry_l1=data.industry_l1,
+            industry_labels=data.industry_labels,
+            risk_free_rate=params.risk_free_rate,
+            impact_model=strategy.costs.impact_model,
+        )
+        metrics = report.metrics
+        industry_exposure = report.industry_exposure
+    else:
+        metrics = {}
+        industry_exposure = industry_exposure_frame(
+            daily,
+            holdings,
+            data.industry_l1,
+            data.industry_labels,
+        )
     return BacktestResult(
         portfolio=portfolio,
         daily=daily,
@@ -1298,12 +1318,12 @@ def run_backtest(
         holdings=holdings,
         target_weights=plan.target_percent,
         rejections=plan.rejection,
-        metrics=report.metrics,
+        metrics=metrics,
         metadata=metadata,
         liquidations=liquidation_records,
         allocations=plan.allocation,
         corporate_actions=action_records,
-        industry_exposure=report.industry_exposure,
+        industry_exposure=industry_exposure,
         final_state=ChunkState(
             cash=float(state_cash.iloc[-1]),
             shares=state_shares.iloc[-1].astype("float64"),
