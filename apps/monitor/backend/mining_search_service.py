@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from calculate.correlation import available_factors
 from common.paths import MINING_DB_FILE, MINING_DATA_DIR, DB_FILE, FACTOR_DIR
+from mining.analysis_tool_gateway import AnalysisToolGateway
 from mining.catalog import load_catalog
 from mining.errors import MiningContractError
 from mining.logging_conf import format_event, get_mining_logger
@@ -47,8 +48,17 @@ class MiningSearchWebService:
         manifest_file: Path | str = DEFAULT_DATA_MANIFEST,
     ) -> None:
         self.store = store or MiningV2Store(MINING_DB_FILE, MINING_DATA_DIR)
+        tools_enabled = os.environ.get(
+            "MINING_ANALYSIS_TOOLS_ENABLED",
+            "1",
+        ).strip().lower() not in {"0", "false", "no", "off"}
         self.orchestrator = orchestrator or MiningSearchOrchestrator(
             store=self.store,
+            analysis_tool_gateway=(
+                AnalysisToolGateway(store=self.store)
+                if tools_enabled
+                else None
+            ),
             db_file=db_file,
             factor_dir=factor_dir,
             manifest_file=manifest_file,
@@ -97,6 +107,21 @@ class MiningSearchWebService:
             },
             "worker_configured": bool(
                 os.environ.get("MINING_WORKER_URL", "").strip()
+            ),
+            "analysis_tools_enabled": (
+                getattr(self.orchestrator, "analysis_tool_gateway", None)
+                is not None
+            ),
+            "analysis_tool_catalog": (
+                list(
+                    getattr(
+                        self.orchestrator,
+                        "analysis_tool_gateway",
+                    ).catalog()
+                )
+                if getattr(self.orchestrator, "analysis_tool_gateway", None)
+                is not None
+                else []
             ),
         }
 

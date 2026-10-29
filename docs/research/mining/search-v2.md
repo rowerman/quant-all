@@ -36,6 +36,23 @@ Worker v2 使用独立 `mining_worker_v2` 协议和 `/v2/jobs`，只接收开发
 Worker 响应中的动作只是建议。逐轮编排接入后，预算、停止、分支和入围动作由确定性
 控制器决定，不能把选择期证据交给 Agent 或用于继续调参。
 
+## 受控分析工具
+
+M4 在 Worker v2 上增加工具感知的 `mining_worker_v3` 补充协议。每轮首次请求可以返回
+最多 4 个固定工具调用；主服务校验并执行后，以同一 turn 的一次 finalize 请求返回脱敏
+结果摘要，Worker 随后必须给出最终决策。没有工具需求时仍可直接返回最终响应，历史
+Worker v2 响应继续可读。
+
+首批工具为 `lookup_fields`、`lookup_operators`、`run_summary`、
+`candidate_evidence`、`candidate_correlation`、`candidate_ablation` 和
+`window_neighborhood`。工具没有 SQL、表名、路径、日期切片或任意代码参数，结果只来自
+当前运行的冻结开发期上下文。
+
+工具目录使用 `mining_analysis_tool_v1`；单次结果不超过 64 KiB，默认超时 5 秒。缓存
+键包含运行、上下文哈希、turn 请求哈希、候选哈希、工具版本和规范化参数，缓存只存在
+于同一运行；命中缓存也仍计一次工具调用。缓存和每次调用审计分别保存在
+`mining_v2.analysis_tool_cache` 与 `mining_v2.analysis_tool_audit`。
+
 ## 开发期证据
 
 `build_development_evidence()` 只接收当前假设、实验批次及其候选开发期报告。指标字段

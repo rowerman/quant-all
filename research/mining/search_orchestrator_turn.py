@@ -22,6 +22,12 @@ from mining.search_worker_client import (
     normalize_search_response,
     wait_for_search_response,
 )
+from mining.search_worker_client_v3 import (
+    generate_search_candidates_with_tools,
+    resume_search_candidates_with_tools,
+    wait_search_turn_response,
+)
+from mining.errors import WorkerResponseError
 from mining_worker.protocol_v2 import (
     WorkerSearchCandidate,
     WorkerSearchHypothesis,
@@ -93,19 +99,11 @@ class SearchTurnMixin:
                         "max_candidates": worker_request.max_candidates,
                     },
                 )
-                normalized = generate_search_candidates(
-                    self._worker(),
-                    worker_request,
-                    should_cancel=lambda: self.store.cancel_requested(
-                        run["run_id"]
-                    ),
-                    on_submitted=lambda job: self.store.append_event(
-                        run["run_id"],
-                        event_key=f"turn_{turn_index}_job_submitted",
-                        stage="searching",
-                        event_type="search_worker_submitted",
-                        payload={"turn_index": turn_index, "job_id": job.job_id},
-                    ),
+                normalized = self._generate_search_candidates(
+                    run=run,
+                    context=context,
+                    turn_index=turn_index,
+                    worker_request=worker_request,
                 )
                 parent_ids = self._parent_candidate_ids(
                     trace=trace,
@@ -139,35 +137,75 @@ class SearchTurnMixin:
             else:
                 job_event = events.get(f"turn_{turn_index}_job_submitted")
                 if job_event is not None:
-                    response = wait_for_search_response(
-                        self._worker(),
-                        str(job_event["payload"]["job_id"]),
-                        should_cancel=lambda: self.store.cancel_requested(
-                            run["run_id"]
-                        ),
-                    )
-                    normalized = normalize_search_response(
-                        worker_request,
-                        response,
-                        str(job_event["payload"]["job_id"]),
-                    )
+                    gateway = getattr(self, "analysis_tool_gateway", None)
+                    if gateway is None:
+                        response = wait_for_search_response(
+                            self._worker(),
+                            str(job_event["payload"]["job_id"]),
+                            should_cancel=lambda: self.store.cancel_requested(
+                                run["run_id"]
+                            ),
+                        )
+                        normalized = normalize_search_response(
+                            worker_request,
+                            response,
+                            str(job_event["payload"]["job_id"]),
+                        )
+                    else:
+                        tool_job = events.get(
+                            f"turn_{turn_index}_tool_job_submitted"
+                        )
+                        if tool_job is not None:
+                            response = wait_search_turn_response(
+                                self._worker(),
+                                str(tool_job["payload"]["job_id"]),
+                                should_cancel=lambda: self.store.cancel_requested(
+                                    run["run_id"]
+                                ),
+                            )
+                            if response.kind != "decision" or response.response is None:
+                                raise WorkerResponseError(
+                                    "恢复的 Worker v3 finalize 作业未返回最终决策"
+                                )
+                            normalized = normalize_search_response(
+                                worker_request,
+                                response.response,
+                                str(tool_job["payload"]["job_id"]),
+                            )
+                        else:
+                            normalized = resume_search_candidates_with_tools(
+                                self._worker(),
+                                worker_request,
+                                gateway,
+                                context=context,
+                                discover_job_id=str(
+                                    job_event["payload"]["job_id"]
+                                ),
+                                should_cancel=lambda: self.store.cancel_requested(
+                                    run["run_id"]
+                                ),
+                                on_submitted=lambda job, phase: (
+                                    self.store.append_event(
+                                        run["run_id"],
+                                        event_key=(
+                                            f"turn_{turn_index}_tool_job_submitted"
+                                        ),
+                                        stage="searching",
+                                        event_type="search_worker_submitted",
+                                        payload={
+                                            "turn_index": turn_index,
+                                            "job_id": job.job_id,
+                                            "phase": phase,
+                                        },
+                                    )
+                                ),
+                            )
                 else:
-                    normalized = generate_search_candidates(
-                        self._worker(),
-                        worker_request,
-                        should_cancel=lambda: self.store.cancel_requested(
-                            run["run_id"]
-                        ),
-                        on_submitted=lambda job: self.store.append_event(
-                            run["run_id"],
-                            event_key=f"turn_{turn_index}_job_submitted",
-                            stage="searching",
-                            event_type="search_worker_submitted",
-                            payload={
-                                "turn_index": turn_index,
-                                "job_id": job.job_id,
-                            },
-                        ),
+                    normalized = self._generate_search_candidates(
+                        run=run,
+                        context=context,
+                        turn_index=turn_index,
+                        worker_request=worker_request,
                     )
             for candidate in normalized.accepted:
                 self.store.record_candidate(
@@ -371,6 +409,54 @@ class SearchTurnMixin:
                 },
             )
             trace = self.store.get_search_trace(run["run_id"])
+
+    def _generate_search_candidates(
+        self,
+        *,
+        run: Mapping[str, Any],
+        context: Any,
+        turn_index: int,
+        worker_request: WorkerSearchRequest,
+    ):
+        """按运行配置选择旧 Worker 或工具补充 Worker。"""
+
+        gateway = getattr(self, "analysis_tool_gateway", None)
+        if gateway is None:
+            return generate_search_candidates(
+                self._worker(),
+                worker_request,
+                should_cancel=lambda: self.store.cancel_requested(run["run_id"]),
+                on_submitted=lambda job: self.store.append_event(
+                    run["run_id"],
+                    event_key=f"turn_{turn_index}_job_submitted",
+                    stage="searching",
+                    event_type="search_worker_submitted",
+                    payload={"turn_index": turn_index, "job_id": job.job_id},
+                ),
+            )
+
+        def on_submitted(job, phase: str) -> None:
+            suffix = "job_submitted" if phase == "discover" else "tool_job_submitted"
+            self.store.append_event(
+                run["run_id"],
+                event_key=f"turn_{turn_index}_{suffix}",
+                stage="searching",
+                event_type="search_worker_submitted",
+                payload={
+                    "turn_index": turn_index,
+                    "job_id": job.job_id,
+                    "phase": phase,
+                },
+            )
+
+        return generate_search_candidates_with_tools(
+            self._worker(),
+            worker_request,
+            gateway,
+            context=context,
+            should_cancel=lambda: self.store.cancel_requested(run["run_id"]),
+            on_submitted=on_submitted,
+        )
 
     def _current_hypothesis(
         self,

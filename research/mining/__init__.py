@@ -9,6 +9,13 @@ from mining.catalog import (
     render_catalog_markdown,
     validate_catalog,
 )
+from mining.analysis_tool_contracts import (
+    ANALYSIS_TOOL_SCHEMA_VERSION,
+    AnalysisToolRequest,
+    AnalysisToolResult,
+    tool_catalog,
+)
+from mining.analysis_tool_gateway import AnalysisToolGateway
 from mining.candidate_evaluator import evaluate_candidate
 from mining.candidate_batch import (
     CandidateBatchDiagnostics,
@@ -203,9 +210,15 @@ from mining.search_worker_client import (
     NormalizedSearchWorkerResult,
     generate_search_candidates,
 )
+from mining.search_worker_client_v3 import (
+    HttpSearchTurnWorkerClient,
+    MockSearchTurnWorkerClient,
+    generate_search_candidates_with_tools,
+)
 
 __all__ = [
     "DATA_VERSION",
+    "ANALYSIS_TOOL_SCHEMA_VERSION",
     "FULL_EVAL_END",
     "FULL_EVAL_START",
     "HOLDOUT_END",
@@ -229,6 +242,9 @@ __all__ = [
     "SEARCH_WINDOW_ROLES",
     "UNIVERSE",
     "ApprovalDecision",
+    "AnalysisToolGateway",
+    "AnalysisToolRequest",
+    "AnalysisToolResult",
     "CatalogValidation",
     "CandidateEvaluationInput",
     "CandidateEvaluationResult",
@@ -366,8 +382,12 @@ __all__ = [
     "WorkerRejection",
     "generate_worker_candidates",
     "HttpSearchWorkerClient",
+    "HttpSearchTurnWorkerClient",
     "MockSearchWorkerClient",
+    "MockSearchTurnWorkerClient",
     "NormalizedSearchWorkerResult",
     "generate_search_candidates",
+    "generate_search_candidates_with_tools",
+    "tool_catalog",
     "migrate_v1_to_v2",
 ]

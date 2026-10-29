@@ -2,6 +2,7 @@
 
 from mining.storage_v2_base import V2StorageBase
 from mining.storage_v2_legacy import V2LegacyStoreMixin
+from mining.storage_v2_tools import V2AnalysisToolStoreMixin
 from mining.storage_v2_control import V2SearchControlMixin
 from mining.storage_v2_evaluations import V2EvaluationStoreMixin
 from mining.storage_v2_runs import V2RunStoreMixin
@@ -16,6 +17,7 @@ class MiningV2Store(
     V2TraceStoreMixin,
     V2TrialStoreMixin,
     V2EvaluationStoreMixin,
+    V2AnalysisToolStoreMixin,
     V2TrialQueryMixin,
     V2LegacyStoreMixin,
     V2StorageBase,

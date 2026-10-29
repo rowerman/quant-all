@@ -8,6 +8,7 @@ from threading import RLock
 from typing import Any, Callable, Mapping
 
 from common.paths import DB_FILE, FACTOR_DIR
+from mining.analysis_tool_gateway import AnalysisToolGateway
 from mining.candidate_batch import materialize_candidate_batch
 from mining.errors import MiningStateError
 from mining.logging_conf import format_event, get_mining_logger
@@ -32,6 +33,7 @@ from mining.search_worker_client import (
     HttpSearchWorkerClient,
     SearchWorkerClient,
 )
+from mining.search_worker_client_v3 import HttpSearchTurnWorkerClient
 from mining.snapshot import DEFAULT_DATA_MANIFEST, assert_context_snapshot
 from mining.storage_v2 import MiningV2Store
 
@@ -50,6 +52,7 @@ class MiningSearchOrchestrator(
         *,
         store: MiningV2Store | None = None,
         worker: SearchWorkerClient | None = None,
+        analysis_tool_gateway: AnalysisToolGateway | None = None,
         materializer: Callable[..., Any] = materialize_candidate_batch,
         development_evaluator: Callable[..., Any] = evaluate_development,
         selection_evaluator: Callable[..., Any] = evaluate_selection,
@@ -65,6 +68,7 @@ class MiningSearchOrchestrator(
     ) -> None:
         self.store = store or MiningV2Store()
         self._worker_client_value = worker
+        self.analysis_tool_gateway = analysis_tool_gateway
         self._materializer = materializer
         self._development_evaluator = development_evaluator
         self._selection_evaluator = selection_evaluator
@@ -249,7 +253,11 @@ class MiningSearchOrchestrator(
 
     def _worker(self) -> SearchWorkerClient:
         if self._worker_client_value is None:
-            self._worker_client_value = HttpSearchWorkerClient.from_environment()
+            self._worker_client_value = (
+                HttpSearchTurnWorkerClient.from_environment()
+                if self.analysis_tool_gateway is not None
+                else HttpSearchWorkerClient.from_environment()
+            )
         return self._worker_client_value
 
     def _context(self, run_id: str) -> FrozenSearchContext:

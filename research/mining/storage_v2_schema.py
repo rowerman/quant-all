@@ -175,6 +175,42 @@ V2_DDL = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS mining_v2.analysis_tool_cache (
+        run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
+        cache_key VARCHAR NOT NULL,
+        context_hash VARCHAR NOT NULL,
+        turn_request_hash VARCHAR NOT NULL,
+        candidate_hash VARCHAR NOT NULL,
+        tool_name VARCHAR NOT NULL,
+        tool_version VARCHAR NOT NULL,
+        request_hash VARCHAR NOT NULL,
+        result_hash VARCHAR NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at VARCHAR NOT NULL,
+        PRIMARY KEY (run_id, cache_key)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mining_v2.analysis_tool_audit (
+        run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
+        turn_index INTEGER NOT NULL,
+        call_index INTEGER NOT NULL,
+        audit_id VARCHAR NOT NULL UNIQUE,
+        cache_key VARCHAR NOT NULL,
+        tool_name VARCHAR NOT NULL,
+        tool_version VARCHAR NOT NULL,
+        candidate_hash VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        cache_hit BOOLEAN NOT NULL,
+        duration_ms DOUBLE NOT NULL,
+        error_code VARCHAR,
+        error_message VARCHAR,
+        result_hash VARCHAR,
+        created_at VARCHAR NOT NULL,
+        PRIMARY KEY (run_id, turn_index, call_index)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS mining_v2.search_decision (
         run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
         turn_index INTEGER NOT NULL,
@@ -323,6 +359,10 @@ V2_DDL = (
     """
     CREATE INDEX IF NOT EXISTS idx_mining_v2_evaluation_candidate
     ON mining_v2.evaluation_evidence(run_id, candidate_id, stage)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_mining_v2_tool_audit
+    ON mining_v2.analysis_tool_audit(run_id, turn_index, tool_name)
     """,
 )
 

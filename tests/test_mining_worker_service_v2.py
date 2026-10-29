@@ -12,6 +12,11 @@ from mining_worker.protocol_v2 import (
     WorkerSearchRequest,
     WorkerSearchResponse,
 )
+from mining_worker.protocol_v3 import (
+    WorkerAnalysisToolCall,
+    WorkerSearchTurnRequest,
+    WorkerSearchTurnResponse,
+)
 from mining_worker.service import create_app
 
 TOKEN = "v" * 48
@@ -117,6 +122,27 @@ class FakeV1Generator(FakeSearchGenerator):
         raise AssertionError("v2 测试不应调用 v1 生成器")
 
 
+class FakeSearchTurnGenerator:
+    def health(self):
+        return {"status": "ready", "mode": "test"}
+
+    def generate(self, request, *, timeout_seconds):
+        return WorkerSearchTurnResponse(
+            request_id=request.request_id,
+            kind="tool_batch",
+            tool_calls=(
+                WorkerAnalysisToolCall(
+                    call_id="field-1",
+                    tool_name="lookup_fields",
+                    arguments={"query": "ret"},
+                ),
+            ),
+        )
+
+    def cancel(self, request_id):
+        return None
+
+
 def _headers():
     return {"Authorization": f"Bearer {TOKEN}"}
 
@@ -181,3 +207,44 @@ def test_v2_job_rejects_private_window_before_persisting(tmp_path: Path):
         )
     assert response.status_code == 400
     assert response.get_json()["error_code"] == "MINING-118"
+
+
+def test_v3_job_returns_tool_batch_without_v1_or_v2_fallback(tmp_path: Path):
+    app = create_app(
+        generator=FakeV1Generator(),
+        search_generator=FakeSearchGenerator(),
+        search_turn_generator=FakeSearchTurnGenerator(),
+        state_dir=tmp_path,
+        token=TOKEN,
+        job_timeout=1,
+    )
+    request = WorkerSearchTurnRequest(
+        request_id="search-round-1.tools",
+        phase="discover",
+        continuation_index=0,
+        base_request=_request(),
+        tool_catalog=(
+            {
+                "name": "lookup_fields",
+                "version": "1",
+                "description": "字段查询",
+                "required_arguments": ["query"],
+                "optional_arguments": ["limit"],
+                "maximum_result_bytes": 65536,
+            },
+        ),
+    )
+    with app.test_client() as client:
+        health = client.get("/health")
+        assert "mining_worker_v3" in health.get_json()["protocol_versions"]
+        created = client.post(
+            "/v3/jobs",
+            json=request.to_dict(),
+            headers=_headers(),
+        )
+        assert created.status_code == 202
+        payload = _wait(client, request.job_id)
+
+    assert payload["status"] == "succeeded"
+    assert payload["result"]["kind"] == "tool_batch"
+    assert payload["result"]["tool_calls"][0]["tool_name"] == "lookup_fields"

@@ -208,3 +208,45 @@ class MiningMigrationError(MiningError):
 
     code = "MINING-126"
     status = 503
+
+
+class AnalysisToolNotFoundError(MiningError):
+    """请求了未登记的分析工具。"""
+
+    code = "MINING-127"
+    status = 400
+
+
+class AnalysisToolArgumentError(MiningError):
+    """工具参数缺失、未知或超过限制。"""
+
+    code = "MINING-128"
+    status = 400
+
+
+class AnalysisToolVisibilityError(MiningError):
+    """工具请求尝试访问当前角色不可见的数据。"""
+
+    code = "MINING-129"
+    status = 403
+
+
+class AnalysisToolTimeoutError(MiningError):
+    """工具执行超时或被取消。"""
+
+    code = "MINING-130"
+    status = 504
+
+
+class AnalysisToolResultError(MiningError):
+    """工具结果为空、损坏、无法计算或超过大小限制。"""
+
+    code = "MINING-131"
+    status = 422
+
+
+class AnalysisToolExecutionError(MiningError):
+    """工具执行过程中发生业务失败。"""
+
+    code = "MINING-132"
+    status = 500
