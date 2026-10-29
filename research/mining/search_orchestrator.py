@@ -20,6 +20,10 @@ from mining.search_evaluation_adapter import (
     evaluate_selection,
 )
 from mining.search_orchestrator_pipeline import SearchPipelineMixin
+from mining.search_portfolio import (
+    PortfolioSelectionResult,
+    select_portfolio_finalists,
+)
 from mining.search_orchestrator_evidence import SearchEvidenceMixin
 from mining.search_orchestrator_turn import SearchTurnMixin
 from mining.search_progress import SearchProgress, progress_for_search
@@ -51,6 +55,9 @@ class MiningSearchOrchestrator(
         selection_evaluator: Callable[..., Any] = evaluate_selection,
         final_evaluator: Callable[..., Any] = evaluate_final,
         holdout_evaluator: Callable[..., Any] = evaluate_holdout,
+        portfolio_selector: Callable[..., PortfolioSelectionResult] = (
+            select_portfolio_finalists
+        ),
         snapshot_check: Callable[..., None] = assert_context_snapshot,
         db_file: Path | str = DB_FILE,
         factor_dir: Path | str = FACTOR_DIR,
@@ -63,6 +70,7 @@ class MiningSearchOrchestrator(
         self._selection_evaluator = selection_evaluator
         self._final_evaluator = final_evaluator
         self._holdout_evaluator = holdout_evaluator
+        self._portfolio_selector = portfolio_selector
         self._snapshot_check = snapshot_check
         self.db_file = Path(db_file)
         self.factor_dir = Path(factor_dir)

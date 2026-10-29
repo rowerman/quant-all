@@ -28,6 +28,9 @@
     "min_coverage": 0.3,
     "max_failure_rate": 0.75,
     "min_quality_checks_for_failure_stop": 4,
+    "correlation_cluster_threshold": 0.9,
+    "stability_variant_limit": 2,
+    "stability_rank_ic_ratio_floor": 0.5,
     "schema_version": "mining_search_control_v1"
   }
 }

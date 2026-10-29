@@ -73,6 +73,9 @@ def test_default_search_config_matches_frozen_windows_and_budget():
     }
     assert config.budget.max_search_turns == 6
     assert config.budget.max_candidates_per_run == 24
+    assert config.control_policy.correlation_cluster_threshold == 0.90
+    assert config.control_policy.stability_variant_limit == 2
+    assert config.control_policy.stability_rank_ic_ratio_floor == 0.50
     assert SearchConfig.from_dict(config.to_dict()) == config
     assert MINING_SEARCH_CONFIG_FILE == Path("configs/mining/search.json").resolve()
 

@@ -152,6 +152,16 @@ from mining.search_stability_contracts import (
     WindowVariantObservation,
     build_stability_report,
 )
+from mining.search_portfolio import (
+    PortfolioCandidate,
+    PortfolioSelectionResult,
+    select_portfolio_finalists,
+)
+from mining.search_research_quality import (
+    RESEARCH_QUALITY_STATUSES,
+    ResearchQualityConclusion,
+    evaluate_research_quality,
+)
 from mining.search_states import (
     SEARCH_RUN_ACTIVE_STATUSES,
     SEARCH_RUN_STATUSES,
@@ -254,6 +264,12 @@ __all__ = [
     "WindowVariant",
     "WindowVariantObservation",
     "build_stability_report",
+    "PortfolioCandidate",
+    "PortfolioSelectionResult",
+    "select_portfolio_finalists",
+    "RESEARCH_QUALITY_STATUSES",
+    "ResearchQualityConclusion",
+    "evaluate_research_quality",
     "SEARCH_RUN_ACTIVE_STATUSES",
     "SEARCH_RUN_STATUSES",
     "SEARCH_RUN_TERMINAL_STATUSES",

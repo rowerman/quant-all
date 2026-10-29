@@ -18,6 +18,7 @@ from mining.evaluation_contract import (
 from mining.search_context import FrozenSearchContext
 from mining.search_budget import SearchBudget
 from mining.search_orchestrator import MiningSearchOrchestrator
+from mining.search_portfolio import PortfolioSelectionResult
 from mining.search_run import SearchRunRequest
 from mining.storage_v2 import MiningV2Store
 from mining_worker.protocol import WorkerCandidateDraft, WorkerJobView
@@ -276,6 +277,20 @@ class FakeMaterializer:
         return SimpleNamespace(failures=())
 
 
+class FakePortfolioSelector:
+    """让编排测试不依赖真实候选价格产物。"""
+
+    def __call__(self, scorecards, policy, *, max_finalists):
+        finalists = tuple(
+            sorted(item.candidate_id for item in scorecards)[:max_finalists]
+        )
+        return PortfolioSelectionResult(
+            candidates=(),
+            fronts=(finalists,),
+            finalists=finalists,
+        )
+
+
 def _orchestrator(tmp_path: Path):
     store = MiningV2Store(
         tmp_path / "factor_mining.duckdb",
@@ -290,6 +305,7 @@ def _orchestrator(tmp_path: Path):
         selection_evaluator=FakeSelectionEvaluator(),
         final_evaluator=FakeFinalEvaluator(),
         holdout_evaluator=FakeHoldoutEvaluator(),
+        portfolio_selector=FakePortfolioSelector(),
         snapshot_check=lambda *args, **kwargs: None,
     )
     return orchestrator, store, worker
@@ -430,6 +446,7 @@ def test_single_candidate_failure_does_not_abort_turn(tmp_path: Path):
         selection_evaluator=FakeSelectionEvaluator(),
         final_evaluator=FakeFinalEvaluator(),
         holdout_evaluator=FakeHoldoutEvaluator(),
+        portfolio_selector=FakePortfolioSelector(),
         snapshot_check=lambda *args, **kwargs: None,
     )
     context = FrozenSearchContext(
@@ -499,6 +516,7 @@ def test_interrupted_run_resumes_from_completed_turn_without_replaying(
         selection_evaluator=FakeSelectionEvaluator(),
         final_evaluator=FakeFinalEvaluator(),
         holdout_evaluator=FakeHoldoutEvaluator(),
+        portfolio_selector=FakePortfolioSelector(),
         snapshot_check=lambda *args, **kwargs: None,
     )
     try:
@@ -524,6 +542,7 @@ def test_interrupted_run_resumes_from_completed_turn_without_replaying(
         selection_evaluator=FakeSelectionEvaluator(),
         final_evaluator=FakeFinalEvaluator(),
         holdout_evaluator=FakeHoldoutEvaluator(),
+        portfolio_selector=FakePortfolioSelector(),
         snapshot_check=lambda *args, **kwargs: None,
     )
     try:
@@ -782,6 +801,7 @@ def test_no_improvement_threshold_switches_branch(tmp_path: Path):
         selection_evaluator=FakeSelectionEvaluator(),
         final_evaluator=FakeFinalEvaluator(),
         holdout_evaluator=FakeHoldoutEvaluator(),
+        portfolio_selector=FakePortfolioSelector(),
         snapshot_check=lambda *args, **kwargs: None,
     )
     context = FrozenSearchContext(

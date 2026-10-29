@@ -30,6 +30,9 @@ class SearchControlPolicy:
     min_coverage: float = 0.30
     max_failure_rate: float = 0.75
     min_quality_checks_for_failure_stop: int = 4
+    correlation_cluster_threshold: float = 0.90
+    stability_variant_limit: int = 2
+    stability_rank_ic_ratio_floor: float = 0.50
     schema_version: str = SEARCH_CONTROL_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -44,6 +47,8 @@ class SearchControlPolicy:
             "min_year_sign_consistency",
             "min_coverage",
             "max_failure_rate",
+            "correlation_cluster_threshold",
+            "stability_rank_ic_ratio_floor",
         ):
             value = getattr(self, name)
             if (
@@ -64,18 +69,38 @@ class SearchControlPolicy:
                 maximum=24,
             ),
         )
+        object.__setattr__(
+            self,
+            "stability_variant_limit",
+            bounded_integer(
+                self.stability_variant_limit,
+                "stability_variant_limit",
+                minimum=1,
+                maximum=2,
+            ),
+        )
 
     @classmethod
     def from_dict(cls, value: Any) -> SearchControlPolicy:
-        """严格解析冻结控制策略。"""
+        """解析冻结控制策略，并为旧上下文补齐新增默认值。"""
 
-        return cls(
-            **strict_fields(
-                value,
-                "search_control_policy",
-                set(cls.__dataclass_fields__),
+        if not isinstance(value, Mapping):
+            raise MiningContractError("search_control_policy 必须是对象")
+        fields = set(cls.__dataclass_fields__)
+        unknown = set(value) - fields
+        if unknown:
+            raise MiningContractError(
+                f"search_control_policy 包含未知字段：{sorted(unknown)}"
             )
-        )
+        defaults = cls()
+        payload = {
+            **{
+                name: getattr(defaults, name)
+                for name in cls.__dataclass_fields__
+            },
+            **dict(value),
+        }
+        return cls(**strict_fields(payload, "search_control_policy", fields))
 
     def to_dict(self) -> dict[str, Any]:
         """返回稳定持久化字典。"""

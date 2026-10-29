@@ -138,6 +138,7 @@ class CandidateScoreCard:
     decision_stage: str | None
     metrics: Mapping[str, Any]
     metrics_by_stage: Mapping[str, Any]
+    evidence_status_by_stage: Mapping[str, str]
     analysis_by_stage: Mapping[str, Any]
     gate_passed: bool | None
     failure_reasons: tuple[str, ...]
@@ -173,6 +174,7 @@ class CandidateScoreCard:
             "decision_stage": self.decision_stage,
             "metrics": self.metrics,
             "metrics_by_stage": self.metrics_by_stage,
+            "evidence_status_by_stage": self.evidence_status_by_stage,
             "analysis_by_stage": self.analysis_by_stage,
             "gate_passed": self.gate_passed,
             "failure_reasons": list(self.failure_reasons),
@@ -239,6 +241,11 @@ def build_candidate_scorecard(
         for item in evidence
         if item.stage not in _CORE_EVALUATION_STAGES
     }
+    evidence_status_by_stage = {
+        item.stage: item.status
+        for item in evidence
+        if item.stage in _CORE_EVALUATION_STAGES
+    }
     stage_priority = ("full", "selection", "development", "technical", "holdout")
     decision_stage = next(
         (stage for stage in stage_priority if stage in by_stage),
@@ -282,6 +289,7 @@ def build_candidate_scorecard(
         decision_stage=decision_stage,
         metrics=metrics,
         metrics_by_stage=by_stage,
+        evidence_status_by_stage=evidence_status_by_stage,
         analysis_by_stage=analysis_by_stage,
         gate_passed=(technical.status == "passed" if technical else None),
         failure_reasons=failure_reasons,

@@ -148,6 +148,7 @@ def build_stability_report(
     plan: VariantPlan,
     base_rank_ic: float | None,
     variants: tuple[WindowVariantObservation, ...],
+    rank_ic_ratio_floor: float = STABILITY_RANK_IC_RATIO_FLOOR,
 ) -> StabilityReport:
     """按方向一致率和 RankIC 保留比例生成稳定性结论。"""
 
@@ -186,7 +187,7 @@ def build_stability_report(
     elif ratio is None:
         status = "unstable"
         reason = "基础 RankIC 为零，无法确认邻域保留比例"
-    elif ratio < STABILITY_RANK_IC_RATIO_FLOOR:
+    elif ratio < rank_ic_ratio_floor:
         status = "unstable"
         reason = "变体 |RankIC| 中位数低于基础版本的 50%"
     else:

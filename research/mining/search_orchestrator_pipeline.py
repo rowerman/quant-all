@@ -14,6 +14,7 @@ from mining.search_evaluation_adapter import (
     evaluate_holdout,
     evaluate_selection,
 )
+from mining.search_portfolio import select_portfolio_finalists
 from mining.search_selection_diagnostics import (
     SELECTION_DIAGNOSTICS_STAGE,
     CandidateCorrelationReport,
@@ -27,11 +28,10 @@ from mining.search_selection_diagnostics import (
 from mining.search_orchestrator_stability import SearchStabilityMixin
 from mining.search_orchestrator_support import (
     candidate_from_v2_record,
-    candidate_score_material,
-    candidate_sort_key,
     evaluation_evidence,
     trial_record,
 )
+from mining.search_scorecard import build_run_scorecards
 
 
 class SearchPipelineMixin(SearchStabilityMixin):
@@ -42,7 +42,6 @@ class SearchPipelineMixin(SearchStabilityMixin):
         candidates = [
             item for item in trace["candidates"] if item["status"] == "screening"
         ]
-        ranked: list[tuple[tuple[Any, ...], str]] = []
         rejected: set[str] = set()
         selected_results: dict[
             str, tuple[Mapping[str, Any], CandidateDefinition, Any]
@@ -81,27 +80,27 @@ class SearchPipelineMixin(SearchStabilityMixin):
                 candidate,
                 result,
             )
-            ranked.append(
-                (
-                    candidate_sort_key(candidate_score_material(quick)),
-                    candidate.candidate_id,
-                )
-            )
-        self._record_selection_diagnostics(
-            run=run,
-            context=context,
-            selected_results=selected_results,
-        )
         self._record_stability_reports(
             run=run,
             context=context,
             selected_results=selected_results,
         )
-        ranked.sort(key=lambda item: item[0])
-        finalists = [
-            candidate_id
-            for _, candidate_id in ranked[: context.budget.max_full_evaluations]
-        ]
+        self._record_selection_diagnostics(
+            run=run,
+            context=context,
+            selected_results=selected_results,
+        )
+        scorecards = tuple(
+            card
+            for card in build_run_scorecards(self.store, run["run_id"])
+            if card.candidate_id in selected_results
+        )
+        portfolio = self._portfolio_selector(
+            scorecards,
+            context.control_policy,
+            max_finalists=context.budget.max_full_evaluations,
+        )
+        finalists = list(portfolio.finalists)
         finalist_set = set(finalists)
         for item in candidates:
             if item["candidate_id"] in finalist_set:
@@ -126,7 +125,10 @@ class SearchPipelineMixin(SearchStabilityMixin):
             event_key="finalists_selected",
             stage="selecting",
             event_type="finalists_selected",
-            payload={"candidate_ids": finalists},
+            payload={
+                "candidate_ids": finalists,
+                "portfolio": portfolio.to_dict(),
+            },
         )
         self.store.transition_search_run(
             run["run_id"],
@@ -197,6 +199,7 @@ class SearchPipelineMixin(SearchStabilityMixin):
             values=values,
             min_stocks=policy.correlation_min_stocks,
             min_days=policy.correlation_min_days,
+            threshold=context.control_policy.correlation_cluster_threshold,
         )
         for candidate_id, (_, candidate, result) in pending.items():
             correlation = correlations.get(candidate_id)
@@ -428,7 +431,7 @@ class SearchPipelineMixin(SearchStabilityMixin):
         stage: str,
         trial_key: str,
     ) -> None:
-        last_turn = trace["turns"][-1]
+        source = self._candidate_source(trace, candidate_id)
         self.store.transition_candidate(
             run["run_id"],
             candidate_id,
@@ -437,9 +440,9 @@ class SearchPipelineMixin(SearchStabilityMixin):
                 run_id=run["run_id"],
                 trial_key=trial_key,
                 kind="rejected",
-                turn_index=int(last_turn["turn_index"]),
-                hypothesis_id=str(last_turn["hypothesis_id"]),
-                batch_id=str(last_turn["experiment_batch_id"]),
+                turn_index=int(source["turn_index"]),
+                hypothesis_id=str(source["hypothesis_id"]),
+                batch_id=str(source["batch_id"]),
                 candidate_id=candidate_id,
                 reason_code=(
                     "MINING-106"

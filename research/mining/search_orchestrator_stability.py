@@ -53,7 +53,10 @@ class SearchStabilityMixin:
                 if development_rows
                 else None
             )
-            plan = generate_primary_window_variants(candidate)
+            plan = generate_primary_window_variants(
+                candidate,
+                limit=context.control_policy.stability_variant_limit,
+            )
             observations: list[WindowVariantObservation] = []
             for variant in plan.variants:
                 stage_root = (
@@ -115,6 +118,9 @@ class SearchStabilityMixin:
                 plan=plan,
                 base_rank_ic=base_rank_ic,
                 variants=tuple(observations),
+                rank_ic_ratio_floor=(
+                    context.control_policy.stability_rank_ic_ratio_floor
+                ),
             )
             self.store.record_evaluation_evidence(
                 report.to_evaluation_evidence()

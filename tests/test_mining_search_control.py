@@ -163,5 +163,11 @@ def test_control_policy_validation_and_hash():
 
     assert SearchControlPolicy.from_dict(policy.to_dict()) == policy
     assert len(policy.policy_hash) == 64
+    legacy = policy.to_dict()
+    legacy.pop("correlation_cluster_threshold")
+    assert (
+        SearchControlPolicy.from_dict(legacy).correlation_cluster_threshold
+        == 0.90
+    )
     with pytest.raises(Exception, match="min_rank_ic"):
         SearchControlPolicy(min_rank_ic=-0.1)

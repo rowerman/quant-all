@@ -70,6 +70,8 @@ def _replace_argument(
 
 def generate_primary_window_variants(
     candidate: CandidateDefinition,
+    *,
+    limit: int = STABILITY_VARIANT_LIMIT,
 ) -> VariantPlan:
     """为一个确定的整数窗口生成最多两个相邻变体。"""
 
@@ -89,7 +91,7 @@ def generate_primary_window_variants(
             value
             for value in (lower, upper)
             if value != window
-        )[:STABILITY_VARIANT_LIMIT]
+        )[: min(limit, STABILITY_VARIANT_LIMIT)]
         if options:
             selected = (path, argument_index, window, options)
             break
