@@ -35,9 +35,10 @@ packages = [
   "backtest.strategies",
   "backend",
   "mining",
+  "mining_sandbox",
   "mining_worker",
 ]
-package-dir = {common = "core/common", quant = "core/data/quant", scripts = "core/data/scripts", factors = "core/factors", kernels = "core/kernels", alpha = "research/modeling/alpha", calculate = "research/evaluation/calculate", backtest = "trading/backtest", backend = "apps/monitor/backend", mining = "research/mining", mining_worker = "research/mining_worker"}
+package-dir = {common = "core/common", quant = "core/data/quant", scripts = "core/data/scripts", factors = "core/factors", kernels = "core/kernels", alpha = "research/modeling/alpha", calculate = "research/evaluation/calculate", backtest = "trading/backtest", backend = "apps/monitor/backend", mining = "research/mining", mining_sandbox = "research/mining_sandbox", mining_worker = "research/mining_worker"}
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

@@ -34,6 +34,8 @@ MINING_EVALUATION_FILE = CONFIG_DIR / "mining" / "evaluation.json"
 MINING_WORKER_CONFIG_FILE = CONFIG_DIR / "mining" / "worker.json"
 MINING_ORCHESTRATOR_FILE = CONFIG_DIR / "mining" / "orchestrator.json"
 MINING_SEARCH_CONFIG_FILE = CONFIG_DIR / "mining" / "search.json"
+MINING_SANDBOX_CONFIG_FILE = CONFIG_DIR / "mining" / "sandbox.json"
+MINING_SANDBOX_DATA_DIR = DATA_DIR / "mining_sandbox"
 
 
 def log_root_for(module_name: str) -> Path:
@@ -48,6 +50,10 @@ def log_root_for(module_name: str) -> Path:
         return LOGS_DIR / "research" / "modeling"
     if module_name == "mining" or module_name.startswith("mining."):
         return LOGS_DIR / "research" / "mining"
+    if module_name == "mining_sandbox" or module_name.startswith(
+        "mining_sandbox."
+    ):
+        return LOGS_DIR / "research" / "mining_sandbox"
     if module_name.startswith(("scripts.build_alpha", "build_alpha")):
         return LOGS_DIR / "research" / "modeling"
     if module_name.startswith(("scripts.build_factors", "build_factors")):
@@ -70,11 +76,13 @@ def ensure_layout_dirs() -> None:
         MODEL_DATA_DIR,
         MINING_DATA_DIR,
         MINING_CACHE_DIR,
+        MINING_SANDBOX_DATA_DIR,
         LOGS_DIR / "core" / "data",
         LOGS_DIR / "core" / "factors",
         LOGS_DIR / "research" / "modeling",
         LOGS_DIR / "research" / "evaluation",
         LOGS_DIR / "research" / "mining",
+        LOGS_DIR / "research" / "mining_sandbox",
         LOGS_DIR / "trading" / "backtest",
         LOGS_DIR / "apps" / "monitor",
     ):

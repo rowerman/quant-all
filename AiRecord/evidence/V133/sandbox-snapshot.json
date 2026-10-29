@@ -1,0 +1,31 @@
+{
+  "context_hash": "a80c99295e8c5268860acbb9ff5b2b7bccdb1fc24d187ecca6de18be8b9c364e",
+  "end_date": "2019-12-31",
+  "image_id": "sha256:2be6d64ac3a96391d8afb67214ce6c2135f2e7b25a43b20643f4dd3fcee6f9e8",
+  "image_size_bytes": 1410612516,
+  "manifest_hash": "a52227aafc54df39068ae4038a1931f769d26536f58e7f9cdc4259a9393c4369",
+  "output": "data/mining_sandbox/snapshots/a80c99295e8c5268",
+  "reused": true,
+  "row_count": 5709826,
+  "start_date": "2012-01-01",
+  "total_bytes": 354902717,
+  "qlib_version": "0.9.7",
+  "calendar_days": 1945,
+  "instrument_count": 3798,
+  "container_read_check": {
+    "network": "none",
+    "read_only_root": true,
+    "user": "65532:65532",
+    "sample": {
+      "instrument": "SH600000",
+      "dates": [
+        "2019-12-30",
+        "2019-12-31"
+      ],
+      "close": [
+        156.89076232910156,
+        157.27218627929688
+      ]
+    }
+  }
+}

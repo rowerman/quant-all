@@ -1,0 +1,16 @@
+{
+  "schema_version": "mining_sandbox_v1",
+  "enabled": false,
+  "image": "quant-mining-sandbox:s5",
+  "timeout_seconds": 120,
+  "cpu_limit": 2,
+  "memory_mb": 2048,
+  "pids_limit": 64,
+  "workspace_mb": 512,
+  "output_mb": 10,
+  "network": false,
+  "read_only_root": true,
+  "user": "65532:65532",
+  "snapshot_root": "data/mining_sandbox/snapshots",
+  "workspace_root": "data/mining_sandbox/work"
+}
