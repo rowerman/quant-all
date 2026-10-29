@@ -206,16 +206,40 @@ def generate_search_candidates(
     job = client.submit(request)
     if on_submitted is not None:
         on_submitted(job)
+    response = wait_for_search_response(
+        client,
+        job.job_id,
+        should_cancel=should_cancel,
+    )
+    return normalize_search_response(request, response, job.job_id)
+
+
+def wait_for_search_response(
+    client: SearchWorkerClient,
+    job_id: str,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> WorkerSearchResponse:
+    """等待或读取一个已提交 Worker 作业的严格响应。"""
+
     if isinstance(client, HttpSearchWorkerClient):
-        response = client.wait(job.job_id, should_cancel=should_cancel)
-    else:
-        current = client.get_job(job.job_id)
-        if current.status != "succeeded" or current.result is None:
-            raise WorkerResponseError("Mock Search Worker 未返回成功结果")
-        try:
-            response = WorkerSearchResponse.from_dict(current.result)
-        except WorkerProtocolError as exc:
-            raise WorkerResponseError(f"Mock Search Worker 响应非法：{exc}") from exc
+        return client.wait(job_id, should_cancel=should_cancel)
+    current = client.get_job(job_id)
+    if current.status != "succeeded" or current.result is None:
+        raise WorkerResponseError("Mock Search Worker 未返回成功结果")
+    try:
+        return WorkerSearchResponse.from_dict(current.result)
+    except WorkerProtocolError as exc:
+        raise WorkerResponseError(f"Mock Search Worker 响应非法：{exc}") from exc
+
+
+def normalize_search_response(
+    request: WorkerSearchRequest,
+    response: WorkerSearchResponse,
+    job_id: str,
+) -> NormalizedSearchWorkerResult:
+    """校验并规范化一个已有的 Worker v2 响应。"""
+
     if response.decision.action not in request.allowed_actions:
         raise WorkerResponseError("Worker 返回了本轮不允许的搜索动作")
     if len(response.candidates) > request.max_candidates:
@@ -253,7 +277,7 @@ def generate_search_candidates(
         format_event(
             {
                 "event": "search_worker_candidates_validated",
-                "job_id": job.job_id,
+                "job_id": job_id,
                 "run_id": request.run_id,
                 "turn_index": request.turn_index,
                 "accepted": len(accepted),
@@ -263,7 +287,7 @@ def generate_search_candidates(
         )
     )
     return NormalizedSearchWorkerResult(
-        job_id=job.job_id,
+        job_id=job_id,
         decision=response.decision,
         next_hypothesis=response.next_hypothesis,
         accepted=tuple(accepted),

@@ -78,7 +78,10 @@ class V2TurnStoreMixin:
                             reused = True
                         else:
                             self._ensure_turn_budget_conn(conn, hypothesis)
-                            self._insert_hypothesis_conn(conn, hypothesis)
+                            inserted_hypothesis = self._insert_hypothesis_conn(
+                                conn,
+                                hypothesis,
+                            )
                             self._insert_batch_conn(conn, batch)
                             now = utc_now_iso()
                             conn.execute(
@@ -98,14 +101,15 @@ class V2TurnStoreMixin:
                                     now,
                                 ],
                             )
-                            self._append_trace_conn(
-                                conn,
-                                run_id,
-                                "hypothesis",
-                                hypothesis.hypothesis_id,
-                                hypothesis.card_hash,
-                                now,
-                            )
+                            if inserted_hypothesis:
+                                self._append_trace_conn(
+                                    conn,
+                                    run_id,
+                                    "hypothesis",
+                                    hypothesis.hypothesis_id,
+                                    hypothesis.card_hash,
+                                    now,
+                                )
                             self._append_trace_conn(
                                 conn,
                                 run_id,
@@ -153,6 +157,54 @@ class V2TurnStoreMixin:
                 }
             )
         )
+        return result
+
+    def prepare_hypothesis(self, hypothesis: HypothesisCard) -> dict[str, Any]:
+        """在下一 turn 开始前持久化已确认的假设卡。"""
+
+        if not isinstance(hypothesis, HypothesisCard):
+            raise MiningContractError("hypothesis 必须是 HypothesisCard")
+        try:
+            with database_state_lock(self.db_path):
+                with self._connection() as conn:
+                    with self._transaction(conn):
+                        self._require_run_conn(conn, hypothesis.run_id)
+                        inserted = self._insert_hypothesis_conn(conn, hypothesis)
+                        if inserted:
+                            now = utc_now_iso()
+                            self._append_trace_conn(
+                                conn,
+                                hypothesis.run_id,
+                                "hypothesis",
+                                hypothesis.hypothesis_id,
+                                hypothesis.card_hash,
+                                now,
+                            )
+                            self._append_event_conn(
+                                conn,
+                                hypothesis.run_id,
+                                f"hypothesis_{hypothesis.hypothesis_id}_prepared",
+                                "hypothesis_prepared",
+                                {
+                                    "turn_index": hypothesis.turn_index,
+                                    "branch_id": hypothesis.branch_id,
+                                    "hypothesis_hash": hypothesis.card_hash,
+                                },
+                                created_at=now,
+                            )
+            result = self.get_hypothesis(
+                hypothesis.run_id,
+                hypothesis.hypothesis_id,
+            )
+        except (
+            MiningContractError,
+            MiningDuplicateError,
+            MiningNotFoundError,
+        ):
+            raise
+        except duckdb.Error as error:
+            raise MiningStorageError(f"准备 V2 假设失败：{error}") from error
+        result["reused"] = not inserted
         return result
 
     def record_evidence(self, evidence: EvidencePacket) -> dict[str, Any]:

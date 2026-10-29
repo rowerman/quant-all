@@ -20,7 +20,9 @@ from mining.search_evaluation_adapter import (
     evaluate_selection,
 )
 from mining.search_orchestrator_pipeline import SearchPipelineMixin
+from mining.search_orchestrator_evidence import SearchEvidenceMixin
 from mining.search_orchestrator_turn import SearchTurnMixin
+from mining.search_progress import SearchProgress, progress_for_search
 from mining.search_run import SearchRunRequest
 from mining.search_worker_client import (
     HttpSearchWorkerClient,
@@ -32,7 +34,11 @@ from mining.storage_v2 import MiningV2Store
 _LOGGER = get_mining_logger("mining.search.orchestrator")
 
 
-class MiningSearchOrchestrator(SearchTurnMixin, SearchPipelineMixin):
+class MiningSearchOrchestrator(
+    SearchTurnMixin,
+    SearchEvidenceMixin,
+    SearchPipelineMixin,
+):
     """执行可恢复的 V2 证据驱动搜索阶段。"""
 
     def __init__(
@@ -90,8 +96,8 @@ class MiningSearchOrchestrator(SearchTurnMixin, SearchPipelineMixin):
         """同步推进到当前状态对应的阶段结束。"""
 
         context = self._context(run_id)
-        self._check_snapshot(context)
         try:
+            self._check_snapshot(context)
             while True:
                 run = self.store.get_run(run_id)
                 status = run["status"]
@@ -126,24 +132,41 @@ class MiningSearchOrchestrator(SearchTurnMixin, SearchPipelineMixin):
                 else:
                     raise MiningStateError(f"未知 V2 搜索状态：{status}")
         except Exception as exc:
-            self.store.append_event(
-                run_id,
-                event_key=f"run_failed_{getattr(exc, 'code', 'MINING-100')}",
-                stage=self.store.search_control_state(run_id)["status"],
-                event_type="search_run_failed",
-                payload={
-                    "error_code": getattr(exc, "code", "MINING-100"),
-                    "error_message": str(exc)[:500],
-                },
-            )
-            self.store.transition_search_run(
-                run_id,
+            state = self.store.search_control_state(run_id)
+            if state["status"] not in {
+                "review_ready",
                 "failed",
-                event_key="run_failed",
-                stage=self.store.search_control_state(run_id)["status"],
-                stop_reason=str(exc)[:500],
-            )
-            raise
+                "cancelled",
+                "stale",
+            }:
+                target = (
+                    "stale"
+                    if getattr(exc, "code", None) == "MINING-120"
+                    else (
+                        "cancelled"
+                        if state["cancel_requested"]
+                        else "failed"
+                    )
+                )
+                code = getattr(exc, "code", "MINING-100")
+                self.store.append_event(
+                    run_id,
+                    event_key=f"run_{target}_{code}",
+                    stage=state["status"],
+                    event_type="search_run_failed",
+                    payload={
+                        "error_code": code,
+                        "error_message": str(exc)[:500],
+                    },
+                )
+                self.store.transition_search_run(
+                    run_id,
+                    target,
+                    event_key=f"run_{target}",
+                    stage=state["status"],
+                    stop_reason=str(exc)[:500],
+                )
+            return self.store.get_run(run_id)
 
     def resume(self, run_id: str, *, background: bool = True) -> dict[str, Any]:
         """显式恢复中断运行。"""
@@ -164,15 +187,45 @@ class MiningSearchOrchestrator(SearchTurnMixin, SearchPipelineMixin):
     def cancel(self, run_id: str) -> dict[str, Any]:
         """请求在当前安全边界取消。"""
 
+        state = self.store.search_control_state(run_id)
+        if state["status"] == "queued":
+            return self.store.transition_search_run(
+                run_id,
+                "cancelled",
+                event_key="run_cancelled",
+                stage="queued",
+                stop_reason="用户取消",
+            )
         requested = self.store.request_search_cancel(run_id)
-        if requested["status"] not in {
+        events = self.store.list_events(run_id)
+        jobs = [
+            item for item in events
+            if item["event_type"] == "search_worker_submitted"
+        ]
+        if requested["status"] in {
             "searching",
             "selecting",
             "evaluating",
             "holding_out",
-        }:
-            return requested
+        } and jobs:
+            try:
+                self._worker().cancel(str(jobs[-1]["payload"]["job_id"]))
+            except Exception as exc:
+                _LOGGER.warning(
+                    format_event(
+                        {
+                            "event": "search_worker_cancel_failed",
+                            "run_id": run_id,
+                            "error": str(exc)[:200],
+                        }
+                    )
+                )
         return requested
+
+    def progress(self, run_id: str) -> SearchProgress:
+        """读取可恢复的 V2 搜索进度。"""
+
+        return progress_for_search(self.store, run_id)
 
     def close(self) -> None:
         """关闭后台执行器。"""

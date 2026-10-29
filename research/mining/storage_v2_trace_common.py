@@ -25,7 +25,7 @@ class V2TraceCommonMixin:
         self,
         conn: duckdb.DuckDBPyConnection,
         hypothesis: HypothesisCard,
-    ) -> None:
+    ) -> bool:
         if hypothesis.parent_hypothesis_id is not None:
             self._require_hypothesis_conn(
                 conn,
@@ -41,7 +41,7 @@ class V2TraceCommonMixin:
         if existing is not None:
             if existing["card_hash"] != hypothesis.card_hash:
                 raise MiningDuplicateError("假设 ID 已绑定不同内容")
-            return
+            return False
         try:
             conn.execute(
                 "INSERT INTO mining_v2.hypothesis VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -58,6 +58,7 @@ class V2TraceCommonMixin:
             )
         except duckdb.ConstraintException as error:
             raise MiningDuplicateError("运行内已有相同假设内容") from error
+        return True
 
     def _insert_batch_conn(
         self,
@@ -279,18 +280,29 @@ class V2TraceCommonMixin:
                 [hypothesis.run_id],
             ).fetchone()[0]
         )
+        count -= int(
+            conn.execute(
+                "SELECT count(*) FROM mining_v2.hypothesis "
+                "WHERE run_id=? AND hypothesis_id=?",
+                [hypothesis.run_id, hypothesis.hypothesis_id],
+            ).fetchone()[0]
+        )
         branch_count = int(
             conn.execute(
                 "SELECT count(DISTINCT branch_id) FROM mining_v2.hypothesis "
-                "WHERE run_id=?",
-                [hypothesis.run_id],
+                "WHERE run_id=? AND hypothesis_id<>?",
+                [hypothesis.run_id, hypothesis.hypothesis_id],
             ).fetchone()[0]
         )
         branch_cards = int(
             conn.execute(
                 "SELECT count(*) FROM mining_v2.hypothesis "
-                "WHERE run_id=? AND branch_id=?",
-                [hypothesis.run_id, hypothesis.branch_id],
+                "WHERE run_id=? AND branch_id=? AND hypothesis_id<>?",
+                [
+                    hypothesis.run_id,
+                    hypothesis.branch_id,
+                    hypothesis.hypothesis_id,
+                ],
             ).fetchone()[0]
         )
         if branch_cards == 0 and branch_count >= budget.max_hypothesis_branches:

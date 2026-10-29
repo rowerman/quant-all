@@ -5,8 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from mining.contract_evidence import EvaluationReport, TechnicalGate
 from mining.contract_types import sha256_json, utc_now_iso
+from mining.errors import MiningStateError, SnapshotStaleError, WorkerTimeoutError
 from mining.evaluation_contract import (
     CandidateEvaluationResult,
     FullEvaluationResult,
@@ -323,6 +326,10 @@ def test_search_closes_loop_and_reaches_review_ready(tmp_path: Path):
     )
     assert store.trial_summary(run["run_id"])["counts"]["holdout_claimed"] == 1
     assert store.validate_search_trace(run["run_id"]) is True
+    progress = orchestrator.progress(run["run_id"])
+    assert progress.status == "review_ready"
+    assert progress.turns_completed == 3
+    assert progress.current_branch_id == "branch-0001"
 
 
 def test_search_request_never_contains_selection_or_holdout_window(tmp_path: Path):
@@ -448,3 +455,218 @@ def test_single_candidate_failure_does_not_abort_turn(tmp_path: Path):
     counts = store.trial_summary(run["run_id"])["counts"]
     assert counts["gate_failed"] == 1
     assert counts["holdout_claimed"] == 1
+
+
+class CrashOnSecondTurnWorker(SequenceWorker):
+    def submit(self, request):
+        if request.turn_index == 2:
+            raise KeyboardInterrupt("模拟主服务进程退出")
+        return super().submit(request)
+
+
+def test_interrupted_run_resumes_from_completed_turn_without_replaying(
+    tmp_path: Path,
+):
+    store = MiningV2Store(
+        tmp_path / "factor_mining.duckdb",
+        tmp_path / "data",
+    )
+    context = FrozenSearchContext(
+        data_fingerprint="a" * 64,
+        field_catalog=(
+            {"name": "close"},
+            {"name": "volume_share"},
+        ),
+        operator_catalog=({"name": "mean"},),
+    )
+    run = store.create_run(
+        SearchRunRequest(
+            "search-recovery-0001",
+            "短期反转可能带来开发期超额收益",
+        ),
+        context,
+    )
+    first = MiningSearchOrchestrator(
+        store=store,
+        worker=CrashOnSecondTurnWorker(),
+        materializer=FakeMaterializer(),
+        development_evaluator=FakeDevelopmentEvaluator(),
+        selection_evaluator=FakeSelectionEvaluator(),
+        final_evaluator=FakeFinalEvaluator(),
+        holdout_evaluator=FakeHoldoutEvaluator(),
+        snapshot_check=lambda *args, **kwargs: None,
+    )
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            first.execute(run["run_id"])
+    finally:
+        first.close()
+
+    interrupted = store.transition_search_run(
+        run["run_id"],
+        "interrupted",
+        event_key="run_interrupted_for_test",
+        stage="searching",
+    )
+    assert interrupted["interrupted_from"] == "searching"
+
+    worker = SequenceWorker()
+    resumed = MiningSearchOrchestrator(
+        store=store,
+        worker=worker,
+        materializer=FakeMaterializer(),
+        development_evaluator=FakeDevelopmentEvaluator(),
+        selection_evaluator=FakeSelectionEvaluator(),
+        final_evaluator=FakeFinalEvaluator(),
+        holdout_evaluator=FakeHoldoutEvaluator(),
+        snapshot_check=lambda *args, **kwargs: None,
+    )
+    try:
+        resumed.resume(run["run_id"], background=False)
+        with pytest.raises(MiningStateError, match="中断"):
+            resumed.resume(run["run_id"], background=False)
+        result = resumed.execute(run["run_id"])
+    finally:
+        resumed.close()
+
+    assert result["status"] == "review_ready"
+    assert [request.turn_index for request in worker.requests] == [2, 3]
+    assert resumed.progress(run["run_id"]).turns_completed == 3
+
+
+def test_cancel_before_search_stops_without_worker_call(tmp_path: Path):
+    orchestrator, store, worker = _orchestrator(tmp_path)
+    context = FrozenSearchContext(
+        data_fingerprint="a" * 64,
+        field_catalog=({"name": "close"},),
+        operator_catalog=({"name": "mean"},),
+    )
+    run = orchestrator.create_run(
+        SearchRunRequest(
+            "search-cancel-0001",
+            "短期反转可能带来开发期超额收益",
+        ),
+        context,
+        background=False,
+    )
+    store.transition_search_run(
+        run["run_id"],
+        "searching",
+        event_key="run_searching",
+        stage="searching",
+    )
+    orchestrator.cancel(run["run_id"])
+
+    result = orchestrator.execute(run["run_id"])
+
+    assert result["status"] == "cancelled"
+    assert worker.requests == []
+    orchestrator.close()
+
+
+def test_stale_snapshot_marks_v2_run_stale(tmp_path: Path):
+    def stale(*args, **kwargs):
+        raise SnapshotStaleError("数据快照已变化")
+
+    store = MiningV2Store(
+        tmp_path / "factor_mining.duckdb",
+        tmp_path / "data",
+    )
+    orchestrator = MiningSearchOrchestrator(
+        store=store,
+        worker=SequenceWorker(),
+        snapshot_check=stale,
+    )
+    context = FrozenSearchContext(
+        data_fingerprint="a" * 64,
+        field_catalog=({"name": "close"},),
+        operator_catalog=({"name": "mean"},),
+    )
+    run = orchestrator.create_run(
+        SearchRunRequest(
+            "search-stale-0001",
+            "短期反转可能带来开发期超额收益",
+        ),
+        context,
+        background=False,
+    )
+
+    result = orchestrator.execute(run["run_id"])
+
+    assert result["status"] == "stale"
+    orchestrator.close()
+
+
+class TimeoutWorker(SequenceWorker):
+    def submit(self, request):
+        raise WorkerTimeoutError("Worker v2 超时")
+
+
+def test_worker_timeout_has_stable_failure_state_and_code(tmp_path: Path):
+    store = MiningV2Store(
+        tmp_path / "factor_mining.duckdb",
+        tmp_path / "data",
+    )
+    orchestrator = MiningSearchOrchestrator(
+        store=store,
+        worker=TimeoutWorker(),
+        snapshot_check=lambda *args, **kwargs: None,
+    )
+    context = FrozenSearchContext(
+        data_fingerprint="a" * 64,
+        field_catalog=({"name": "close"},),
+        operator_catalog=({"name": "mean"},),
+    )
+    run = orchestrator.create_run(
+        SearchRunRequest(
+            "search-timeout-0001",
+            "短期反转可能带来开发期超额收益",
+        ),
+        context,
+        background=False,
+    )
+
+    result = orchestrator.execute(run["run_id"])
+
+    assert result["status"] == "failed"
+    failures = [
+        item
+        for item in store.list_events(run["run_id"])
+        if item["event_type"] == "search_run_failed"
+    ]
+    assert failures[-1]["payload"]["error_code"] == "MINING-116"
+    orchestrator.close()
+
+
+def test_startup_interrupts_only_active_v2_runs(tmp_path: Path):
+    store = MiningV2Store(
+        tmp_path / "factor_mining.duckdb",
+        tmp_path / "data",
+    )
+    context = FrozenSearchContext(data_fingerprint="a" * 64)
+    active = store.create_run(
+        SearchRunRequest(
+            "search-manual-interrupt-0001",
+            "短期反转可能带来开发期超额收益",
+        ),
+        context,
+    )
+    queued = store.create_run(
+        SearchRunRequest(
+            "search-manual-interrupt-0002",
+            "估值修复可能带来开发期超额收益",
+        ),
+        context,
+    )
+    store.transition_search_run(
+        active["run_id"],
+        "searching",
+        event_key="run_searching",
+        stage="searching",
+    )
+
+    interrupted = store.interrupt_active_search_runs()
+
+    assert [item["run_id"] for item in interrupted] == [active["run_id"]]
+    assert store.get_run(active["run_id"])["status"] == "interrupted"
+    assert store.get_run(queued["run_id"])["status"] == "queued"

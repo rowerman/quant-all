@@ -71,6 +71,16 @@ queued -> searching -> selecting -> evaluating -> holding_out -> review_ready
 V2 评估证据表只保存指标、状态、哈希和脱敏警告，不保存行情值或评估文件路径。运行、
 中断、取消和评估结果均可在同一运行内按事件序号读取。
 
+## 恢复与取消
+
+`MiningSearchOrchestrator.progress()` 返回当前 turn、分支、动作、停止原因、已完成
+轮次、尝试分类和冻结预算。主服务启动时把遗留活动运行标记为 `interrupted`；恢复只
+允许回到中断前阶段，重复恢复或跨阶段跳转会被拒绝。
+
+恢复从最后一个未完成 turn 继续。已提交的 Worker 作业通过稳定请求 ID 和作业库复用，
+已登记的评估证据直接重建候选摘要，不重新物化或执行已完成评估。取消请求先持久化并
+取消当前 Worker 作业，搜索在 turn 边界转为 `cancelled`，不会改变窗口、模型或预算。
+
 ## 存储与迁移
 
 V2 使用同一个候选 DuckDB 中独立的 `mining_v2` schema，V1 的 `mining` schema 保持
