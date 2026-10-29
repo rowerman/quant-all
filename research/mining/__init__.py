@@ -61,10 +61,12 @@ from mining.errors import (
     MiningEvaluationError,
     MiningNotFoundError,
     MiningPublicationError,
+    MiningMigrationError,
     MiningRecoveryError,
     MiningStateError,
     MiningStorageError,
     MiningWorkerError,
+    MiningVisibilityError,
     SnapshotStaleError,
     WorkerCancelledError,
     WorkerConfigurationError,
@@ -106,6 +108,7 @@ from mining.search_contracts import (
     SearchBudget,
     SearchConfig,
     SearchDecision,
+    SearchRunRequest,
     SearchWindows,
     TrialCounts,
     TrialRecord,
@@ -125,6 +128,8 @@ from mining.states import (
     RunStateMachine,
 )
 from mining.storage import MiningStore
+from mining.storage_v2 import MiningV2Store
+from mining.migration_v1_v2 import migrate_v1_to_v2
 from mining.worker_client import (
     HttpWorkerClient,
     MockWorkerClient,
@@ -185,6 +190,7 @@ __all__ = [
     "SearchBudget",
     "SearchConfig",
     "SearchDecision",
+    "SearchRunRequest",
     "SearchWindows",
     "QualityPolicy",
     "TechnicalGate",
@@ -219,10 +225,12 @@ __all__ = [
     "MiningEvaluationError",
     "MiningNotFoundError",
     "MiningPublicationError",
+    "MiningMigrationError",
     "MiningRecoveryError",
     "MiningStateError",
     "MiningStorageError",
     "MiningWorkerError",
+    "MiningVisibilityError",
     "SnapshotStaleError",
     "WorkerCancelledError",
     "WorkerConfigurationError",
@@ -239,6 +247,7 @@ __all__ = [
     "PublicationStateMachine",
     "RunStateMachine",
     "MiningStore",
+    "MiningV2Store",
     "MiningProgress",
     "MiningOrchestrator",
     "load_orchestration_constraints",
@@ -247,4 +256,5 @@ __all__ = [
     "NormalizedWorkerResult",
     "WorkerRejection",
     "generate_worker_candidates",
+    "migrate_v1_to_v2",
 ]

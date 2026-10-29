@@ -31,3 +31,27 @@
 M1 不创建 Worker V2 请求，不改变 V1 快速筛选和完整评估窗口。P2 接入逐轮闭环时，
 主服务必须使用本文件的角色访问接口构造请求和证据，不得把完整 V2 上下文直接交给
 Agent。
+
+## 存储与迁移
+
+V2 使用同一个候选 DuckDB 中独立的 `mining_v2` schema，V1 的 `mining` schema 保持
+原样。新库由 `MiningV2Store` 首次创建 V2 schema；已有 V1 库不会在普通存储初始化时
+自动升级。迁移前必须停止监测站和 Worker，并确保没有活动 V1 运行，然后显式执行：
+
+```bash
+.venv/bin/python -m mining.migrate_v1_to_v2 \
+  --db data/databases/factor_mining.duckdb
+```
+
+迁移在同一事务中创建 V2 表并复制运行、上下文和候选的只读快照，最后写入源快照哈希。
+中断时整体回滚；同一源快照重复执行返回 `reused=true`；源 V1 库在迁移后发生变化时
+拒绝静默合并。只读快照的 `read_only=true` 且 `resumable=false`，V1 运行不能恢复成
+V2 搜索。
+
+```python
+from mining import MiningV2Store
+
+store = MiningV2Store()
+legacy_runs = store.list_legacy_runs()
+legacy = store.get_legacy_run(legacy_runs[0]["run_id"])
+```

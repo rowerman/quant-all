@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import fcntl
 from pathlib import Path
 import re
 from threading import RLock
@@ -25,6 +24,7 @@ from mining.errors import (
 )
 from mining.logging_conf import ensure_safe_event_payload, get_mining_logger
 from mining.storage_schema import ensure_schema
+from mining.storage_lock import database_state_lock
 
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 
@@ -83,21 +83,8 @@ class StorageBase:
     def _state_lock(self) -> Iterator[None]:
         """用本机文件锁串行化写入与状态迁移。"""
 
-        lock_path = self.db_path.with_name(f"{self.db_path.name}.state.lock")
-        try:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            handle = lock_path.open("a+b")
-        except OSError as error:
-            raise MiningStorageError(f"候选库状态锁不可用：{error}") from error
-        with handle:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            except OSError as error:
-                raise MiningStorageError(f"候选库状态锁不可用：{error}") from error
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        with database_state_lock(self.db_path):
+            yield
 
     @staticmethod
     def _validate_id(value: str, name: str) -> str:

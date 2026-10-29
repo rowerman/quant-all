@@ -224,6 +224,10 @@ V2 搜索契约、分层窗口和角色可见性见
 [V2 搜索轨迹基础](search-v2.md)。M1 只提供冻结、防泄漏和持久化基础，现有 V1 编排
 在 M2 完成逐轮闭环和状态机切换前保持不变。
 
+已有候选库升级到 `mining_v2` 时必须停止服务并显式执行
+`python -m mining.migrate_v1_to_v2 --db data/databases/factor_mining.duckdb`；
+普通存储初始化不会静默迁移，V1 快照只读且不能恢复到 V2 搜索。
+
 编排用法：
 
 ```python
