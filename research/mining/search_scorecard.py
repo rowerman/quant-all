@@ -13,6 +13,7 @@ from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_selection_diagnostics import (
     SELECTION_DIAGNOSTICS_STAGE,
 )
+from mining.search_stability_contracts import STABILITY_STAGE
 from mining.storage_v2 import MiningV2Store
 
 SCORECARD_SCHEMA_VERSION = "mining_candidate_scorecard_v2"
@@ -197,6 +198,7 @@ class CandidateScoreCard:
             "selection_diagnostics": self.analysis_by_stage.get(
                 SELECTION_DIAGNOSTICS_STAGE
             ),
+            "stability": self.analysis_by_stage.get(STABILITY_STAGE),
         }
 
 

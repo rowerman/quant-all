@@ -143,6 +143,15 @@ from mining.search_selection_diagnostics import (
     compute_candidate_correlations,
     compute_incremental_value,
 )
+from mining.search_stability import generate_primary_window_variants
+from mining.search_stability_contracts import (
+    STABILITY_STAGE,
+    StabilityReport,
+    VariantPlan,
+    WindowVariant,
+    WindowVariantObservation,
+    build_stability_report,
+)
 from mining.search_states import (
     SEARCH_RUN_ACTIVE_STATUSES,
     SEARCH_RUN_STATUSES,
@@ -238,6 +247,13 @@ __all__ = [
     "build_selection_diagnostics",
     "compute_candidate_correlations",
     "compute_incremental_value",
+    "generate_primary_window_variants",
+    "STABILITY_STAGE",
+    "StabilityReport",
+    "VariantPlan",
+    "WindowVariant",
+    "WindowVariantObservation",
+    "build_stability_report",
     "SEARCH_RUN_ACTIVE_STATUSES",
     "SEARCH_RUN_STATUSES",
     "SEARCH_RUN_TERMINAL_STATUSES",

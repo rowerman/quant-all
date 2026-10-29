@@ -24,6 +24,7 @@ from mining.search_selection_diagnostics import (
     load_candidate_values,
     sample_trade_dates,
 )
+from mining.search_orchestrator_stability import SearchStabilityMixin
 from mining.search_orchestrator_support import (
     candidate_from_v2_record,
     candidate_score_material,
@@ -33,7 +34,7 @@ from mining.search_orchestrator_support import (
 )
 
 
-class SearchPipelineMixin:
+class SearchPipelineMixin(SearchStabilityMixin):
     """把开发期入围候选沿隔离窗口推进到审核就绪。"""
 
     def _select(self, run: Mapping[str, Any], context: Any) -> None:
@@ -87,6 +88,11 @@ class SearchPipelineMixin:
                 )
             )
         self._record_selection_diagnostics(
+            run=run,
+            context=context,
+            selected_results=selected_results,
+        )
+        self._record_stability_reports(
             run=run,
             context=context,
             selected_results=selected_results,
