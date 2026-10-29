@@ -16,6 +16,7 @@ from mining.evaluation_contract import (
     HoldoutEvaluationResult,
 )
 from mining.search_context import FrozenSearchContext
+from mining.search_budget import SearchBudget
 from mining.search_orchestrator import MiningSearchOrchestrator
 from mining.search_run import SearchRunRequest
 from mining.storage_v2 import MiningV2Store
@@ -161,9 +162,13 @@ class FakeDevelopmentEvaluator:
                 factor_sha256="b" * 64,
             )
         rank_ic = (
-            0.04
-            if "volume_share" in candidate.dependencies
-            else 0.03
+            0.05
+            if "open" in candidate.dependencies
+            else (
+                0.04
+                if "volume_share" in candidate.dependencies
+                else 0.03
+            )
         )
         input_value = SimpleNamespace(
             run_id=run_id,
@@ -670,3 +675,144 @@ def test_startup_interrupts_only_active_v2_runs(tmp_path: Path):
     assert [item["run_id"] for item in interrupted] == [active["run_id"]]
     assert store.get_run(active["run_id"])["status"] == "interrupted"
     assert store.get_run(queued["run_id"])["status"] == "queued"
+
+
+def test_search_budget_exhaustion_promotes_existing_quality_candidate(
+    tmp_path: Path,
+):
+    orchestrator, store, worker = _orchestrator(tmp_path)
+    budget = SearchBudget(
+        max_search_turns=1,
+        max_hypothesis_branches=2,
+        max_refines_per_branch=1,
+        max_candidates_per_turn=1,
+        max_candidates_per_run=4,
+        max_full_evaluations=1,
+        stop_after_no_improvement_turns=1,
+        max_tool_calls_per_turn=0,
+    )
+    context = FrozenSearchContext(
+        data_fingerprint="a" * 64,
+        field_catalog=({"name": "close"},),
+        operator_catalog=({"name": "mean"},),
+        budget=budget,
+    )
+    run = orchestrator.create_run(
+        SearchRunRequest(
+            "search-budget-stop-0001",
+            "短期反转可能带来开发期超额收益",
+            budget=budget,
+        ),
+        context,
+        background=False,
+    )
+
+    result = orchestrator.execute(run["run_id"])
+
+    assert result["status"] == "review_ready"
+    assert len(worker.requests) == 1
+    decisions = store.get_search_trace(run["run_id"])["decisions"]
+    assert decisions[0]["action"] == "promote"
+    assert "预算耗尽" in decisions[0]["reason"]
+    orchestrator.close()
+
+
+class BranchWorker(SequenceWorker):
+    def submit(self, request):
+        self.requests.append(request)
+        if request.turn_index == 4:
+            response = WorkerSearchResponse(
+                decision=WorkerDecisionProposal(
+                    action="stop",
+                    reason="新分支已经产生可用证据",
+                ),
+                next_hypothesis=None,
+                candidates=(),
+                usage={"calls": 1},
+            )
+        else:
+            expressions = {
+                1: "mean(close,5)",
+                2: "mean(low,5)",
+                3: "mean(low,3)",
+            }
+            response = WorkerSearchResponse(
+                decision=WorkerDecisionProposal(
+                    action="refine",
+                    reason="继续修订同一假设",
+                ),
+                next_hypothesis=WorkerSearchHypothesis(
+                    statement=f"第 {request.turn_index} 轮继续验证短期反转",
+                    mechanism="短期价格修复",
+                    expected_direction="positive",
+                    falsification_criteria=("连续两轮没有改善",),
+                ),
+                candidates=(
+                    WorkerCandidateDraft(
+                        expression=expressions[request.turn_index],
+                        mechanism="短期价格修复",
+                        description="短期价格统计",
+                        direction=1,
+                        steps=("读取价格字段",),
+                    ),
+                ),
+                usage={"calls": 1},
+            )
+        return WorkerJobView(
+            job_id=request.job_id,
+            request_id=request.request_id,
+            status="succeeded",
+            result=response.to_dict(),
+        )
+
+    def submit_without_record(self, request):
+        return self.submit(request)
+
+
+def test_no_improvement_threshold_switches_branch(tmp_path: Path):
+    store = MiningV2Store(
+        tmp_path / "factor_mining.duckdb",
+        tmp_path / "data",
+    )
+    orchestrator = MiningSearchOrchestrator(
+        store=store,
+        worker=BranchWorker(),
+        materializer=FakeMaterializer(),
+        development_evaluator=FakeDevelopmentEvaluator(),
+        selection_evaluator=FakeSelectionEvaluator(),
+        final_evaluator=FakeFinalEvaluator(),
+        holdout_evaluator=FakeHoldoutEvaluator(),
+        snapshot_check=lambda *args, **kwargs: None,
+    )
+    context = FrozenSearchContext(
+        data_fingerprint="a" * 64,
+        field_catalog=(
+            {"name": "close"},
+            {"name": "low"},
+        ),
+        operator_catalog=({"name": "mean"},),
+    )
+    run = orchestrator.create_run(
+        SearchRunRequest(
+            "search-branch-stop-0001",
+            "短期反转可能带来开发期超额收益",
+        ),
+        context,
+        background=False,
+    )
+
+    result = orchestrator.execute(run["run_id"])
+
+    assert result["status"] == "review_ready"
+    decisions = store.get_search_trace(run["run_id"])["decisions"]
+    assert [item["action"] for item in decisions] == [
+        "refine",
+        "refine",
+        "branch",
+        "stop",
+    ]
+    assert any(
+        item["branch_id"] == "branch-0002"
+        for item in store.get_search_trace(run["run_id"])["hypotheses"]
+    )
+    orchestrator.close()

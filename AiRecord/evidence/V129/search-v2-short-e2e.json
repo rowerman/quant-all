@@ -1,0 +1,56 @@
+{
+  "candidate_statuses": [
+    {
+      "candidate_id": "cand_2b33b976eb215032392d9cad",
+      "status": "review_ready"
+    }
+  ],
+  "context_hash": "5127919ca2ac9d7b83f654504fba6de68892f31193cb6cf7733277d41d50cad7",
+  "decisions": [
+    {
+      "action": "refine",
+      "turn_index": 1
+    },
+    {
+      "action": "stop",
+      "turn_index": 2
+    }
+  ],
+  "evaluation_evidence_count": 6,
+  "run_id": "searchrun_b089b17dddc0d431bbd03134",
+  "scorecard_hashes": [
+    "418ff77add1cdb2bc84acd3e9d788648f7e43af6b9e0a2709c18230d7eabaa0c"
+  ],
+  "status": "review_ready",
+  "trace_hash": "04b03541470b588469f702c579260e2dde80c290cae8844d24126fde790997d7",
+  "trial_summary": {
+    "attempted_candidates": 1,
+    "budget": {
+      "max_candidates_per_run": 2,
+      "max_candidates_per_turn": 1,
+      "max_full_evaluations": 1,
+      "max_hypothesis_branches": 1,
+      "max_refines_per_branch": 1,
+      "max_search_turns": 2,
+      "max_tool_calls_per_turn": 0,
+      "schema_version": "mining_search_v2",
+      "stop_after_no_improvement_turns": 2
+    },
+    "counts": {
+      "duplicate": 0,
+      "evaluated": 2,
+      "full_evaluated": 1,
+      "gate_failed": 0,
+      "holdout_claimed": 1,
+      "invalid": 0,
+      "invalidated": 0,
+      "proposed": 1,
+      "rejected": 0
+    },
+    "evaluated_candidates": 2,
+    "failed_attempts": 0,
+    "full_evaluated_candidates": 1,
+    "holdout_claims": 1,
+    "total_events": 5
+  }
+}

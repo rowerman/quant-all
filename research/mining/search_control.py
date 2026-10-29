@@ -425,10 +425,11 @@ def decide_search_action(
         action=action,
         reason=reason,
     )
+    next_no_improvement = 0 if action == "branch" else no_improvement
     return SearchControlResult(
         decision=decision,
         best_candidate=best,
-        no_improvement_turns=no_improvement,
+        no_improvement_turns=next_no_improvement,
         failure_rate=failure_rate,
         quality_candidates=quality_candidates,
         policy_reason=budget_reason,

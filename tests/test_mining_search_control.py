@@ -96,7 +96,8 @@ def test_controller_branches_after_no_improvement_or_failure_rate():
         ),
     )
     assert no_improvement.decision.action == "branch"
-    assert no_improvement.no_improvement_turns == 2
+    assert no_improvement.no_improvement_turns == 0
+    assert "连续无改善=2" in no_improvement.decision.reason
 
     failures = decide_search_action(
         _evidence(
