@@ -116,6 +116,21 @@ class V2RunStoreMixin:
                                     created,
                                 ],
                             )
+                            conn.execute(
+                                "INSERT INTO mining_v2.run_control VALUES "
+                                "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                [
+                                    request.run_id,
+                                    "queued",
+                                    None,
+                                    False,
+                                    None,
+                                    None,
+                                    0,
+                                    None,
+                                    created,
+                                ],
+                            )
                             counts = TrialCounts().to_dict()
                             conn.execute(
                                 "INSERT INTO mining_v2.trial_counter VALUES "
@@ -160,9 +175,12 @@ class V2RunStoreMixin:
             with self._connection() as conn:
                 run = self._row(
                     conn,
-                    "SELECT r.*, c.context_hash, c.payload_json AS context_payload_json "
+                    "SELECT r.*, c.context_hash, c.payload_json AS context_payload_json, "
+                    "ctl.status AS control_status, ctl.updated_at AS control_updated_at "
                     "FROM mining_v2.run r JOIN mining_v2.context c "
-                    "ON c.context_id=r.context_id WHERE r.run_id=?",
+                    "ON c.context_id=r.context_id "
+                    "LEFT JOIN mining_v2.run_control ctl ON ctl.run_id=r.run_id "
+                    "WHERE r.run_id=?",
                     [run_id],
                 )
         except duckdb.Error as error:
@@ -172,6 +190,8 @@ class V2RunStoreMixin:
         run["request"] = json.loads(run.pop("request_json"))
         run["context"] = json.loads(run.pop("context_payload_json"))
         run["context_hash"] = run.pop("context_hash")
+        run["status"] = run.pop("control_status") or run["status"]
+        run["updated_at"] = run.pop("control_updated_at") or run["updated_at"]
         return run
 
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -180,9 +200,13 @@ class V2RunStoreMixin:
         limit = max(1, min(int(limit), 200))
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT run_id, idempotency_key, status, hypothesis, trace_hash, "
-                "created_at, updated_at FROM mining_v2.run "
-                "ORDER BY created_at DESC LIMIT ?",
+                "SELECT r.run_id, r.idempotency_key, "
+                "coalesce(ctl.status, r.status) AS status, r.hypothesis, "
+                "r.trace_hash, r.created_at, "
+                "coalesce(ctl.updated_at, r.updated_at) AS updated_at "
+                "FROM mining_v2.run r LEFT JOIN mining_v2.run_control ctl "
+                "ON ctl.run_id=r.run_id "
+                "ORDER BY r.created_at DESC LIMIT ?",
                 [limit],
             ).fetchall()
             columns = [item[0] for item in conn.description]

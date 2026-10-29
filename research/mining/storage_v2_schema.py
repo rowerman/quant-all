@@ -56,6 +56,19 @@ V2_DDL = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS mining_v2.run_control (
+        run_id VARCHAR PRIMARY KEY REFERENCES mining_v2.run(run_id),
+        status VARCHAR NOT NULL,
+        interrupted_from VARCHAR,
+        cancel_requested BOOLEAN NOT NULL,
+        stop_reason VARCHAR,
+        current_action VARCHAR,
+        no_improvement_turns INTEGER NOT NULL,
+        previous_best_json TEXT,
+        updated_at VARCHAR NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS mining_v2.hypothesis (
         run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
         hypothesis_id VARCHAR NOT NULL,
@@ -145,6 +158,20 @@ V2_DDL = (
         PRIMARY KEY (run_id, evidence_id),
         UNIQUE (run_id, evidence_hash),
         UNIQUE (run_id, turn_index)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mining_v2.evaluation_evidence (
+        run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
+        evaluation_id VARCHAR NOT NULL,
+        candidate_id VARCHAR NOT NULL,
+        stage VARCHAR NOT NULL,
+        input_hash VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        evidence_hash VARCHAR NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at VARCHAR NOT NULL,
+        PRIMARY KEY (run_id, evaluation_id)
     )
     """,
     """
@@ -292,6 +319,10 @@ V2_DDL = (
     """
     CREATE INDEX IF NOT EXISTS idx_mining_v2_trace_entry
     ON mining_v2.trace_entry(run_id, entry_type, entry_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_mining_v2_evaluation_candidate
+    ON mining_v2.evaluation_evidence(run_id, candidate_id, stage)
     """,
 )
 

@@ -126,6 +126,14 @@ from mining.search_control import (
     SearchControlState,
     decide_search_action,
 )
+from mining.search_evaluation_evidence import SearchEvaluationEvidence
+from mining.search_orchestrator import MiningSearchOrchestrator
+from mining.search_states import (
+    SEARCH_RUN_ACTIVE_STATUSES,
+    SEARCH_RUN_STATUSES,
+    SEARCH_RUN_TERMINAL_STATUSES,
+    SearchRunStateMachine,
+)
 from mining.states import (
     CANDIDATE_ACTIVE_STATUSES,
     CANDIDATE_STATUSES,
@@ -201,6 +209,12 @@ __all__ = [
     "SearchControlResult",
     "SearchControlState",
     "decide_search_action",
+    "SearchEvaluationEvidence",
+    "MiningSearchOrchestrator",
+    "SEARCH_RUN_ACTIVE_STATUSES",
+    "SEARCH_RUN_STATUSES",
+    "SEARCH_RUN_TERMINAL_STATUSES",
+    "SearchRunStateMachine",
     "EvidencePacket",
     "ExperimentBatch",
     "ExpressionValidationError",

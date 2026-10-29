@@ -203,7 +203,7 @@ class ExperimentBatch:
             ensure_string_tuple(
                 self.candidate_ids,
                 "candidate_ids",
-                minimum=1,
+                minimum=0,
                 maximum=4,
             ),
         )

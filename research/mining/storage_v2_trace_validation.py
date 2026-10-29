@@ -10,6 +10,7 @@ from mining.contract_types import sha256_json
 from mining.errors import MiningNotFoundError, MiningStorageError
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.search_evidence import EvidencePacket, SearchDecision
+from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_trials import TrialRecord
 from mining.storage_v2_trace_states import ZERO_HASH
 
@@ -189,6 +190,15 @@ class V2TraceValidationMixin:
                     "reason_code": row[1],
                 }
             )
+        if entry_type == "evaluation_evidence":
+            payload = self._entity_payload_conn(
+                conn,
+                "mining_v2.evaluation_evidence",
+                "evaluation_id",
+                run_id,
+                entry_id,
+            )
+            return SearchEvaluationEvidence.from_dict(payload).evidence_hash
         return None
 
     def _candidate_rows_conn(

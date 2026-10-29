@@ -33,7 +33,9 @@ def _prompt(request: WorkerSearchRequest) -> tuple[str, str]:
         {
             "hypothesis": request.hypothesis.to_dict(),
             "lineage": [item.to_dict() for item in request.lineage],
-            "evidence": dict(request.evidence),
+            "evidence": (
+                dict(request.evidence) if request.evidence is not None else None
+            ),
             "budget": dict(request.budget),
             "allowed_actions": list(request.allowed_actions),
             "max_candidates": request.max_candidates,

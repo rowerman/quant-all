@@ -320,7 +320,7 @@ class WorkerSearchRequest:
     context_hash: str
     hypothesis: WorkerSearchHypothesis
     lineage: tuple[WorkerSearchCandidate, ...]
-    evidence: Mapping[str, Any]
+    evidence: Mapping[str, Any] | None
     budget: Mapping[str, Any]
     allowed_actions: tuple[str, ...]
     llm_model: str
@@ -359,30 +359,33 @@ class WorkerSearchRequest:
         if any(not isinstance(item, WorkerSearchCandidate) for item in lineage):
             raise WorkerProtocolError("lineage 每项必须是 WorkerSearchCandidate")
         object.__setattr__(self, "lineage", lineage)
-        object.__setattr__(
-            self,
-            "evidence",
-            _strict_mapping(
-                self.evidence,
+        if self.evidence is not None:
+            object.__setattr__(
+                self,
                 "evidence",
-                {
-                    "schema_version",
-                    "run_id",
-                    "hypothesis_id",
-                    "batch_id",
-                    "turn_index",
-                    "development_start",
-                    "development_end",
-                    "metrics",
-                    "failures",
-                    "correlation_clusters",
-                    "trial_counts",
-                    "budget_state",
-                    "created_at",
-                },
-                maximum_bytes=65536,
-            ),
-        )
+                _strict_mapping(
+                    self.evidence,
+                    "evidence",
+                    {
+                        "schema_version",
+                        "run_id",
+                        "hypothesis_id",
+                        "batch_id",
+                        "turn_index",
+                        "development_start",
+                        "development_end",
+                        "metrics",
+                        "failures",
+                        "correlation_clusters",
+                        "trial_counts",
+                        "budget_state",
+                        "created_at",
+                    },
+                    maximum_bytes=65536,
+                ),
+            )
+        elif self.turn_index != 1:
+            raise WorkerProtocolError("从第 2 轮起必须提供开发期证据")
         object.__setattr__(
             self,
             "budget",
@@ -491,7 +494,9 @@ class WorkerSearchRequest:
             "context_hash": self.context_hash,
             "hypothesis": self.hypothesis.to_dict(),
             "lineage": [item.to_dict() for item in self.lineage],
-            "evidence": dict(self.evidence),
+            "evidence": (
+                dict(self.evidence) if self.evidence is not None else None
+            ),
             "budget": dict(self.budget),
             "allowed_actions": list(self.allowed_actions),
             "llm_model": self.llm_model,

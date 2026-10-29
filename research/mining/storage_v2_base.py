@@ -71,6 +71,26 @@ class V2StorageBase:
             finally:
                 conn.close()
 
+    def run_dir(self, run_id: str) -> Path:
+        """返回 V2 运行目录并按需创建。"""
+
+        path = self.data_root / "runs" / run_id
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise MiningStorageError(f"无法创建 V2 运行目录：{error}") from error
+        return path
+
+    def candidate_dir(self, run_id: str, candidate_id: str) -> Path:
+        """返回 V2 候选目录并按需创建。"""
+
+        path = self.run_dir(run_id) / "candidates" / candidate_id
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise MiningStorageError(f"无法创建 V2 候选目录：{error}") from error
+        return path
+
     @contextmanager
     def _transaction(self, conn: duckdb.DuckDBPyConnection) -> Iterator[None]:
         """执行显式事务，异常时整体回滚。"""
@@ -164,3 +184,25 @@ class V2StorageBase:
             }
             for sequence, event_key, event_type, payload, created_at in rows
         ]
+
+    def append_event(
+        self,
+        run_id: str,
+        *,
+        event_key: str,
+        stage: str,
+        event_type: str,
+        payload: Mapping[str, Any],
+    ) -> int:
+        """在独立事务中追加 V2 运行事件。"""
+
+        with database_state_lock(self.db_path):
+            with self._connection() as conn:
+                with self._transaction(conn):
+                    return self._append_event_conn(
+                        conn,
+                        run_id,
+                        event_key,
+                        event_type,
+                        {"stage": stage, **dict(payload)},
+                    )
