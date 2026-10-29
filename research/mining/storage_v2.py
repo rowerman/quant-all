@@ -3,10 +3,12 @@
 from mining.storage_v2_base import V2StorageBase
 from mining.storage_v2_legacy import V2LegacyStoreMixin
 from mining.storage_v2_runs import V2RunStoreMixin
+from mining.storage_v2_trace import V2TraceStoreMixin
 
 
 class MiningV2Store(
     V2RunStoreMixin,
+    V2TraceStoreMixin,
     V2LegacyStoreMixin,
     V2StorageBase,
 ):

@@ -129,6 +129,7 @@ from mining.states import (
 )
 from mining.storage import MiningStore
 from mining.storage_v2 import MiningV2Store
+from mining.storage_v2_trace_states import TURN_STATUSES
 from mining.migration_v1_v2 import migrate_v1_to_v2
 from mining.worker_client import (
     HttpWorkerClient,
@@ -154,6 +155,7 @@ __all__ = [
     "SEARCH_DIRECTION_VALUES",
     "SEARCH_SCHEMA_VERSION",
     "TRIAL_KIND_VALUES",
+    "TURN_STATUSES",
     "AGENT_ROLE",
     "CONTROLLER_ROLE",
     "DEFAULT_SEARCH_WINDOWS",

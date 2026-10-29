@@ -219,6 +219,19 @@ V2_DDL = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS mining_v2.trace_entry (
+        run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
+        sequence BIGINT NOT NULL,
+        entry_type VARCHAR NOT NULL,
+        entry_id VARCHAR NOT NULL,
+        entry_hash VARCHAR NOT NULL,
+        previous_hash VARCHAR NOT NULL,
+        trace_hash VARCHAR NOT NULL,
+        created_at VARCHAR NOT NULL,
+        PRIMARY KEY (run_id, sequence)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS mining_v2.legacy_source (
         source_schema VARCHAR PRIMARY KEY,
         source_snapshot_hash VARCHAR NOT NULL,
@@ -275,6 +288,10 @@ V2_DDL = (
     """
     CREATE INDEX IF NOT EXISTS idx_mining_v2_trial_kind
     ON mining_v2.trial_record(run_id, kind)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_mining_v2_trace_entry
+    ON mining_v2.trace_entry(run_id, entry_type, entry_id)
     """,
 )
 

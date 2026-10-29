@@ -55,3 +55,32 @@ store = MiningV2Store()
 legacy_runs = store.list_legacy_runs()
 legacy = store.get_legacy_run(legacy_runs[0]["run_id"])
 ```
+
+## 幂等轨迹
+
+`MiningV2Store.begin_turn()` 在同一事务中登记假设、实验批次和 turn。假设父节点、
+候选父节点、批次和候选必须属于同一运行；同一 turn 的相同请求返回原记录，内容变化
+明确冲突。
+
+一次 turn 的写入顺序：
+
+```text
+begin_turn
+  -> record_candidate
+  -> record_evidence
+  -> record_decision
+  -> transition_turn(decided -> completed)
+```
+
+重复调用相同对象不会追加事件或改变轨迹哈希。每个新对象和 turn 状态变化向
+`mining_v2.trace_entry` 追加链式哈希，`run.trace_hash` 保存当前末端。
+`validate_search_trace()` 会复算 previous/trace 链，并从当前假设、批次、候选、证据
+和决策记录重新计算内容哈希；任一对象被外部修改都会抛出 `MINING-112`。
+
+```python
+trace = store.get_search_trace(run["run_id"])
+store.validate_search_trace(run["run_id"])
+```
+
+轨迹只读取当前运行，不查询其他运行的候选、证据或结论。日志只记录运行、turn、对象
+ID、请求哈希和重用状态，不记录完整假设、表达式或证据正文。
