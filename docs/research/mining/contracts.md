@@ -23,6 +23,10 @@
 16 KiB；`EvidencePacket` 的总规范化 JSON 不得超过 64 KiB；`TrialRecord` 的扩展
 载荷不得超过 16 KiB。所有对象由 `mining.search_contracts` 统一导出。
 
+V2 上下文把时间拆为开发期、选择期、最终研究期和模块测试段，具体日期和角色可见性见
+[V2 搜索轨迹基础](search-v2.md)。实验批次和证据包只允许使用开发期，Agent 脱敏上下文
+不会包含另外三段窗口。
+
 ## 运行请求
 
 `MiningRunRequest` 包含 `idempotency_key`、研究假设、预算约束和模型配置。首版固定：

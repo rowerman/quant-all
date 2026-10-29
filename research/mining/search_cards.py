@@ -16,6 +16,8 @@ from mining.contract_types import (
 )
 from mining.errors import MiningContractError
 from mining.search_contract_types import (
+    SEARCH_DEVELOPMENT_END,
+    SEARCH_DEVELOPMENT_START,
     SEARCH_DIRECTION_VALUES,
     SEARCH_SCHEMA_VERSION,
     bounded_integer,
@@ -23,6 +25,7 @@ from mining.search_contract_types import (
     hash_text,
     mapping_with_size,
     nullable_identifier,
+    reject_dates_outside,
     strict_fields,
     validate_date_range,
 )
@@ -220,6 +223,13 @@ class ExperimentBatch:
         )
         object.__setattr__(self, "development_start", start)
         object.__setattr__(self, "development_end", end)
+        reject_dates_outside(
+            start,
+            end,
+            allowed_start=SEARCH_DEVELOPMENT_START,
+            allowed_end=SEARCH_DEVELOPMENT_END,
+            name="development",
+        )
         object.__setattr__(self, "input_hash", hash_text(self.input_hash, "input_hash"))
         object.__setattr__(
             self,

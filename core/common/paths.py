@@ -33,6 +33,7 @@ MINING_CATALOG_FILE = CONFIG_DIR / "mining" / "catalog.json"
 MINING_EVALUATION_FILE = CONFIG_DIR / "mining" / "evaluation.json"
 MINING_WORKER_CONFIG_FILE = CONFIG_DIR / "mining" / "worker.json"
 MINING_ORCHESTRATOR_FILE = CONFIG_DIR / "mining" / "orchestrator.json"
+MINING_SEARCH_CONFIG_FILE = CONFIG_DIR / "mining" / "search.json"
 
 
 def log_root_for(module_name: str) -> Path:

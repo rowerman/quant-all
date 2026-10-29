@@ -220,6 +220,10 @@ assert result.technical.stage == "technical"
 Worker 用法与部署命令见 [独立 RD-Agent Worker](worker.md)。主服务只接受 Worker 返回的
 未信任表达式草稿，稳定名称、依赖、回看窗口、语义哈希和候选 ID 均由 S3 重新计算。
 
+V2 搜索契约、分层窗口和角色可见性见
+[V2 搜索轨迹基础](search-v2.md)。M1 只提供冻结、防泄漏和持久化基础，现有 V1 编排
+在 M2 完成逐轮闭环和状态机切换前保持不变。
+
 编排用法：
 
 ```python

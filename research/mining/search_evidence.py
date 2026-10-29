@@ -18,12 +18,15 @@ from mining.contract_types import (
 from mining.errors import MiningContractError
 from mining.search_budget import TrialCounts
 from mining.search_contract_types import (
+    SEARCH_DEVELOPMENT_END,
+    SEARCH_DEVELOPMENT_START,
     SEARCH_ACTION_VALUES,
     SEARCH_SCHEMA_VERSION,
     bounded_integer,
     choice,
     mapping_with_size,
     nullable_identifier,
+    reject_dates_outside,
     strict_fields,
     validate_date_range,
 )
@@ -77,6 +80,13 @@ class EvidencePacket:
         )
         object.__setattr__(self, "development_start", start)
         object.__setattr__(self, "development_end", end)
+        reject_dates_outside(
+            start,
+            end,
+            allowed_start=SEARCH_DEVELOPMENT_START,
+            allowed_end=SEARCH_DEVELOPMENT_END,
+            name="development",
+        )
         metrics = mapping_with_size(self.metrics, "metrics", maximum_bytes=32768)
         if len(metrics) > 64:
             raise MiningContractError("metrics 最多包含 64 项")

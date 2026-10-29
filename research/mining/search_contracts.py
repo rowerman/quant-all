@@ -9,6 +9,19 @@ from mining.search_contract_types import (
     SEARCH_SCHEMA_VERSION,
     TRIAL_KIND_VALUES,
 )
+from mining.search_context import (
+    AGENT_ROLE,
+    CONTROLLER_ROLE,
+    DEFAULT_SEARCH_WINDOWS,
+    EVALUATOR_ROLE,
+    HOLDOUT_ROLE,
+    SEARCH_WINDOW_ROLES,
+    FrozenSearchContext,
+    SearchConfig,
+    SearchWindows,
+    ensure_agent_visible,
+    load_search_config,
+)
 from mining.search_evidence import EvidencePacket, SearchDecision
 from mining.search_trials import TrialRecord
 
@@ -18,11 +31,22 @@ __all__ = [
     "SEARCH_DIRECTION_VALUES",
     "SEARCH_SCHEMA_VERSION",
     "TRIAL_KIND_VALUES",
+    "AGENT_ROLE",
+    "CONTROLLER_ROLE",
+    "DEFAULT_SEARCH_WINDOWS",
+    "EVALUATOR_ROLE",
+    "HOLDOUT_ROLE",
+    "SEARCH_WINDOW_ROLES",
     "EvidencePacket",
     "ExperimentBatch",
     "HypothesisCard",
+    "FrozenSearchContext",
     "SearchBudget",
+    "SearchConfig",
     "SearchDecision",
     "TrialCounts",
     "TrialRecord",
+    "SearchWindows",
+    "ensure_agent_visible",
+    "load_search_config",
 ]

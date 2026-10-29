@@ -1,0 +1,24 @@
+{
+  "schema_version": "mining_search_v2",
+  "windows": {
+    "development_start": "2012-01-01",
+    "development_end": "2019-12-31",
+    "selection_start": "2020-01-01",
+    "selection_end": "2022-12-31",
+    "final_start": "2023-01-01",
+    "final_end": "2025-10-15",
+    "holdout_start": "2025-10-16",
+    "holdout_end": "2026-10-15"
+  },
+  "budget": {
+    "max_search_turns": 6,
+    "max_hypothesis_branches": 3,
+    "max_refines_per_branch": 3,
+    "max_candidates_per_turn": 4,
+    "max_candidates_per_run": 24,
+    "max_full_evaluations": 4,
+    "stop_after_no_improvement_turns": 2,
+    "max_tool_calls_per_turn": 4,
+    "schema_version": "mining_search_v2"
+  }
+}

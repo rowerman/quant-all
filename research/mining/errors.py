@@ -194,3 +194,17 @@ class BatchMaterializationError(MiningEvaluationError):
 
     code = "MINING-124"
     status = 422
+
+
+class MiningVisibilityError(MiningError):
+    """搜索角色请求访问未授权的数据窗口或证据字段。"""
+
+    code = "MINING-125"
+    status = 400
+
+
+class MiningMigrationError(MiningError):
+    """候选库显式迁移失败或源快照不允许迁移。"""
+
+    code = "MINING-126"
+    status = 503
