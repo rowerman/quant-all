@@ -129,6 +129,11 @@ from mining.search_control import (
 from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_orchestrator import MiningSearchOrchestrator
 from mining.search_progress import SearchProgress, progress_for_search
+from mining.search_scorecard import (
+    CandidateScoreCard,
+    build_candidate_scorecard,
+    build_run_scorecards,
+)
 from mining.search_states import (
     SEARCH_RUN_ACTIVE_STATUSES,
     SEARCH_RUN_STATUSES,
@@ -214,6 +219,9 @@ __all__ = [
     "MiningSearchOrchestrator",
     "SearchProgress",
     "progress_for_search",
+    "CandidateScoreCard",
+    "build_candidate_scorecard",
+    "build_run_scorecards",
     "SEARCH_RUN_ACTIVE_STATUSES",
     "SEARCH_RUN_STATUSES",
     "SEARCH_RUN_TERMINAL_STATUSES",
