@@ -8,11 +8,12 @@ import {
   statusLabel,
 } from './mining_api.js';
 import {renderCandidate} from './mining_candidate.js';
+import {renderSearchRun, searchBudgetFields} from './mining_search.js';
 
 let options = null;
 let activeController = null;
 
-const activeStatuses = new Set(['queued', 'generating', 'screening', 'evaluating', 'holding_out']);
+const activeStatuses = new Set(['queued', 'generating', 'searching', 'selecting', 'screening', 'evaluating', 'holding_out']);
 
 export function disposeMining() {
   activeController?.abort();
@@ -47,7 +48,7 @@ async function listPage(app, current) {
   if (!runs.length) return;
   const wrap = app.querySelector('#mining-runs');
   wrap.innerHTML = `<div class="table-wrap"><table><thead><tr><th>研究假设</th><th>状态</th><th>阶段</th><th>创建时间</th><th>错误</th></tr></thead><tbody>
-    ${runs.map(run => `<tr><td><a href="#/mining/${encodeURIComponent(run.run_id)}">${esc(run.hypothesis)}</a><div class="mini muted">${esc(run.run_id)}</div></td><td>${statusTag(run.status)}</td><td>${esc(statusLabel(run.last_completed_stage))}</td><td>${esc(formatTime(run.created_at))}</td><td>${esc(run.error_code || '—')}${run.error_message ? `<div class="mini muted">${esc(run.error_message)}</div>` : ''}</td></tr>`).join('')}
+    ${runs.map(run => `<tr><td><a href="#/mining/${encodeURIComponent(run.run_id)}">${esc(run.hypothesis)}</a><div class="mini muted">${esc(run.run_id)} · ${esc(run.engine || 'v1')}</div></td><td>${statusTag(run.status)}</td><td>${esc(statusLabel(run.last_completed_stage || run.status))}</td><td>${esc(formatTime(run.created_at))}</td><td>${esc(run.error_code || '—')}${run.error_message ? `<div class="mini muted">${esc(run.error_message)}</div>` : ''}</td></tr>`).join('')}
   </tbody></table></div>`;
 }
 
@@ -58,9 +59,28 @@ function numericField(name, label, value, step, min, max, hint = '') {
 async function newPage(app, current) {
   const opts = await miningOptions();
   if (!current()) return;
-  const defaults = opts.defaults;
+  const v2 = Boolean(opts.search_v2?.enabled);
+  const defaults = v2 ? opts.search_v2.defaults : opts.defaults;
+  const v2Options = opts.search_v2 || {};
+  const budgetFields = v2
+    ? searchBudgetFields(v2Options.defaults, v2Options.limits)
+    : `
+        ${numericField('max_rounds', '最大轮次', defaults.max_rounds, '1', 1, opts.limits.max_rounds)}
+        ${numericField('max_candidates', '最大候选数', defaults.max_candidates, '1', 1, opts.limits.max_candidates)}
+        ${numericField('full_eval_top_k', '完整评估数', defaults.full_eval_top_k, '1', 1, opts.limits.full_eval_top_k)}
+        ${numericField('max_llm_calls', 'LLM 调用上限', defaults.max_llm_calls, '1', 1, opts.limits.max_llm_calls)}
+        ${numericField('max_expression_depth', '表达式最大深度', defaults.max_expression_depth, '1', 2, opts.limits.max_expression_depth)}
+        <label>方向<select name="direction"><option value="either" ${defaults.direction === 'either' ? 'selected' : ''}>不限</option><option value="positive" ${defaults.direction === 'positive' ? 'selected' : ''}>正向</option><option value="negative" ${defaults.direction === 'negative' ? 'selected' : ''}>负向</option></select></label>
+        ${numericField('min_coverage', '最低覆盖率（0～1）', defaults.min_coverage, '0.01', 0, 1)}
+        ${numericField('max_failure_rate', '失败率停止阈值（0～1）', defaults.max_failure_rate, '0.01', 0.01, 1)}
+        ${numericField('min_quality_checks_for_failure_stop', '失败率最少检查数', defaults.min_quality_checks_for_failure_stop, '1', 1, opts.limits.max_candidates)}
+        ${numericField('seed', '随机种子', defaults.seed, '1', -2147483648, 2147483647)}
+        <label>排除字段<input name="excluded_fields" value="${esc((defaults.excluded_fields || []).join(', '))}" placeholder="用逗号分隔"><span class="mini muted">仅排除已登记字段，服务端会再次校验。</span></label>`;
+  const windowsText = v2
+    ? `开发期 ${esc(v2Options.windows.development_start)}～${esc(v2Options.windows.development_end)} · 选择期仅供控制器 · 最终研究期和模块测试段不进入 Worker`
+    : `研究期 ${esc(opts.windows.research_start)}～${esc(opts.windows.research_end)} · 完整评估 ${esc(opts.windows.full_eval_start)}～${esc(opts.windows.full_eval_end)} · 测试段 ${esc(opts.windows.holdout_start)}～${esc(opts.windows.holdout_end)}`;
   app.innerHTML = `<div class="page-heading">
-    <div><h1>提交研究假设</h1><p class="intro muted">假设会与预算、数据快照、字段目录和算子目录一起冻结。Worker 不可用时任务会明确失败，不会回退到 Mock。</p></div>
+    <div><h1>提交研究假设</h1><p class="intro muted">${v2 ? 'V2 实验链路会逐轮依据开发期证据修订假设；选择期和测试段不会反馈给 Worker。' : '假设会与预算、数据快照、字段目录和算子目录一起冻结。Worker 不可用时任务会明确失败，不会回退到 Mock。'}</p></div>
     <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
   </div>
   <form id="mining-form">
@@ -72,19 +92,9 @@ async function newPage(app, current) {
     <details class="card">
       <summary><strong>高级预算</strong> · 默认使用已验收预算</summary>
       <div class="form-grid budget-grid">
-        ${numericField('max_rounds', '最大轮次', defaults.max_rounds, '1', 1, opts.limits.max_rounds)}
-        ${numericField('max_candidates', '最大候选数', defaults.max_candidates, '1', 1, opts.limits.max_candidates)}
-        ${numericField('full_eval_top_k', '完整评估数', defaults.full_eval_top_k, '1', 1, opts.limits.full_eval_top_k)}
-        ${numericField('max_llm_calls', 'LLM 调用上限', defaults.max_llm_calls, '1', 1, opts.limits.max_llm_calls)}
-        ${numericField('max_expression_depth', '表达式最大深度', defaults.max_expression_depth, '1', 2, opts.limits.max_expression_depth)}
-        <label>方向<select name="direction"><option value="either" ${defaults.direction === 'either' ? 'selected' : ''}>不限</option><option value="positive" ${defaults.direction === 'positive' ? 'selected' : ''}>正向</option><option value="negative" ${defaults.direction === 'negative' ? 'selected' : ''}>负向</option></select></label>
-        ${numericField('min_coverage', '最低覆盖率（0～1）', defaults.min_coverage, '0.01', 0, 1)}
-        ${numericField('max_failure_rate', '失败率停止阈值（0～1）', defaults.max_failure_rate, '0.01', 0.01, 1)}
-        ${numericField('min_quality_checks_for_failure_stop', '失败率最少检查数', defaults.min_quality_checks_for_failure_stop, '1', 1, opts.limits.max_candidates)}
-        ${numericField('seed', '随机种子', defaults.seed, '1', -2147483648, 2147483647)}
-        <label>排除字段<input name="excluded_fields" value="${esc((defaults.excluded_fields || []).join(', '))}" placeholder="用逗号分隔"><span class="mini muted">仅排除已登记字段，服务端会再次校验。</span></label>
+        ${budgetFields}
       </div>
-      <div class="budget-windows">研究期 ${esc(opts.windows.research_start)}～${esc(opts.windows.research_end)} · 完整评估 ${esc(opts.windows.full_eval_start)}～${esc(opts.windows.full_eval_end)} · 测试段 ${esc(opts.windows.holdout_start)}～${esc(opts.windows.holdout_end)}</div>
+      <div class="budget-windows">${windowsText}</div>
     </details>
     <div id="mining-form-status" class="status-box muted">${opts.worker_configured ? 'Worker 已配置；提交时仍会检查健康状态。' : '主服务尚未配置 MINING_WORKER_URL；提交会明确失败。'}</div>
     <div class="form-actions"><button type="submit">创建并开始运行</button><a class="button-link secondary-link" href="#/mining">取消</a></div>
@@ -96,7 +106,7 @@ async function newPage(app, current) {
     event.preventDefault();
     const data = new FormData(form);
     const numeric = name => Number(data.get(name));
-    const constraints = {
+    const constraints = v2 ? null : {
       max_rounds: numeric('max_rounds'),
       max_candidates: numeric('max_candidates'),
       full_eval_top_k: numeric('full_eval_top_k'),
@@ -114,11 +124,24 @@ async function newPage(app, current) {
     status.className = 'status-box';
     status.textContent = '正在冻结上下文并提交 Worker 任务…';
     try {
-      const detail = await miningJSON('/api/mining/runs', {
+      const body = {
         hypothesis: data.get('hypothesis'),
         idempotency_key: idempotencyKey,
-        constraints,
-      });
+      };
+      if (v2) {
+        body.budget = {
+          ...v2Options.defaults,
+          max_search_turns: numeric('search_turns'),
+          max_hypothesis_branches: numeric('hypothesis_branches'),
+          max_refines_per_branch: numeric('refines_per_branch'),
+          max_candidates_per_turn: numeric('candidates_per_turn'),
+          max_candidates_per_run: numeric('candidates_per_run'),
+          max_full_evaluations: numeric('full_evaluations'),
+        };
+      } else {
+        body.constraints = constraints;
+      }
+      const detail = await miningJSON('/api/mining/runs', body);
       location.hash = `#/mining/${encodeURIComponent(detail.run.run_id)}`;
     } catch (error) {
       submit.disabled = false;
@@ -145,8 +168,29 @@ function appendEvents(container, events, seen) {
   }
 }
 
-function renderRun(app, detail, opts) {
+function renderRun(app, detail, opts, current) {
   const run = detail.run;
+  async function mutateRun(action) {
+    const status = app.querySelector('#mining-run-status');
+    const button = app.querySelector(action === 'cancel' ? '#cancel-mining' : '#resume-mining');
+    if (action === 'cancel' && !confirm('确定在下一个安全边界取消该运行？')) return;
+    button.disabled = true;
+    status.className = 'status-box';
+    status.textContent = action === 'cancel' ? '正在请求取消…' : '正在恢复运行…';
+    try {
+      await miningJSON(`/api/mining/runs/${encodeURIComponent(run.run_id)}/${action}`, {});
+      if (!current()) return;
+      await showRun(app, run.run_id, current);
+    } catch (error) {
+      button.disabled = false;
+      status.className = 'status-box error';
+      status.textContent = errorText(error);
+    }
+  }
+  if (run.engine === 'v2') {
+    renderSearchRun(app, detail, mutateRun);
+    return;
+  }
   const progress = detail.progress;
   const budget = run.context.budget || {};
   const candidates = detail.candidates;
@@ -217,23 +261,6 @@ function renderRun(app, detail, opts) {
   app.querySelector('#cancel-mining')?.addEventListener('click', () => mutateRun('cancel'));
   app.querySelector('#resume-mining')?.addEventListener('click', () => mutateRun('resume'));
 
-  async function mutateRun(action) {
-    const status = app.querySelector('#mining-run-status');
-    const button = app.querySelector(action === 'cancel' ? '#cancel-mining' : '#resume-mining');
-    if (action === 'cancel' && !confirm('确定在下一个安全阶段边界取消该运行？')) return;
-    button.disabled = true;
-    status.className = 'status-box';
-    status.textContent = action === 'cancel' ? '正在请求取消…' : '正在恢复运行…';
-    try {
-      await miningJSON(`/api/mining/runs/${encodeURIComponent(run.run_id)}/${action}`, {});
-      if (!current()) return;
-      await showRun(app, run.run_id, current);
-    } catch (error) {
-      button.disabled = false;
-      status.className = 'status-box error';
-      status.textContent = errorText(error);
-    }
-  }
 }
 
 function progressBar(label, used, total) {
@@ -247,7 +274,7 @@ async function showRun(app, runId, current) {
   const opts = await miningOptions();
   const detail = await miningRequest(`/api/mining/runs/${encodeURIComponent(runId)}`);
   if (!current()) return;
-  renderRun(app, detail, opts);
+  renderRun(app, detail, opts, current);
   const eventPage = await miningRequest(`/api/mining/runs/${encodeURIComponent(runId)}/events?after=0&limit=1000`);
   if (!current()) return;
   const timeline = app.querySelector('#mining-events');

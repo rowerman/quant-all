@@ -5,6 +5,11 @@
 S7 在监测站内提供挖掘运行创建、状态查看、事件流、取消、恢复和人工审核。它只调用
 `MiningOrchestrator` 与 `MiningStore` 的公开方法，不直接写候选表，也不构建或发布正式因子。
 
+设置 `MINING_SEARCH_V2_ENABLED=true` 时，新运行改走实验性
+`MiningSearchWebService` 和 `MiningSearchOrchestrator`；未设置或为 false 时继续使用
+V1。已有 `searchrun_` 运行仍可按 ID 查询、取消和恢复，V1 运行不会因开关变化改变
+行为。
+
 ```text
 浏览器 #/mining
   -> backend.mining_routes       REST、SSE、HTTP 错误
@@ -28,6 +33,9 @@ S7 在监测站内提供挖掘运行创建、状态查看、事件流、取消�
 部分覆盖合并到默认值，再通过 `MiningConstraints` 校验并冻结进上下文哈希。固定股票池、
 标签和价格通道不能由页面改变。
 
+V2 实验页使用 `configs/mining/search.json` 中的搜索轮次、分支、候选和完整评估预算，
+并把控制策略一起冻结。V2 页面不提供候选审批或正式发布按钮。
+
 ## 事件流
 
 运行事件保存在 `mining.event`，按运行内递增序号读取。页面先读取已有事件，再从最后序号
@@ -43,6 +51,7 @@ GET /api/mining/runs/<run_id>/stream?after=<sequence>
 安全阶段边界停止任务。
 
 事件轨迹只展示已持久化的阶段和摘要，不包含模型隐藏思维链、原始提示、Key 或敏感原文。
+V2 还展示假设父子关系、候选父子关系、逐轮决策、停止原因、尝试分类和评分卡缺失项。
 
 ## 人工审核
 

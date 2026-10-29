@@ -90,6 +90,8 @@ export function formatTime(value) {
 export function statusLabel(status) {
   return {
     queued: '排队',
+    searching: '逐轮搜索',
+    selecting: '选择期排序',
     generating: '生成候选',
     screening: '快速筛选',
     evaluating: '完整评估',
@@ -115,5 +117,9 @@ export function statusLabel(status) {
     validating: '发布校验中',
     rolled_back: '已回滚',
     build_failed: '正式构建失败',
+    refine: '继续修正',
+    branch: '切换分支',
+    stop: '停止搜索',
+    promote: '进入入围',
   }[status] || status || '—';
 }

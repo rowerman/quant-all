@@ -54,6 +54,9 @@ export MINING_WORKER_URL=http://127.0.0.1:8790
 bash tools/monitor/serve.sh
 ```
 
+默认仍使用 V1 生产编排。需要运行证据驱动 V2 实验时额外设置
+`MINING_SEARCH_V2_ENABLED=true`；V2 默认关闭，不开放实验候选的审批和正式发布。
+
 监测站是前台服务，打开 http://127.0.0.1:8800/#/mining 进入挖掘页面。首次启动会创建
 独立候选库 `data/databases/factor_mining.duckdb` 和 `data/factor_mining/`；只有人工批准
 并执行正式发布后，才会写入 `mined` 正式因子。

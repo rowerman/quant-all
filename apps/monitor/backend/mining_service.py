@@ -43,6 +43,7 @@ from mining.orchestrator import MiningOrchestrator
 from mining.publication_service import MiningPublicationService
 from mining.snapshot import DEFAULT_DATA_MANIFEST, assert_context_snapshot
 from mining.storage import MiningStore
+from backend.mining_search_service import MiningSearchWebService
 
 _LOGGER = get_mining_logger("mining.web")
 _STREAM_END_STATUSES = {
@@ -86,6 +87,7 @@ class MiningWebService:
         factor_dir: Path | str = FACTOR_DIR,
         catalog_file: Path | str = FACTOR_DB_FILE,
         manifest_file: Path | str = DEFAULT_DATA_MANIFEST,
+        search_service: MiningSearchWebService | None = None,
     ) -> None:
         self.store = store or MiningStore(MINING_DB_FILE, MINING_DATA_DIR)
         self.orchestrator = orchestrator or MiningOrchestrator(store=self.store)
@@ -97,6 +99,11 @@ class MiningWebService:
         self.factor_dir = Path(factor_dir)
         self.catalog_file = Path(catalog_file)
         self.manifest_file = Path(manifest_file)
+        self.search_service = search_service
+        self._search_enabled = (
+            search_service is not None
+            or self._env_enabled("MINING_SEARCH_V2_ENABLED")
+        )
         self._snapshot_check = snapshot_check or assert_context_snapshot
         self.publication_service = MiningPublicationService(
             store=self.store,
@@ -120,6 +127,8 @@ class MiningWebService:
             interrupted = self.store.interrupt_active_runs()
             removed = self.store.cleanup_transient_temp()
             self.publication_service.initialize()
+            if self._search_enabled:
+                self._search_service().initialize()
             self._initialized = True
             _LOGGER.info(
                 format_event(
@@ -139,12 +148,14 @@ class MiningWebService:
                 return
             self._closed = True
         self.publication_service.close()
+        if self.search_service is not None:
+            self.search_service.close()
         self.orchestrator.close()
 
     def options(self) -> dict[str, Any]:
         """返回页面预算默认值、限制和冻结口径。"""
 
-        return {
+        result = {
             "defaults": self.defaults.to_dict(),
             "limits": {
                 "max_rounds": 10,
@@ -170,11 +181,21 @@ class MiningWebService:
             "worker_configured": bool(
                 os.environ.get("MINING_WORKER_URL", "").strip()
             ),
+            "engine": "v2" if self._search_enabled else "v1",
         }
+        if self._search_enabled:
+            search = self._search_service().options()
+            result["search_v2"] = {"enabled": True, **search}
+            result["worker_configured"] = search["worker_configured"]
+        else:
+            result["search_v2"] = {"enabled": False}
+        return result
 
     def create_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """校验并创建后台挖掘运行。"""
 
+        if self._search_enabled:
+            return self._search_service().create_run(payload)
         body = self._body(payload, _CREATE_FIELDS)
         hypothesis = body.get("hypothesis")
         idempotency_key = body.get("idempotency_key")
@@ -204,12 +225,24 @@ class MiningWebService:
 
         if isinstance(limit, bool) or not isinstance(limit, int):
             raise MiningContractError("limit 必须是整数")
-        rows = self.store.list_runs(max(1, min(limit, 200)))
-        return [self._run_summary(row) for row in rows]
+        size = max(1, min(limit, 200))
+        rows = [
+            {**self._run_summary(row), "engine": "v1"}
+            for row in self.store.list_runs(size)
+        ]
+        if self._search_enabled:
+            rows.extend(self._search_service().list_runs(size))
+        return sorted(
+            rows,
+            key=lambda item: str(item.get("created_at", "")),
+            reverse=True,
+        )[:size]
 
     def run_detail(self, run_id: str) -> dict[str, Any]:
         """返回运行、预算进度和候选摘要。"""
 
+        if self._is_search_run(run_id):
+            return self._search_service().run_detail(run_id)
         run = self.store.get_run(run_id)
         return {
             "run": self._run_view(run),
@@ -223,6 +256,8 @@ class MiningWebService:
     def run_status(self, run_id: str) -> dict[str, Any]:
         """返回 SSE 轮询所需的轻量运行状态。"""
 
+        if self._is_search_run(run_id):
+            return self._search_service().run_status(run_id)
         run = self.store.get_run(run_id)
         return {
             "run_id": run["run_id"],
@@ -243,6 +278,12 @@ class MiningWebService:
     ) -> dict[str, Any]:
         """按序号读取安全业务事件。"""
 
+        if self._is_search_run(run_id):
+            return self._search_service().events(
+                run_id,
+                after=after,
+                limit=limit,
+            )
         if isinstance(after, bool) or not isinstance(after, int) or after < 0:
             raise MiningContractError("after 必须是非负整数")
         if isinstance(limit, bool) or not isinstance(limit, int):
@@ -260,18 +301,24 @@ class MiningWebService:
     def cancel(self, run_id: str) -> dict[str, Any]:
         """请求取消运行并返回最新摘要。"""
 
+        if self._is_search_run(run_id):
+            return self._search_service().cancel(run_id)
         run = self.orchestrator.cancel(run_id)
         return self._run_summary(run)
 
     def resume(self, run_id: str) -> dict[str, Any]:
         """恢复中断运行并返回最新详情。"""
 
+        if self._is_search_run(run_id):
+            return self._search_service().resume(run_id)
         self.orchestrator.resume(run_id, background=True)
         return self.run_detail(run_id)
 
     def candidate_detail(self, run_id: str, candidate_id: str) -> dict[str, Any]:
         """返回候选定义、四阶段证据和当前审批资格。"""
 
+        if self._is_search_run(run_id):
+            raise MiningContractError("V2 实验候选暂不提供审批页面")
         run = self.store.get_run(run_id)
         candidate = self.store.get_candidate(run_id, candidate_id)
         context = context_from_run(run)
@@ -429,6 +476,30 @@ class MiningWebService:
             "candidate": self.store.get_candidate(run_id, candidate_id),
         }
 
+    def _search_service(self) -> MiningSearchWebService:
+        if self.search_service is None:
+            self.search_service = MiningSearchWebService(
+                db_file=self.db_file,
+                factor_dir=self.factor_dir,
+                manifest_file=self.manifest_file,
+            )
+            if self._initialized:
+                self.search_service.initialize()
+        return self.search_service
+
+    @staticmethod
+    def _env_enabled(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    @staticmethod
+    def _is_search_run(run_id: str) -> bool:
+        return run_id.startswith("searchrun_")
+
     @staticmethod
     def _body(payload: Mapping[str, Any], allowed: set[str]) -> dict[str, Any]:
         """校验 JSON 请求体是对象且没有未知字段。"""
@@ -512,7 +583,7 @@ class MiningWebService:
     def _run_summary(run: Mapping[str, Any]) -> dict[str, Any]:
         """去掉大目录和请求正文后的运行摘要。"""
 
-        return {
+        result = {
             key: run.get(key)
             for key in (
                 "run_id",
@@ -520,6 +591,7 @@ class MiningWebService:
                 "status",
                 "hypothesis",
                 "worker_mode",
+                "engine",
                 "last_completed_stage",
                 "interruption_count",
                 "error_code",
@@ -530,6 +602,8 @@ class MiningWebService:
                 "finished_at",
             )
         }
+        result["engine"] = run.get("engine", "v1")
+        return result
 
     def _run_view(self, run: Mapping[str, Any]) -> dict[str, Any]:
         """返回运行及轻量冻结上下文字段。"""
