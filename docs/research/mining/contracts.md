@@ -1,5 +1,28 @@
 # 挖掘契约与状态机
 
+## V2 搜索契约
+
+`mining_v2` 在现有 V1 运行契约之外增加证据驱动搜索所需的严格对象，V1 的上下文、
+候选和状态哈希保持不变。V2 对象均拒绝缺失或未知字段，时间统一规范为 UTC，字段
+上限在对象构造和 JSON 解析时同时生效。
+
+| 对象 | 核心内容 | 稳定哈希排除项 |
+|---|---|---|
+| `HypothesisCard` | 父假设、turn、分支、机制、预期方向、可证伪条件 | `created_at` |
+| `ExperimentBatch` | 假设、候选及其父候选、开发期、参数和输入哈希 | `created_at` |
+| `EvidencePacket` | 开发期指标、失败、相关簇、尝试计数和预算状态 | `created_at` |
+| `SearchDecision` | `refine / branch / stop / promote`、理由和目标假设 | `created_at` |
+| `TrialRecord` | 提出、拒绝、重复、非法、门禁、评估和测试段尝试 | `occurred_at` |
+
+`SearchBudget` 冻结默认上限：6 个 turn、3 个假设分支、每分支 3 次修正、每 turn
+4 个候选、每运行 24 个候选、4 个完整评估、连续 2 turn 无改善停止、每 turn
+4 次工具调用。调用方可以收紧上限，但不能超过这些值。
+
+`HypothesisCard` 的假设正文为 8～4000 字符，机制最多 1000 字符，可证伪条件
+最多 12 条且每条最多 500 字符。`ExperimentBatch` 每批最多 4 个候选，参数对象最多
+16 KiB；`EvidencePacket` 的总规范化 JSON 不得超过 64 KiB；`TrialRecord` 的扩展
+载荷不得超过 16 KiB。所有对象由 `mining.search_contracts` 统一导出。
+
 ## 运行请求
 
 `MiningRunRequest` 包含 `idempotency_key`、研究假设、预算约束和模型配置。首版固定：
