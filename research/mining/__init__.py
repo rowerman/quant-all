@@ -115,6 +115,10 @@ from mining.search_contracts import (
     ensure_agent_visible,
     load_search_config,
 )
+from mining.search_evidence_builder import (
+    DevelopmentCandidateEvidence,
+    build_development_evidence,
+)
 from mining.states import (
     CANDIDATE_ACTIVE_STATUSES,
     CANDIDATE_STATUSES,
@@ -183,6 +187,8 @@ __all__ = [
     "CandidateDefinition",
     "CompiledExpression",
     "EvaluationReport",
+    "DevelopmentCandidateEvidence",
+    "build_development_evidence",
     "EvidencePacket",
     "ExperimentBatch",
     "ExpressionValidationError",
