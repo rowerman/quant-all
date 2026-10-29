@@ -84,3 +84,32 @@ store.validate_search_trace(run["run_id"])
 
 轨迹只读取当前运行，不查询其他运行的候选、证据或结论。日志只记录运行、turn、对象
 ID、请求哈希和重用状态，不记录完整假设、表达式或证据正文。
+
+## 尝试台账与预算
+
+`record_trial()` 只追加记录，不允许删除或覆盖。相同 `trial_key` 和相同内容幂等，
+不同内容返回冲突；写入尝试、更新分类计数和推进轨迹哈希在同一事务完成。计数包括
+提出、拒绝、重复、非法、门禁失败、快速评估、完整评估和测试段领取；作废操作追加
+`trial_invalidation`，原尝试和原计数继续保留。
+
+```python
+trial = TrialRecord(
+    run_id=run["run_id"],
+    trial_key="turn-1-proposed-1",
+    kind="proposed",
+    turn_index=1,
+    hypothesis_id=hypothesis_id,
+    batch_id=batch_id,
+    candidate_id=candidate_id,
+)
+store.record_trial(trial)
+summary = store.trial_summary(run["run_id"])
+```
+
+`trial_summary()` 同时返回尝试总数、失败数、评估数、完整评估数和测试段领取数，避免
+审核人只看到成功候选。`transition_candidate(..., trial=...)` 把候选状态和尝试记录
+放在同一事务中；任何一步失败都会整体回滚。
+
+预算在运行上下文中冻结。turn、分支数、每分支修正数、每 turn 候选数、每运行候选数、
+完整评估数和测试段领取都会在执行入口校验；超过上限抛出 `MINING-111`。后续修改
+`search.json` 只能影响新运行，不能为当前运行扩容。

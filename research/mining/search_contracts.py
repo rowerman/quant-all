@@ -23,6 +23,7 @@ from mining.search_context import (
     load_search_config,
 )
 from mining.search_evidence import EvidencePacket, SearchDecision
+from mining.search_run import SearchRunRequest
 from mining.search_trials import TrialRecord
 
 __all__ = [
@@ -44,6 +45,7 @@ __all__ = [
     "SearchBudget",
     "SearchConfig",
     "SearchDecision",
+    "SearchRunRequest",
     "TrialCounts",
     "TrialRecord",
     "SearchWindows",

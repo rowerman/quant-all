@@ -77,6 +77,7 @@ class V2TurnStoreMixin:
                                 )
                             reused = True
                         else:
+                            self._ensure_turn_budget_conn(conn, hypothesis)
                             self._insert_hypothesis_conn(conn, hypothesis)
                             self._insert_batch_conn(conn, batch)
                             now = utc_now_iso()

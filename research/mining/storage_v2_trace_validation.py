@@ -10,6 +10,7 @@ from mining.contract_types import sha256_json
 from mining.errors import MiningNotFoundError, MiningStorageError
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.search_evidence import EvidencePacket, SearchDecision
+from mining.search_trials import TrialRecord
 from mining.storage_v2_trace_states import ZERO_HASH
 
 
@@ -163,6 +164,30 @@ class V2TraceValidationMixin:
                 row["name"],
                 row["status"],
                 json.loads(row["payload_json"]),
+            )
+        if entry_type == "trial_record":
+            payload = self._entity_payload_conn(
+                conn,
+                "mining_v2.trial_record",
+                "trial_id",
+                run_id,
+                entry_id,
+            )
+            return TrialRecord.from_dict(payload).trial_hash
+        if entry_type == "trial_invalidation":
+            row = conn.execute(
+                "SELECT trial_id, reason_code "
+                "FROM mining_v2.trial_invalidation "
+                "WHERE run_id=? AND invalidation_id=?",
+                [run_id, entry_id],
+            ).fetchone()
+            if row is None:
+                raise MiningStorageError(f"轨迹作废记录不存在：{entry_id}")
+            return sha256_json(
+                {
+                    "trial_id": row[0],
+                    "reason_code": row[1],
+                }
             )
         return None
 

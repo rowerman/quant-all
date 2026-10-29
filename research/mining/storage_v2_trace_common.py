@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 import duckdb
@@ -12,6 +13,7 @@ from mining.errors import (
     MiningNotFoundError,
     MiningStateError,
 )
+from mining.search_budget import SearchBudget
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.storage_v2_trace_states import TURN_TRANSITIONS, ZERO_HASH
 
@@ -247,6 +249,57 @@ class V2TraceCommonMixin:
         )
         return trace_hash
 
+    def _budget_for_run_conn(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        run_id: str,
+    ) -> SearchBudget:
+        row = conn.execute(
+            "SELECT c.payload_json FROM mining_v2.context c "
+            "JOIN mining_v2.run r ON r.context_id=c.context_id "
+            "WHERE r.run_id=?",
+            [run_id],
+        ).fetchone()
+        if row is None:
+            raise MiningNotFoundError(f"V2 搜索运行不存在：{run_id}")
+        payload = json.loads(row[0])
+        return SearchBudget.from_dict(payload["budget"])
+
+    def _ensure_turn_budget_conn(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        hypothesis: HypothesisCard,
+    ) -> None:
+        budget = self._budget_for_run_conn(conn, hypothesis.run_id)
+        if hypothesis.turn_index > budget.max_search_turns:
+            raise MiningStateError("搜索预算已用尽：max_search_turns")
+        count = int(
+            conn.execute(
+                "SELECT count(*) FROM mining_v2.hypothesis WHERE run_id=?",
+                [hypothesis.run_id],
+            ).fetchone()[0]
+        )
+        branch_count = int(
+            conn.execute(
+                "SELECT count(DISTINCT branch_id) FROM mining_v2.hypothesis "
+                "WHERE run_id=?",
+                [hypothesis.run_id],
+            ).fetchone()[0]
+        )
+        branch_cards = int(
+            conn.execute(
+                "SELECT count(*) FROM mining_v2.hypothesis "
+                "WHERE run_id=? AND branch_id=?",
+                [hypothesis.run_id, hypothesis.branch_id],
+            ).fetchone()[0]
+        )
+        if branch_cards == 0 and branch_count >= budget.max_hypothesis_branches:
+            raise MiningStateError("搜索预算已用尽：max_hypothesis_branches")
+        if branch_cards > budget.max_refines_per_branch:
+            raise MiningStateError("搜索预算已用尽：max_refines_per_branch")
+        if count >= budget.max_search_turns:
+            raise MiningStateError("搜索预算已用尽：假设数量")
+
     @staticmethod
     def _candidate_entry_hash(
         candidate_id: str,
@@ -262,7 +315,6 @@ class V2TraceCommonMixin:
                 "candidate_hash": candidate_hash,
                 "semantic_hash": semantic_hash,
                 "name": name,
-                "status": status,
                 "payload": dict(payload),
             }
         )
