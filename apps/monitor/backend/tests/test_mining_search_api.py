@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -10,8 +11,13 @@ from backend.app import create_app
 from backend.mining_search_service import MiningSearchWebService
 from backend.mining_service import MiningWebService
 from mining.search_context import FrozenSearchContext
+from mining.search_cards import ExperimentBatch, HypothesisCard
+from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_progress import progress_for_search
 from mining.search_run import SearchRunRequest
+from mining.search_statistical_diagnostics import (
+    build_multiple_testing_report,
+)
 from mining.storage import MiningStore
 from mining.storage_v2 import MiningV2Store
 
@@ -124,3 +130,120 @@ def test_v2_detail_does_not_require_v1_run(tmp_path: Path):
     assert detail["run"]["run_id"] == run["run_id"]
     assert "payload" not in detail["run"]["context"]
     assert detail["attempts"]["proposed"] == 0
+
+
+def test_v2_detail_exposes_safe_m3_quality_evidence(tmp_path: Path):
+    service, store = _services(tmp_path)
+    context = FrozenSearchContext(data_fingerprint="a" * 64)
+    run = store.create_run(
+        SearchRunRequest(
+            "v2-m3-detail-0001",
+            "短期反转可能带来开发期超额收益",
+        ),
+        context,
+    )
+    hypothesis = HypothesisCard(
+        run_id=run["run_id"],
+        turn_index=1,
+        branch_id="branch-0001",
+        statement="短期反转可能带来开发期超额收益",
+        mechanism="短期价格修复",
+        expected_direction="positive",
+        falsification_criteria=("年度同号率低于 0.6",),
+    )
+    batch = ExperimentBatch(
+        run_id=run["run_id"],
+        hypothesis_id=hypothesis.hypothesis_id,
+        turn_index=1,
+        branch_id=hypothesis.branch_id,
+        candidate_ids=("cand_api_0001",),
+        parent_candidate_ids=(),
+        development_start="2012-01-01",
+        development_end="2019-12-31",
+        input_hash="b" * 64,
+    )
+    store.begin_turn(run["run_id"], hypothesis, batch)
+    store.record_candidate(
+        run["run_id"],
+        candidate_id="cand_api_0001",
+        candidate_hash="c" * 64,
+        semantic_hash="d" * 64,
+        name="MINE_API_0001",
+        status="screening",
+        hypothesis_id=hypothesis.hypothesis_id,
+        batch_id=batch.batch_id,
+        payload={"canonical_expression": "mean(close, 5)"},
+    )
+    store.record_evaluation_evidence(
+        SearchEvaluationEvidence(
+            run_id=run["run_id"],
+            candidate_id="cand_api_0001",
+            stage="selection",
+            input_hash="e" * 64,
+            status="passed",
+            metrics={
+                "rank_ic_mean": 0.04,
+                "rank_ic_ir": 0.5,
+                "year_sign_consistency": 0.8,
+                "values": {"coverage": 0.7},
+                "valid_days": 100,
+            },
+        )
+    )
+    store.record_evaluation_evidence(
+        SearchEvaluationEvidence(
+            run_id=run["run_id"],
+            candidate_id="cand_api_0001",
+            stage="selection_diagnostics",
+            input_hash="f" * 64,
+            status="available",
+            metrics={
+                "correlation": {
+                    "cluster_id": "cluster-0001",
+                    "cluster_candidate_ids": ["cand_api_0001"],
+                },
+                "incremental": {"incremental_rank_ic": 0.03},
+            },
+        )
+    )
+    store.record_evaluation_evidence(
+        SearchEvaluationEvidence(
+            run_id=run["run_id"],
+            candidate_id="cand_api_0001",
+            stage="stability",
+            input_hash="1" * 64,
+            status="stable",
+            metrics={
+                "status": "stable",
+                "rank_ic_ratio": 0.8,
+                "reason": None,
+            },
+        )
+    )
+    days = 25
+    dates = tuple(f"2020-01-{index + 1:02d}" for index in range(days))
+    values = tuple(0.01 * ((index % 5) - 2) for index in range(days))
+    statistics = build_multiple_testing_report(
+        run_id=run["run_id"],
+        series={"cand_api_0001": (dates, values)},
+        attempt_count=3,
+        evaluated_count=1,
+    )
+    store.record_evaluation_evidence(
+        statistics.to_evaluation_evidence("cand_api_0001")
+    )
+
+    detail = service.run_detail(run["run_id"])
+    candidate = detail["candidates"][0]
+    encoded = json.dumps(detail, ensure_ascii=False)
+
+    assert detail["branch_count"] == 1
+    assert candidate["selection_quality"]["status"] == "quality_passed"
+    assert candidate["research_quality"]["status"] == "quality_passed"
+    assert candidate["selection_diagnostics"]["correlation"]["cluster_id"] == (
+        "cluster-0001"
+    )
+    assert candidate["stability"]["status"] == "stable"
+    assert candidate["multiple_testing"]["bh_q_value"] is not None
+    assert detail["multiple_testing"]["denominator"] == 3
+    assert "mean(close, 5)" not in encoded

@@ -12,6 +12,21 @@ function statusTag(status) {
   return `<span class="tag mining-status mining-status-${esc(status)}">${esc(statusLabel(status))}</span>`;
 }
 
+function candidateEvidence(item) {
+  const diagnostics = item.selection_diagnostics || {};
+  const correlation = diagnostics.correlation || {};
+  const incremental = diagnostics.incremental || {};
+  const stability = item.stability || {};
+  const statistical = item.multiple_testing || {};
+  return {
+    cluster: correlation.cluster_id || '—',
+    incremental: incremental.incremental_rank_ic,
+    stability: stability.status ? statusLabel(stability.status) : '证据不足',
+    stabilityReason: stability.reason || '—',
+    qValue: statistical.bh_q_value,
+  };
+}
+
 export function searchBudgetFields(defaults, limits) {
   const input = (name, label, value, maximum, hint = '') => `<label>${esc(label)}<input type="number" name="${name}" value="${esc(value)}" step="1" min="1" max="${esc(maximum)}" required>${hint ? `<span class="mini muted">${esc(hint)}</span>` : ''}</label>`;
   return [
@@ -52,7 +67,7 @@ export function renderSearchRun(app, detail, mutateRun) {
       ${budgetBar('完整评估', attempts.full_evaluated, budget.max_full_evaluations)}
       ${budgetBar('测试段领取', attempts.holdout_claimed, 1)}
     </div>
-    <p class="mini muted">假设 ${esc(progress.hypotheses)} · 候选 ${esc(progress.candidates)} · 失败候选 ${esc(progress.failed_candidates)} · 拒绝 ${esc(attempts.rejected || 0)} · 门禁失败 ${esc(attempts.gate_failed || 0)} · 当前动作 ${esc(statusLabel(progress.current_action))}</p>
+    <p class="mini muted">假设 ${esc(progress.hypotheses)} · 分支 ${esc(detail.branch_count)} · 候选 ${esc(progress.candidates)} · 失败候选 ${esc(progress.failed_candidates)} · 拒绝 ${esc(attempts.rejected || 0)} · 门禁失败 ${esc(attempts.gate_failed || 0)} · 当前动作 ${esc(statusLabel(progress.current_action))}</p>
   </section>
   <section class="card">
     <h2>假设树</h2>
@@ -65,6 +80,12 @@ export function renderSearchRun(app, detail, mutateRun) {
   <section class="card">
     <h2>候选与评分卡</h2>
     ${detail.candidates.length ? '<div id="search-candidates"></div>' : '<p class="muted">尚无候选。</p>'}
+  </section>
+  <section class="card">
+    <h2>防过拟合证据</h2>
+    <p class="mini muted">质量通过只表示达到冻结研究门槛，不等于人工批准。模块测试段只允许一次性隔离验收。</p>
+    ${detail.multiple_testing ? `<p class="mini muted">统计尝试 ${esc(detail.multiple_testing.attempt_count)} · 评估 ${esc(detail.multiple_testing.evaluated_count)} · 可检验 ${esc(detail.multiple_testing.tested_count)} · BH 分母 ${esc(detail.multiple_testing.denominator)}</p>` : '<p class="mini muted">统计诊断尚未生成。</p>'}
+    <div id="search-overfit-evidence"></div>
   </section>
   <section class="card">
     <h2>安全事件</h2>
@@ -99,6 +120,19 @@ export function renderSearchRun(app, detail, mutateRun) {
       评分阶段: item.decision_stage || '证据不足',
       缺失项: item.missing_fields.length ? item.missing_fields.join(', ') : '—',
     })));
+    table(app.querySelector('#search-overfit-evidence'), detail.candidates.map(item => {
+      const evidence = candidateEvidence(item);
+      return {
+        候选: `${item.name} · ${String(item.candidate_id).slice(-8)}`,
+        质量结论: statusLabel(item.research_quality?.status),
+        尝试次数: item.attempts?.proposed ?? 0,
+        相关簇: evidence.cluster,
+        增量RankIC: evidence.incremental,
+        稳定性: evidence.stability,
+        'BH q-value': evidence.qValue,
+        说明: evidence.stabilityReason,
+      };
+    }));
   }
   app.querySelector('#cancel-mining')?.addEventListener('click', () => mutateRun('cancel'));
   app.querySelector('#resume-mining')?.addEventListener('click', () => mutateRun('resume'));

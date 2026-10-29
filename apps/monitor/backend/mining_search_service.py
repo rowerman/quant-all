@@ -14,9 +14,12 @@ from mining.errors import MiningContractError
 from mining.logging_conf import format_event, get_mining_logger
 from mining.search_budget import SearchBudget
 from mining.search_context import FrozenSearchContext, load_search_config
+from mining.search_cards import HypothesisCard
 from mining.search_orchestrator import MiningSearchOrchestrator
 from mining.search_run import SearchRunRequest
+from mining.search_research_quality import evaluate_research_quality
 from mining.search_scorecard import build_run_scorecards
+from mining.search_statistical_diagnostics import MULTIPLE_TESTING_STAGE
 from mining.snapshot import DEFAULT_DATA_MANIFEST, data_snapshot_fingerprint
 from mining.storage_v2 import MiningV2Store
 from mining_worker.worker_config import load_worker_config
@@ -169,9 +172,13 @@ class MiningSearchWebService:
         run = self.store.get_run(run_id)
         trace = self.store.get_search_trace(run_id)
         progress = self.orchestrator.progress(run_id)
-        scorecards = {
-            item.candidate_id: item.to_dict()
+        scorecard_objects = {
+            item.candidate_id: item
             for item in build_run_scorecards(self.store, run_id)
+        }
+        scorecards = {
+            candidate_id: card.to_dict()
+            for candidate_id, card in scorecard_objects.items()
         }
         decisions = {
             int(item["turn_index"]): item for item in trace["decisions"]
@@ -206,6 +213,40 @@ class MiningSearchWebService:
         candidates = []
         for item in trace["candidates"]:
             card = scorecards.get(item["candidate_id"], {})
+            card_object = scorecard_objects.get(item["candidate_id"])
+            selection_quality = (
+                evaluate_research_quality(
+                    card_object,
+                    progress.control_policy,
+                    stage="selection",
+                ).to_dict()
+                if card_object is not None
+                else None
+            )
+            research_stage = (
+                "full"
+                if card_object is not None
+                and "full" in card_object.evidence_status_by_stage
+                else "selection"
+            )
+            research_quality = (
+                evaluate_research_quality(
+                    card_object,
+                    progress.control_policy,
+                    stage=research_stage,
+                ).to_dict()
+                if card_object is not None
+                else None
+            )
+            multiple_testing = card.get("multiple_testing") or {}
+            statistical_result = next(
+                (
+                    candidate
+                    for candidate in multiple_testing.get("candidates", [])
+                    if candidate.get("candidate_id") == item["candidate_id"]
+                ),
+                None,
+            )
             candidates.append(
                 {
                     "candidate_id": item["candidate_id"],
@@ -217,14 +258,45 @@ class MiningSearchWebService:
                     "missing_fields": card.get("missing_fields", []),
                     "scorecard_hash": card.get("scorecard_hash"),
                     "decision_stage": card.get("decision_stage"),
+                    "metrics": card.get("metrics", {}),
+                    "selection_diagnostics": card.get(
+                        "selection_diagnostics"
+                    ),
+                    "stability": card.get("stability"),
+                    "selection_quality": selection_quality,
+                    "research_quality": research_quality,
+                    "multiple_testing": statistical_result,
+                    "attempts": card.get("trial_counts", {}),
                 }
             )
+        finalist_event = next(
+            (
+                event
+                for event in reversed(self.store.list_events(run_id))
+                if event["event_type"] == "finalists_selected"
+            ),
+            None,
+        )
+        branch_count = len(
+            {str(item["branch_id"]) for item in trace["hypotheses"]}
+        )
+        statistical_rows = self.store.list_evaluation_evidence(
+            run_id,
+            stage=MULTIPLE_TESTING_STAGE,
+        )
+        statistical_summary = (
+            statistical_rows[-1]["evidence"]["metrics"]
+            if statistical_rows
+            else None
+        )
         return {
             "run": self._run_view(run),
             "progress": progress.to_dict(),
             "hypotheses": [
                 {
-                    "hypothesis_id": item["hypothesis_id"],
+                    "hypothesis_id": HypothesisCard.from_dict(
+                        item
+                    ).hypothesis_id,
                     "parent_hypothesis_id": item["parent_hypothesis_id"],
                     "turn_index": item["turn_index"],
                     "branch_id": item["branch_id"],
@@ -237,6 +309,13 @@ class MiningSearchWebService:
             "turns": turns,
             "candidates": candidates,
             "attempts": progress.trial_counts.to_dict(),
+            "branch_count": branch_count,
+            "portfolio": (
+                finalist_event["payload"].get("portfolio")
+                if finalist_event is not None
+                else None
+            ),
+            "multiple_testing": statistical_summary,
         }
 
     def run_status(self, run_id: str) -> dict[str, Any]:
