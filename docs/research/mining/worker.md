@@ -15,7 +15,8 @@ Qlib coder、workspace 或任何模型生成代码。
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/health` | 返回 Worker 版本、模型与 Key 配置状态，不返回 Key |
-| POST | `/v1/jobs` | 提交一轮有界生成请求 |
+| POST | `/v1/jobs` | 提交一轮 V1 有界生成请求 |
+| POST | `/v2/jobs` | 提交一轮 V2 证据驱动搜索请求 |
 | GET | `/v1/jobs/<job_id>` | 查询作业状态 |
 | POST | `/v1/jobs/<job_id>/cancel` | 取消排队或运行中的作业 |
 
@@ -31,6 +32,18 @@ Worker 的创建、开始、完成、失败和取消事件写入
 `logs/research/mining/mining_worker_service/`，只包含作业 ID、轮次、候选数量和错误码，
 不记录研究假设、表达式、Prompt、模型响应或 Key。
 
+## V2 搜索协议
+
+`mining_worker_v2` 在 V1 候选生成之外增加当前假设、候选谱系、开发期证据、冻结预算、
+允许动作和下一假设建议。响应只允许以下两种形态：
+
+- `refine/branch`：必须包含下一假设和 1～4 个尚未信任的 DSL 候选草稿。
+- `stop/promote`：不得包含下一假设或候选，最终动作仍由主服务控制器决定。
+
+请求和响应都拒绝未知字段、非法动作、超限内容以及选择期、最终研究期、测试段字段和
+日期。主服务收到草稿后重新解析、校验、规范化并计算候选名称、依赖、语义哈希和 ID。
+V2 与 V1 共用同一个单槽位作业库；Worker 同时只执行一个作业。
+
 ## 启动
 
 主服务首次需要 Token 时会在 `data/mining_worker/token` 生成 384 位随机值并设置
@@ -45,7 +58,8 @@ docker compose --env-file .env -f compose.mining.yaml up -d --build
 curl http://127.0.0.1:8790/health
 ```
 
-生产配置不提供静默 Mock。Mock 只允许在测试中通过 `MockWorkerClient` 显式注入。
+生产配置不提供静默 Mock。Mock 只允许在测试中通过 `MockWorkerClient` 或
+`MockSearchWorkerClient` 显式注入。
 
 ## 超时与取消
 

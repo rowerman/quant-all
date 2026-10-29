@@ -23,3 +23,20 @@ __all__ = [
     "WorkerConfigError",
     "load_worker_config",
 ]
+from mining_worker.protocol_v2 import (
+    WORKER_SEARCH_SCHEMA_VERSION,
+    WorkerDecisionProposal,
+    WorkerSearchCandidate,
+    WorkerSearchHypothesis,
+    WorkerSearchRequest,
+    WorkerSearchResponse,
+)
+
+__all__ = [
+    "WORKER_SEARCH_SCHEMA_VERSION",
+    "WorkerDecisionProposal",
+    "WorkerSearchCandidate",
+    "WorkerSearchHypothesis",
+    "WorkerSearchRequest",
+    "WorkerSearchResponse",
+]

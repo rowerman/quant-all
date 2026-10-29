@@ -138,6 +138,12 @@ from mining.worker_client import (
     WorkerRejection,
     generate_worker_candidates,
 )
+from mining.search_worker_client import (
+    HttpSearchWorkerClient,
+    MockSearchWorkerClient,
+    NormalizedSearchWorkerResult,
+    generate_search_candidates,
+)
 
 __all__ = [
     "DATA_VERSION",
@@ -258,5 +264,9 @@ __all__ = [
     "NormalizedWorkerResult",
     "WorkerRejection",
     "generate_worker_candidates",
+    "HttpSearchWorkerClient",
+    "MockSearchWorkerClient",
+    "NormalizedSearchWorkerResult",
+    "generate_search_candidates",
     "migrate_v1_to_v2",
 ]
