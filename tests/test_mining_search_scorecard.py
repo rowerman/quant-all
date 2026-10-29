@@ -16,6 +16,9 @@ from mining.search_scorecard import (
     build_candidate_scorecard,
     build_run_scorecards,
 )
+from mining.search_statistical_diagnostics import (
+    build_multiple_testing_report,
+)
 from mining.storage_v2 import MiningV2Store
 
 
@@ -215,3 +218,24 @@ def test_scorecard_marks_missing_and_failed_evidence_without_zero_fill(
     )
     assert card.failure_reasons
     assert len(card.scorecard_hash) == 64
+
+
+def test_scorecard_exposes_multiple_testing_diagnostics(tmp_path: Path):
+    store, run_id, _card, _batch = _store(tmp_path)
+    values = tuple(0.01 * ((index % 5) - 2) for index in range(25))
+    dates = tuple(f"2020-01-{index + 1:02d}" for index in range(25))
+    report = build_multiple_testing_report(
+        run_id=run_id,
+        series={"cand_0001": (dates, values)},
+        attempt_count=3,
+        evaluated_count=1,
+    )
+    store.record_evaluation_evidence(
+        report.to_evaluation_evidence("cand_0001")
+    )
+
+    scorecard = build_candidate_scorecard(store, run_id, "cand_0001")
+
+    assert scorecard.to_dict()["multiple_testing"]["evidence_hash"] == (
+        report.evidence_hash
+    )

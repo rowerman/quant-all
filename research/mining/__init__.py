@@ -162,6 +162,12 @@ from mining.search_research_quality import (
     ResearchQualityConclusion,
     evaluate_research_quality,
 )
+from mining.search_statistical_diagnostics import (
+    MULTIPLE_TESTING_STAGE,
+    MultipleTestingReport,
+    NeweyWestResult,
+    build_multiple_testing_report,
+)
 from mining.search_states import (
     SEARCH_RUN_ACTIVE_STATUSES,
     SEARCH_RUN_STATUSES,
@@ -270,6 +276,10 @@ __all__ = [
     "RESEARCH_QUALITY_STATUSES",
     "ResearchQualityConclusion",
     "evaluate_research_quality",
+    "MULTIPLE_TESTING_STAGE",
+    "MultipleTestingReport",
+    "NeweyWestResult",
+    "build_multiple_testing_report",
     "SEARCH_RUN_ACTIVE_STATUSES",
     "SEARCH_RUN_STATUSES",
     "SEARCH_RUN_TERMINAL_STATUSES",

@@ -83,6 +83,8 @@ class IncrementalValueReport:
     survivor_share: float | None
     valid_days: int | None
     status: str
+    rank_ic_dates: tuple[str, ...] = ()
+    rank_ic_values: tuple[float, ...] = ()
     reason: str | None = None
     schema_version: str = SELECTION_DIAGNOSTICS_SCHEMA_VERSION
 
@@ -100,6 +102,8 @@ class IncrementalValueReport:
             "survivor_share": self.survivor_share,
             "valid_days": self.valid_days,
             "status": self.status,
+            "rank_ic_dates": list(self.rank_ic_dates),
+            "rank_ic_values": list(self.rank_ic_values),
             "reason": self.reason,
         }
 

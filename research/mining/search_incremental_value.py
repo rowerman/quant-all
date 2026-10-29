@@ -76,6 +76,9 @@ def compute_incremental_value(
             factor=materialized.factor_view,
         )
         payload = compute_incremental_ic(eval_context, {})
+        rank_ic = eval_context.daily_ic()["rank_ic"].dropna()
+        rank_ic_dates = tuple(str(index.date()) for index in rank_ic.index)
+        rank_ic_values = tuple(float(value) for value in rank_ic.to_numpy())
     except Exception as exc:
         return IncrementalValueReport(
             formal_factor_status=formal_status,
@@ -110,6 +113,8 @@ def compute_incremental_value(
         survivor_share=finite_or_none(payload.get("survivor_share")),
         valid_days=valid_days,
         status=status,
+        rank_ic_dates=rank_ic_dates,
+        rank_ic_values=rank_ic_values,
         reason=reason,
     )
 
