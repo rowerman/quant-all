@@ -57,3 +57,35 @@ docker build -t quant-mining-sandbox:s5 \
 
 运行配置位于 `configs/mining/sandbox.json`，Compose 安全参数见
 `compose.mining-sandbox.yaml`。
+
+## 代码研究闭环
+
+Worker v4 使用 `mining_worker_code_v1`，由固定 RD-Agent 模型生成 Qlib 研究脚本；脚本
+只作为未信任提案返回主服务。Host 研究循环最多执行 3 轮，每轮把代码写入独立工作区，
+由断网容器执行，再读取严格的 `rank_ic / icir / coverage / valid_days` 指标，并把上一轮
+失败或指标反馈给下一轮。
+
+代码模型不直接运行在 Worker 容器。沙箱只挂载冻结快照和工作区，不能访问主数据库、正式
+候选、正式因子、Token 或 Docker socket。沙箱指标只用于产生研究提案，不是正式质量结论。
+
+## 产物与人工提升
+
+每次研究把所有代码提案、运行状态、stdout/stderr、指标和错误写入
+`data/mining_sandbox/work/<sandbox_run_id>/`。`manifest.json` 记录全部尝试、代码哈希、
+镜像 ID、Python/Qlib 版本、依赖锁哈希、模型和提示版本，以及每个产物的 SHA-256。完成后
+目录封存为只读；`verify_artifact_tree()` 可检测文件缺失、大小变化和哈希篡改。
+
+`record_manual_promotion()` 只记录审核人、原因、来源沙箱运行、产物清单哈希和目标
+DSL/算子引用，并明确标记 `formal_candidate_created=false`。它不调用候选存储、审批或
+发布接口。人工转写后的正式候选必须在新搜索上下文中重新经过 DSL、门禁、选择期、完整
+评估和人工审批。
+
+稳定错误码：
+
+| 错误码 | 含义 |
+|---|---|
+| `MINING-133` | 沙箱政策非法 |
+| `MINING-134` | 容器或研究循环执行失败 |
+| `MINING-135` | Qlib 快照生成或校验失败 |
+| `MINING-136` | 路径、挂载或隔离边界破坏 |
+| `MINING-137` | 沙箱产物或人工提升记录非法 |

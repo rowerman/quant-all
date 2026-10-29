@@ -18,6 +18,10 @@ from mining_worker.generator import (
 )
 from mining_worker.job_store import JobBusyError, JobConflictError, JobStore
 from mining_worker.logging_conf import get_worker_logger, log_worker_event
+from mining_worker.protocol_code import (
+    WorkerCodeProposalRequest,
+    WorkerCodeProposalResponse,
+)
 from mining_worker.protocol import (
     WorkerGenerateRequest,
     WorkerGenerationResponse,
@@ -28,6 +32,7 @@ from mining_worker.protocol_v2 import WorkerSearchRequest, WorkerSearchResponse
 from mining_worker.protocol_v3 import WorkerSearchTurnRequest, WorkerSearchTurnResponse
 from mining_worker.search_generator import SubprocessSearchGenerator
 from mining_worker.search_generator_v3 import SubprocessSearchTurnGenerator
+from mining_worker.code_generator import SubprocessCodeGenerator
 from mining_worker.worker_config import load_worker_config
 
 
@@ -85,6 +90,24 @@ class SearchTurnGenerator(Protocol):
         """取消运行中的生成。"""
 
 
+class CodeGenerator(Protocol):
+    """Worker 服务依赖的代码提案生成器。"""
+
+    def health(self) -> Mapping[str, object]:
+        """返回健康状态。"""
+
+    def generate(
+        self,
+        request: WorkerCodeProposalRequest,
+        *,
+        timeout_seconds: float,
+    ) -> WorkerCodeProposalResponse:
+        """生成一个 Qlib 代码提案。"""
+
+    def cancel(self, request_id: str) -> None:
+        """取消运行中的生成。"""
+
+
 def _load_token() -> str:
     direct = os.environ.get("MINING_WORKER_TOKEN", "").strip()
     if direct:
@@ -115,6 +138,7 @@ def create_app(
     generator: CandidateGenerator | None = None,
     search_generator: SearchGenerator | None = None,
     search_turn_generator: SearchTurnGenerator | None = None,
+    code_generator: CodeGenerator | None = None,
     state_dir: Path | str | None = None,
     token: str | None = None,
     job_timeout: float | None = None,
@@ -133,6 +157,7 @@ def create_app(
     worker_search_turn_generator = (
         search_turn_generator or SubprocessSearchTurnGenerator()
     )
+    worker_code_generator = code_generator or SubprocessCodeGenerator()
     worker_token = _load_token() if token is None else token
     logger = get_worker_logger("mining_worker.service")
     timeout_seconds = float(
@@ -149,6 +174,7 @@ def create_app(
     app.extensions["worker_generator"] = worker_generator
     app.extensions["worker_search_generator"] = worker_search_generator
     app.extensions["worker_search_turn_generator"] = worker_search_turn_generator
+    app.extensions["worker_code_generator"] = worker_code_generator
     app.extensions["worker_cancel_events"] = cancel_events
 
     def authorized() -> bool:
@@ -341,6 +367,67 @@ def create_app(
             with cancel_lock:
                 cancel_events.pop(job_id, None)
 
+    def run_code_job(job_id: str, request_id: str) -> None:
+        event = cancel_events[job_id]
+        if event.is_set():
+            with cancel_lock:
+                cancel_events.pop(job_id, None)
+            return
+        if not store.mark_running(job_id):
+            with cancel_lock:
+                cancel_events.pop(job_id, None)
+            return
+        try:
+            payload = store.request(job_id)
+            if payload is None:
+                raise WorkerGenerationFailed("代码提案请求已丢失")
+            code_request = WorkerCodeProposalRequest.from_dict(payload)
+            if event.is_set():
+                raise WorkerJobCancelled("作业已取消")
+            response = worker_code_generator.generate(
+                code_request,
+                timeout_seconds=timeout_seconds,
+            )
+            if not event.is_set():
+                store.finish_success(job_id, response.to_dict())
+                log_worker_event(
+                    logger,
+                    "worker_code_succeeded",
+                    job_id=job_id,
+                    iteration=code_request.iteration,
+                )
+        except WorkerJobTimeout:
+            store.finish_failure(job_id, "MINING-116", "Worker 代码提案超时")
+            log_worker_event(
+                logger,
+                "worker_code_failed",
+                job_id=job_id,
+                error_code="MINING-116",
+            )
+        except WorkerJobCancelled:
+            store.cancel(job_id, "作业已取消")
+            log_worker_event(
+                logger,
+                "worker_code_cancelled",
+                job_id=job_id,
+                error_code="MINING-117",
+            )
+        except Exception as exc:
+            store.finish_failure(
+                job_id,
+                "MINING-118",
+                f"Worker 代码提案失败：{type(exc).__name__}: {str(exc)[:400]}",
+            )
+            log_worker_event(
+                logger,
+                "worker_code_failed",
+                job_id=job_id,
+                error_code="MINING-118",
+            )
+        finally:
+            with cancel_lock:
+                cancel_events.pop(job_id, None)
+
     @app.get("/health")
     def health():
         if len(worker_token) < 32:
@@ -356,6 +443,7 @@ def create_app(
                     "mining_worker_v1",
                     "mining_worker_v2",
                     "mining_worker_v3",
+                    "mining_worker_code_v1",
                 ],
             }
         )
@@ -481,6 +569,45 @@ def create_app(
             ).start()
         return jsonify(job.to_dict()), 202
 
+    @app.post("/v4/jobs")
+    def create_code_job():
+        denied = require_auth()
+        if denied is not None:
+            return denied
+        if not request.is_json:
+            return _error("MINING-118", "请求必须是 JSON", 400)
+        try:
+            code_request = WorkerCodeProposalRequest.from_dict(request.get_json())
+        except (WorkerProtocolError, TypeError) as exc:
+            return _error("MINING-118", f"请求不符合代码提案协议：{exc}", 400)
+        try:
+            job, created = store.create(
+                job_id=code_request.job_id,
+                request_id=code_request.request_id,
+                payload_hash=code_request.payload_hash,
+                request=code_request.to_dict(),
+            )
+        except JobConflictError as exc:
+            return _error("MINING-105", str(exc), 409)
+        except JobBusyError as exc:
+            return _error("MINING-102", str(exc), 429)
+        if created:
+            log_worker_event(
+                logger,
+                "worker_code_created",
+                job_id=job.job_id,
+                iteration=code_request.iteration,
+            )
+            with cancel_lock:
+                cancel_events[job.job_id] = threading.Event()
+            threading.Thread(
+                target=run_code_job,
+                args=(job.job_id, code_request.request_id),
+                name=f"mining-worker-code-{job.job_id}",
+                daemon=True,
+            ).start()
+        return jsonify(job.to_dict()), 202
+
     @app.get("/v1/jobs/<job_id>")
     def get_job(job_id: str):
         denied = require_auth()
@@ -513,6 +640,7 @@ def create_app(
             worker_generator.cancel(request_id)
             worker_search_generator.cancel(request_id)
             worker_search_turn_generator.cancel(request_id)
+            worker_code_generator.cancel(request_id)
         cancelled = store.cancel(job_id, "调用方取消作业")
         log_worker_event(
             logger, "worker_job_cancel_requested", job_id=job_id

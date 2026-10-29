@@ -59,6 +59,7 @@ class SandboxPolicy:
     user: str = "65532:65532"
     snapshot_root: str = "data/mining_sandbox/snapshots"
     workspace_root: str = "data/mining_sandbox/work"
+    review_root: str = "data/mining_sandbox/review"
     schema_version: str = SANDBOX_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -109,6 +110,7 @@ class SandboxPolicy:
         object.__setattr__(self, "user", user)
         _path_text(self.snapshot_root, "snapshot_root", PROJECT_ROOT)
         _path_text(self.workspace_root, "workspace_root", PROJECT_ROOT)
+        _path_text(self.review_root, "review_root", PROJECT_ROOT)
 
     @classmethod
     def from_dict(cls, value: Any) -> SandboxPolicy:
@@ -139,6 +141,10 @@ class SandboxPolicy:
     @property
     def workspace_root_path(self) -> Path:
         return _path_text(self.workspace_root, "workspace_root", PROJECT_ROOT)
+
+    @property
+    def review_root_path(self) -> Path:
+        return _path_text(self.review_root, "review_root", PROJECT_ROOT)
 
 
 def load_sandbox_policy(

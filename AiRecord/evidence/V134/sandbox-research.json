@@ -1,0 +1,27 @@
+{
+  "sandbox_run_id": "sandboxrun_m5_smoke_20261029",
+  "artifact_manifest_hash": "c4d266d3dae3160bf57855958fa395659e8ac5923bbd3653959ed87a2eaaccf4",
+  "status": "completed",
+  "image_id": "sha256:2be6d64ac3a96391d8afb67214ce6c2135f2e7b25a43b20643f4dd3fcee6f9e8",
+  "qlib_version": "0.9.7",
+  "network": "none",
+  "user": "65532:65532",
+  "metrics": {
+    "rank_ic": -0.10092854683423635,
+    "icir": -0.10092854683423635,
+    "coverage": 1.0,
+    "valid_days": 1911
+  },
+  "tests": {
+    "sandbox_and_worker_directed": 35,
+    "full_suite": 1483,
+    "warnings": 2
+  },
+  "protected_hashes_before_and_after": {
+    "data/databases/quant.duckdb": "5552ecc29fc4b4507522c6f5900cd019f3a132d29c2102cbaf500860c1e2c9d1",
+    "data/databases/factors.duckdb": "109d3f5fc41a4d9b657cb3c3e36dd1797dc05af54a6f7b8e8a81c04c95266912",
+    "data/factors_tree": "45bb29c240a428898bd86eedf3f668bf2860f156d5274b52a9343c30b906607d"
+  },
+  "residual_sandbox_containers": 0,
+  "formal_candidate_created": false
+}

@@ -12,5 +12,6 @@
   "read_only_root": true,
   "user": "65532:65532",
   "snapshot_root": "data/mining_sandbox/snapshots",
-  "workspace_root": "data/mining_sandbox/work"
+  "workspace_root": "data/mining_sandbox/work",
+  "review_root": "data/mining_sandbox/review"
 }

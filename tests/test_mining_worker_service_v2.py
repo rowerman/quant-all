@@ -6,6 +6,10 @@ from pathlib import Path
 import time
 
 from mining_worker.protocol import WorkerCandidateDraft
+from mining_worker.protocol_code import (
+    WorkerCodeProposalRequest,
+    WorkerCodeProposalResponse,
+)
 from mining_worker.protocol_v2 import (
     WorkerDecisionProposal,
     WorkerSearchHypothesis,
@@ -143,6 +147,22 @@ class FakeSearchTurnGenerator:
         return None
 
 
+class FakeCodeGenerator:
+    def health(self):
+        return {"status": "ready", "mode": "test"}
+
+    def generate(self, request, *, timeout_seconds):
+        return WorkerCodeProposalResponse(
+            proposal_id="proposal_service",
+            code="print('sandbox')",
+            rationale="测试代码提案",
+            model=request.llm_model,
+        )
+
+    def cancel(self, request_id):
+        return None
+
+
 def _headers():
     return {"Authorization": f"Bearer {TOKEN}"}
 
@@ -248,3 +268,43 @@ def test_v3_job_returns_tool_batch_without_v1_or_v2_fallback(tmp_path: Path):
     assert payload["status"] == "succeeded"
     assert payload["result"]["kind"] == "tool_batch"
     assert payload["result"]["tool_calls"][0]["tool_name"] == "lookup_fields"
+
+
+def test_v4_code_job_returns_strict_qlib_proposal(tmp_path: Path):
+    app = create_app(
+        generator=FakeV1Generator(),
+        search_generator=FakeSearchGenerator(),
+        code_generator=FakeCodeGenerator(),
+        state_dir=tmp_path,
+        token=TOKEN,
+        job_timeout=1,
+    )
+    request = WorkerCodeProposalRequest(
+        request_id="code-proposal-1",
+        run_id="sandboxrun_12345678",
+        iteration=1,
+        hypothesis="短期价格变化与未来收益可能相关",
+        snapshot={
+            "context_hash": "a" * 64,
+            "manifest_hash": "b" * 64,
+            "start_date": "2012-01-01",
+            "end_date": "2019-12-31",
+            "fields": ["close", "label"],
+            "image_id": "quant-mining-sandbox:s5",
+        },
+        previous_attempt=None,
+        max_code_bytes=32768,
+        llm_model="deepseek/deepseek-chat",
+    )
+    with app.test_client() as client:
+        created = client.post(
+            "/v4/jobs",
+            json=request.to_dict(),
+            headers=_headers(),
+        )
+        assert created.status_code == 202
+        payload = _wait(client, request.job_id)
+
+    assert payload["status"] == "succeeded"
+    assert payload["result"]["proposal_id"] == "proposal_service"
+    assert payload["result"]["model"] == request.llm_model
