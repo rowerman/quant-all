@@ -78,6 +78,12 @@ export function renderSearchRun(app, detail, mutateRun) {
     ${detail.turns.length ? '<div id="search-turns"></div>' : '<p class="muted">尚未开始搜索轮次。</p>'}
   </section>
   <section class="card">
+    <h2>工具补充证据</h2>
+    <p class="mini muted">工具只能读取当前运行开发期摘要。主证据、工具补充证据与工具失败分开展示；缓存命中仍计一次调用。</p>
+    <p class="mini muted">本运行调用 ${esc(detail.analysis_tools?.total_calls || 0)} 次 · 失败 ${esc(detail.analysis_tools?.failed_calls || 0)} 次</p>
+    ${detail.analysis_tools?.total_calls ? '<div id="search-tool-calls"></div>' : '<p class="muted">本运行尚未使用分析工具。</p>'}
+  </section>
+  <section class="card">
     <h2>候选与评分卡</h2>
     ${detail.candidates.length ? '<div id="search-candidates"></div>' : '<p class="muted">尚无候选。</p>'}
   </section>
@@ -117,6 +123,7 @@ export function renderSearchRun(app, detail, mutateRun) {
       状态: statusLabel(item.status),
       父候选: item.parent_candidate_id || '—',
       父假设: item.hypothesis_id,
+      累计分析: item.analysis_count || 0,
       评分阶段: item.decision_stage || '证据不足',
       缺失项: item.missing_fields.length ? item.missing_fields.join(', ') : '—',
     })));
@@ -133,6 +140,20 @@ export function renderSearchRun(app, detail, mutateRun) {
         说明: evidence.stabilityReason,
       };
     }));
+  }
+  if (detail.analysis_tools?.total_calls) {
+    const calls = Object.entries(detail.analysis_tools.calls || {}).flatMap(([turn, items]) => items.map(item => ({...item, turn_index: Number(turn)})));
+    table(app.querySelector('#search-tool-calls'), calls.map(item => ({
+      轮次: item.turn_index,
+      工具: `${item.tool_name} v${item.tool_version}`,
+      候选: item.candidate_id ? String(item.candidate_id).slice(-8) : '运行级',
+      类型: item.evidence_class === 'failure' ? '工具失败' : '补充证据',
+      状态: item.status,
+      参数: JSON.stringify(item.arguments_summary || {}),
+      耗时毫秒: Number(item.duration_ms || 0).toFixed(1),
+      缓存: item.cache_hit ? '命中' : '未命中',
+      错误: item.error_code || '—',
+    })));
   }
   app.querySelector('#cancel-mining')?.addEventListener('click', () => mutateRun('cancel'));
   app.querySelector('#resume-mining')?.addEventListener('click', () => mutateRun('resume'));

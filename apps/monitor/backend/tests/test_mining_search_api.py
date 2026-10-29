@@ -247,3 +247,101 @@ def test_v2_detail_exposes_safe_m3_quality_evidence(tmp_path: Path):
     assert candidate["multiple_testing"]["bh_q_value"] is not None
     assert detail["multiple_testing"]["denominator"] == 3
     assert "mean(close, 5)" not in encoded
+
+
+def test_v2_detail_separates_tool_supplements_and_failures(tmp_path: Path):
+    service, store = _services(tmp_path)
+    context = FrozenSearchContext(data_fingerprint="a" * 64)
+    run = store.create_run(
+        SearchRunRequest(
+            "v2-tool-audit-0001",
+            "工具补充证据需要接受审核",
+        ),
+        context,
+    )
+    hypothesis = HypothesisCard(
+        run_id=run["run_id"],
+        turn_index=1,
+        branch_id="branch-0001",
+        statement="工具补充证据需要接受审核",
+        mechanism="研究证据核对",
+        expected_direction="positive",
+        falsification_criteria=("工具证据不可复现",),
+    )
+    batch = ExperimentBatch(
+        run_id=run["run_id"],
+        hypothesis_id=hypothesis.hypothesis_id,
+        turn_index=1,
+        branch_id=hypothesis.branch_id,
+        candidate_ids=("cand_tool_0001",),
+        parent_candidate_ids=(),
+        development_start="2012-01-01",
+        development_end="2019-12-31",
+        input_hash="b" * 64,
+    )
+    store.begin_turn(run["run_id"], hypothesis, batch)
+    store.record_candidate(
+        run["run_id"],
+        candidate_id="cand_tool_0001",
+        candidate_hash="c" * 64,
+        semantic_hash="d" * 64,
+        name="MINE_TOOL_0001",
+        status="proposed",
+        hypothesis_id=hypothesis.hypothesis_id,
+        batch_id=batch.batch_id,
+        payload={"canonical_expression": "mean(close, 5)"},
+    )
+    common = {
+        "run_id": run["run_id"],
+        "turn_index": 1,
+        "context_hash": context.context_hash,
+        "turn_request_hash": "f" * 64,
+        "candidate_hash": "c" * 64,
+        "tool_name": "candidate_evidence",
+        "tool_version": "1",
+        "candidate_id": "cand_tool_0001",
+        "request_hash": "1" * 64,
+        "arguments_summary": {"candidate_id": "cand_tool_0001"},
+        "cache_hit": False,
+        "duration_ms": 2.5,
+    }
+    store.record_analysis_tool_call(
+        **common,
+        cache_key="e" * 64,
+        call_index=1,
+        status="succeeded",
+        payload={
+            "schema_version": "mining_analysis_tool_v1",
+            "call_id": "c1",
+            "tool_name": "candidate_evidence",
+            "tool_version": "1",
+            "payload": {"status": "available"},
+        },
+        result_hash="2" * 64,
+    )
+    store.record_analysis_tool_call(
+        **common,
+        cache_key="3" * 64,
+        call_index=2,
+        status="failed",
+        payload=None,
+        result_hash=None,
+        error_code="MINING-131",
+        error_message="工具结果过大",
+    )
+
+    detail = service.run_detail(run["run_id"])
+    calls = detail["turns"][0]["tool_calls"]
+    encoded = json.dumps(detail, ensure_ascii=False)
+
+    assert [item["evidence_class"] for item in calls] == [
+        "supplemental",
+        "failure",
+    ]
+    assert detail["candidates"][0]["analysis_count"] == 2
+    assert detail["analysis_tools"]["total_calls"] == 2
+    assert detail["analysis_tools"]["failed_calls"] == 1
+    assert calls[0]["arguments_summary"] == {
+        "candidate_id": "cand_tool_0001"
+    }
+    assert "mean(close, 5)" not in encoded

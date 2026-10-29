@@ -54,7 +54,9 @@ class V2AnalysisToolStoreMixin:
         candidate_hash: str,
         tool_name: str,
         tool_version: str,
+        candidate_id: str | None,
         request_hash: str,
+        arguments_summary: Mapping[str, Any],
         status: str,
         cache_hit: bool,
         duration_ms: float,
@@ -83,6 +85,8 @@ class V2AnalysisToolStoreMixin:
         turn_request_hash = hash_text(turn_request_hash, "turn_request_hash")
         candidate_hash = hash_text(candidate_hash, "candidate_hash")
         request_hash = hash_text(request_hash, "request_hash")
+        if candidate_id is not None:
+            candidate_id = identifier(candidate_id, "candidate_id")
         tool_name = identifier(tool_name, "tool_name")
         tool_version = text(tool_version, "tool_version", maximum=20)
         status = identifier(status, "status")
@@ -99,6 +103,9 @@ class V2AnalysisToolStoreMixin:
         encoded_payload = (
             canonical_json(dict(payload)) if payload is not None else None
         )
+        encoded_arguments = canonical_json(dict(arguments_summary))
+        if len(encoded_arguments.encode("utf-8")) > 4096:
+            raise MiningContractError("工具参数摘要超过 4096 字节")
         if encoded_payload is not None and len(encoded_payload.encode("utf-8")) > 65536:
             raise MiningContractError("工具缓存结果超过 65536 字节")
         if error_code is not None:
@@ -156,16 +163,18 @@ class V2AnalysisToolStoreMixin:
                                             now,
                                         ],
                                     )
-                                elif (
-                                    cached["result_hash"] != result_hash
-                                    or cached["payload_json"] != encoded_payload
-                                ):
+                                elif cached["result_hash"] != result_hash:
                                     raise MiningDuplicateError(
                                         "工具缓存键已绑定不同结果"
                                     )
                             conn.execute(
                                 "INSERT INTO mining_v2.analysis_tool_audit "
-                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                "(run_id, turn_index, call_index, audit_id, cache_key, "
+                                "tool_name, tool_version, candidate_id, candidate_hash, "
+                                "arguments_summary_json, input_hash, status, cache_hit, "
+                                "duration_ms, error_code, error_message, result_hash, "
+                                "created_at) VALUES "
+                                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                 [
                                     run_id,
                                     turn_index,
@@ -174,7 +183,10 @@ class V2AnalysisToolStoreMixin:
                                     cache_key,
                                     tool_name,
                                     tool_version,
+                                    candidate_id,
                                     candidate_hash,
+                                    encoded_arguments,
+                                    request_hash,
                                     status,
                                     cache_hit,
                                     float(duration_ms),
@@ -193,6 +205,7 @@ class V2AnalysisToolStoreMixin:
                 "cache_key": cache_key,
                 "cache_hit": cache_hit,
                 "status": status,
+                "candidate_id": candidate_id,
                 "reused": reused,
             }
         except (
@@ -213,7 +226,8 @@ class V2AnalysisToolStoreMixin:
 
         sql = (
             "SELECT run_id, turn_index, call_index, audit_id, cache_key, tool_name, "
-            "tool_version, candidate_hash, status, cache_hit, duration_ms, "
+            "tool_version, candidate_id, candidate_hash, arguments_summary_json, "
+            "input_hash, status, cache_hit, duration_ms, "
             "error_code, error_message, result_hash, created_at "
             "FROM mining_v2.analysis_tool_audit WHERE run_id=?"
         )
@@ -232,10 +246,14 @@ class V2AnalysisToolStoreMixin:
         with self._connection() as conn:
             rows = conn.execute(sql, params).fetchall()
             columns = [item[0] for item in conn.description]
-        return [
-            self._public_row(dict(zip(columns, row, strict=True)))
-            for row in rows
-        ]
+        result = []
+        for row in rows:
+            item = self._public_row(dict(zip(columns, row, strict=True)))
+            item["arguments_summary"] = json.loads(
+                item.pop("arguments_summary_json") or "{}"
+            )
+            result.append(item)
+        return result
 
 
 __all__ = ["V2AnalysisToolStoreMixin"]

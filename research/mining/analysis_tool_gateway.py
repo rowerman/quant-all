@@ -27,9 +27,12 @@ from mining.errors import (
 )
 from mining.expression_ast import BinaryNode
 from mining.expression_parser import parse_expression
+from mining.logging_conf import format_event, get_mining_logger
 from mining.search_context import FrozenSearchContext, ensure_agent_visible
 from mining.search_stability import generate_primary_window_variants
 from mining.storage_v2 import MiningV2Store
+
+_LOGGER = get_mining_logger("mining.analysis_tools")
 
 
 def _safe_text(value: Any, maximum: int = 500) -> str:
@@ -134,9 +137,13 @@ class AnalysisToolGateway:
             )
         candidate_hash = _run_scope_hash()
         candidate_id = request.arguments.get("candidate_id")
+        candidate_lookup_error: Exception | None = None
         if candidate_id is not None:
-            candidate = self.store.get_candidate(run_id, str(candidate_id))
-            candidate_hash = str(candidate["candidate_hash"])
+            try:
+                candidate = self.store.get_candidate(run_id, str(candidate_id))
+                candidate_hash = str(candidate["candidate_hash"])
+            except Exception as exc:
+                candidate_lookup_error = exc
         cache_key = sha256_json(
             {
                 "run_id": run_id,
@@ -167,7 +174,11 @@ class AnalysisToolGateway:
                 candidate_hash=candidate_hash,
                 tool_name=request.tool_name,
                 tool_version=definition.version,
+                candidate_id=(
+                    str(candidate_id) if candidate_id is not None else None
+                ),
                 request_hash=request.request_hash,
+                arguments_summary=request.arguments,
                 status="cache_hit",
                 cache_hit=True,
                 duration_ms=0.0,
@@ -175,6 +186,25 @@ class AnalysisToolGateway:
                 result_hash=result.result_hash,
             )
             return result
+
+        if candidate_lookup_error is not None:
+            error = AnalysisToolExecutionError(
+                f"候选证据查询失败：{_safe_text(candidate_lookup_error)}"
+            )
+            self._record_failure(
+                run_id=run_id,
+                context=context,
+                turn_index=turn_index,
+                turn_request_hash=turn_request_hash,
+                call_index=call_index,
+                cache_key=cache_key,
+                candidate_hash=candidate_hash,
+                request=request,
+                definition_version=definition.version,
+                duration_ms=0.0,
+                error=error,
+            )
+            raise error from candidate_lookup_error
 
         started = self.clock()
         try:
@@ -270,7 +300,11 @@ class AnalysisToolGateway:
             candidate_hash=candidate_hash,
             tool_name=request.tool_name,
             tool_version=definition.version,
+            candidate_id=(
+                str(candidate_id) if candidate_id is not None else None
+            ),
             request_hash=request.request_hash,
+            arguments_summary=request.arguments,
             status=status,
             cache_hit=False,
             duration_ms=duration_ms,
@@ -278,6 +312,21 @@ class AnalysisToolGateway:
             result_hash=result_hash,
             error_code=error_code,
             error_message=error_message,
+        )
+        _LOGGER.info(
+            format_event(
+                {
+                    "event": "analysis_tool_succeeded",
+                    "run_id": run_id,
+                    "turn_index": turn_index,
+                    "call_index": call_index,
+                    "tool_name": request.tool_name,
+                    "tool_version": definition.version,
+                    "result_hash": result_hash,
+                    "duration_ms": round(duration_ms, 1),
+                    "cache_hit": False,
+                }
+            )
         )
         return result
 
@@ -306,7 +355,13 @@ class AnalysisToolGateway:
             candidate_hash=candidate_hash,
             tool_name=request.tool_name,
             tool_version=definition_version,
+            candidate_id=(
+                str(request.arguments["candidate_id"])
+                if request.arguments.get("candidate_id") is not None
+                else None
+            ),
             request_hash=request.request_hash,
+            arguments_summary=request.arguments,
             status="failed",
             cache_hit=False,
             duration_ms=duration_ms,
@@ -314,6 +369,20 @@ class AnalysisToolGateway:
             result_hash=None,
             error_code=error.code,
             error_message=_safe_text(error.message),
+        )
+        _LOGGER.warning(
+            format_event(
+                {
+                    "event": "analysis_tool_failed",
+                    "run_id": run_id,
+                    "turn_index": turn_index,
+                    "call_index": call_index,
+                    "tool_name": request.tool_name,
+                    "tool_version": definition_version,
+                    "error_code": error.code,
+                    "duration_ms": round(duration_ms, 1),
+                }
+            )
         )
 
     def _dispatch(

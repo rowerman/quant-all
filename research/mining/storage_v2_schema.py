@@ -199,7 +199,10 @@ V2_DDL = (
         cache_key VARCHAR NOT NULL,
         tool_name VARCHAR NOT NULL,
         tool_version VARCHAR NOT NULL,
+        candidate_id VARCHAR,
         candidate_hash VARCHAR NOT NULL,
+        arguments_summary_json TEXT NOT NULL,
+        input_hash VARCHAR NOT NULL,
         status VARCHAR NOT NULL,
         cache_hit BOOLEAN NOT NULL,
         duration_ms DOUBLE NOT NULL,
@@ -209,6 +212,18 @@ V2_DDL = (
         created_at VARCHAR NOT NULL,
         PRIMARY KEY (run_id, turn_index, call_index)
     )
+    """,
+    """
+    ALTER TABLE mining_v2.analysis_tool_audit
+    ADD COLUMN IF NOT EXISTS candidate_id VARCHAR
+    """,
+    """
+    ALTER TABLE mining_v2.analysis_tool_audit
+    ADD COLUMN IF NOT EXISTS arguments_summary_json TEXT
+    """,
+    """
+    ALTER TABLE mining_v2.analysis_tool_audit
+    ADD COLUMN IF NOT EXISTS input_hash VARCHAR
     """,
     """
     CREATE TABLE IF NOT EXISTS mining_v2.search_decision (

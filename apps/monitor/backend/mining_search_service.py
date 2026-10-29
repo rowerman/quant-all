@@ -211,6 +211,37 @@ class MiningSearchWebService:
         evidence = {
             int(item["turn_index"]): item for item in trace["evidence"]
         }
+        tool_calls = self.store.list_analysis_tool_calls(run_id)
+        tool_calls_by_turn: dict[int, list[dict[str, Any]]] = {}
+        analysis_count_by_candidate: dict[str, int] = {}
+        for call in tool_calls:
+            turn_index = int(call["turn_index"])
+            tool_calls_by_turn.setdefault(turn_index, []).append(
+                {
+                    "call_index": call["call_index"],
+                    "tool_name": call["tool_name"],
+                    "tool_version": call["tool_version"],
+                    "candidate_id": call.get("candidate_id"),
+                    "status": call["status"],
+                    "cache_hit": bool(call["cache_hit"]),
+                    "duration_ms": call["duration_ms"],
+                    "error_code": call.get("error_code"),
+                    "error_message": call.get("error_message"),
+                    "input_hash": call.get("input_hash"),
+                    "result_hash": call.get("result_hash"),
+                    "arguments_summary": call.get("arguments_summary", {}),
+                    "evidence_class": (
+                        "supplemental"
+                        if call["status"] in {"succeeded", "cache_hit"}
+                        else "failure"
+                    ),
+                }
+            )
+            candidate_id = call.get("candidate_id")
+            if candidate_id is not None:
+                analysis_count_by_candidate[str(candidate_id)] = (
+                    analysis_count_by_candidate.get(str(candidate_id), 0) + 1
+                )
         turns = []
         for item in trace["turns"]:
             turn_index = int(item["turn_index"])
@@ -233,6 +264,7 @@ class MiningSearchWebService:
                         if packet is not None
                         else None
                     ),
+                    "tool_calls": tool_calls_by_turn.get(turn_index, []),
                 }
             )
         candidates = []
@@ -292,6 +324,10 @@ class MiningSearchWebService:
                     "research_quality": research_quality,
                     "multiple_testing": statistical_result,
                     "attempts": card.get("trial_counts", {}),
+                    "analysis_count": analysis_count_by_candidate.get(
+                        item["candidate_id"],
+                        0,
+                    ),
                 }
             )
         finalist_event = next(
@@ -341,6 +377,14 @@ class MiningSearchWebService:
                 else None
             ),
             "multiple_testing": statistical_summary,
+            "analysis_tools": {
+                "catalog_version": "mining_analysis_catalog_v1",
+                "calls": tool_calls_by_turn,
+                "total_calls": len(tool_calls),
+                "failed_calls": sum(
+                    item["status"] == "failed" for item in tool_calls
+                ),
+            },
         }
 
     def run_status(self, run_id: str) -> dict[str, Any]:
