@@ -26,6 +26,7 @@ from mining.contract_types import (
 )
 from mining.errors import MiningContractError, MiningVisibilityError
 from mining.search_budget import SearchBudget
+from mining.search_control import SearchControlPolicy
 from mining.search_contract_types import (
     SEARCH_CONTEXT_SCHEMA_VERSION,
     SEARCH_DEVELOPMENT_END,
@@ -146,6 +147,7 @@ class SearchConfig:
 
     windows: SearchWindows = field(default_factory=SearchWindows)
     budget: SearchBudget = field(default_factory=SearchBudget)
+    control_policy: SearchControlPolicy = field(default_factory=SearchControlPolicy)
     schema_version: str = SEARCH_CONTEXT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -157,6 +159,10 @@ class SearchConfig:
             raise MiningContractError("搜索配置 windows 必须是 SearchWindows")
         if not isinstance(self.budget, SearchBudget):
             raise MiningContractError("搜索配置 budget 必须是 SearchBudget")
+        if not isinstance(self.control_policy, SearchControlPolicy):
+            raise MiningContractError(
+                "搜索配置 control_policy 必须是 SearchControlPolicy"
+            )
 
     @classmethod
     def from_dict(cls, value: Any) -> SearchConfig:
@@ -169,6 +175,9 @@ class SearchConfig:
         )
         payload["windows"] = SearchWindows.from_dict(payload["windows"])
         payload["budget"] = SearchBudget.from_dict(payload["budget"])
+        payload["control_policy"] = SearchControlPolicy.from_dict(
+            payload["control_policy"]
+        )
         return cls(**payload)
 
     def to_dict(self) -> dict[str, Any]:
@@ -178,6 +187,7 @@ class SearchConfig:
             "schema_version": self.schema_version,
             "windows": self.windows.to_dict(),
             "budget": self.budget.to_dict(),
+            "control_policy": self.control_policy.to_dict(),
         }
 
     @property
@@ -247,6 +257,7 @@ class FrozenSearchContext:
     operator_catalog: tuple[Mapping[str, Any], ...] = ()
     existing_factors: tuple[str, ...] = ()
     budget: SearchBudget = field(default_factory=SearchBudget)
+    control_policy: SearchControlPolicy = field(default_factory=SearchControlPolicy)
     created_at: str = field(default_factory=utc_now_iso)
     schema_version: str = SEARCH_CONTEXT_SCHEMA_VERSION
 
@@ -273,6 +284,10 @@ class FrozenSearchContext:
             raise MiningContractError("windows 必须是 SearchWindows")
         if not isinstance(self.budget, SearchBudget):
             raise MiningContractError("budget 必须是 SearchBudget")
+        if not isinstance(self.control_policy, SearchControlPolicy):
+            raise MiningContractError(
+                "control_policy 必须是 SearchControlPolicy"
+            )
         if not isinstance(self.field_catalog, (list, tuple)):
             raise MiningContractError("field_catalog 必须是对象序列")
         if not isinstance(self.operator_catalog, (list, tuple)):
@@ -319,6 +334,7 @@ class FrozenSearchContext:
         field_catalog: tuple[Mapping[str, Any], ...] = (),
         operator_catalog: tuple[Mapping[str, Any], ...] = (),
         existing_factors: tuple[str, ...] = (),
+        control_policy: SearchControlPolicy | None = None,
         created_at: str | None = None,
     ) -> FrozenSearchContext:
         """从配置冻结一次 V2 运行上下文。"""
@@ -334,6 +350,7 @@ class FrozenSearchContext:
             operator_catalog=operator_catalog,
             existing_factors=existing_factors,
             budget=config.budget,
+            control_policy=control_policy or config.control_policy,
             created_at=created_at or utc_now_iso(),
         )
 
@@ -348,6 +365,9 @@ class FrozenSearchContext:
         )
         payload["windows"] = SearchWindows.from_dict(payload["windows"])
         payload["budget"] = SearchBudget.from_dict(payload["budget"])
+        payload["control_policy"] = SearchControlPolicy.from_dict(
+            payload["control_policy"]
+        )
         payload["field_catalog"] = tuple(payload["field_catalog"])
         payload["operator_catalog"] = tuple(payload["operator_catalog"])
         payload["existing_factors"] = tuple(payload["existing_factors"])
@@ -370,6 +390,7 @@ class FrozenSearchContext:
             "operator_catalog": list(self.operator_catalog),
             "existing_factors": list(self.existing_factors),
             "budget": self.budget.to_dict(),
+            "control_policy": self.control_policy.to_dict(),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -426,6 +447,7 @@ class FrozenSearchContext:
             "operator_catalog": list(self.operator_catalog),
             "existing_factors": list(self.existing_factors),
             "budget": self.budget.to_dict(),
+            "control_policy": self.control_policy.to_dict(),
         }
         ensure_agent_visible(payload)
         return payload

@@ -20,5 +20,14 @@
     "stop_after_no_improvement_turns": 2,
     "max_tool_calls_per_turn": 4,
     "schema_version": "mining_search_v2"
+  },
+  "control_policy": {
+    "min_rank_ic": 0.02,
+    "min_icir": 0.2,
+    "min_year_sign_consistency": 0.6,
+    "min_coverage": 0.3,
+    "max_failure_rate": 0.75,
+    "min_quality_checks_for_failure_stop": 4,
+    "schema_version": "mining_search_control_v1"
   }
 }

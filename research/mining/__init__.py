@@ -119,6 +119,13 @@ from mining.search_evidence_builder import (
     DevelopmentCandidateEvidence,
     build_development_evidence,
 )
+from mining.search_control import (
+    CandidateQualityScore,
+    SearchControlPolicy,
+    SearchControlResult,
+    SearchControlState,
+    decide_search_action,
+)
 from mining.states import (
     CANDIDATE_ACTIVE_STATUSES,
     CANDIDATE_STATUSES,
@@ -189,6 +196,11 @@ __all__ = [
     "EvaluationReport",
     "DevelopmentCandidateEvidence",
     "build_development_evidence",
+    "CandidateQualityScore",
+    "SearchControlPolicy",
+    "SearchControlResult",
+    "SearchControlState",
+    "decide_search_action",
     "EvidencePacket",
     "ExperimentBatch",
     "ExpressionValidationError",
