@@ -10,9 +10,19 @@ from mining.contract_types import sha256_json
 from mining.errors import MiningContractError
 from mining.search_budget import TrialCounts
 from mining.search_evaluation_evidence import SearchEvaluationEvidence
+from mining.search_selection_diagnostics import (
+    SELECTION_DIAGNOSTICS_STAGE,
+)
 from mining.storage_v2 import MiningV2Store
 
-SCORECARD_SCHEMA_VERSION = "mining_candidate_scorecard_v1"
+SCORECARD_SCHEMA_VERSION = "mining_candidate_scorecard_v2"
+_CORE_EVALUATION_STAGES = {
+    "technical",
+    "development",
+    "selection",
+    "full",
+    "holdout",
+}
 SCORECARD_FIELDS = (
     "rank_ic",
     "icir",
@@ -127,6 +137,7 @@ class CandidateScoreCard:
     decision_stage: str | None
     metrics: Mapping[str, Any]
     metrics_by_stage: Mapping[str, Any]
+    analysis_by_stage: Mapping[str, Any]
     gate_passed: bool | None
     failure_reasons: tuple[str, ...]
     evidence_ids: tuple[str, ...]
@@ -161,6 +172,7 @@ class CandidateScoreCard:
             "decision_stage": self.decision_stage,
             "metrics": self.metrics,
             "metrics_by_stage": self.metrics_by_stage,
+            "analysis_by_stage": self.analysis_by_stage,
             "gate_passed": self.gate_passed,
             "failure_reasons": list(self.failure_reasons),
             "evidence_ids": list(self.evidence_ids),
@@ -182,6 +194,9 @@ class CandidateScoreCard:
         return {
             **self.material(),
             "scorecard_hash": self.scorecard_hash,
+            "selection_diagnostics": self.analysis_by_stage.get(
+                SELECTION_DIAGNOSTICS_STAGE
+            ),
         }
 
 
@@ -215,6 +230,12 @@ def build_candidate_scorecard(
     by_stage = {
         item.stage: _extract_metrics(item.stage, item.metrics)
         for item in evidence
+        if item.stage in _CORE_EVALUATION_STAGES
+    }
+    analysis_by_stage = {
+        item.stage: item.metrics
+        for item in evidence
+        if item.stage not in _CORE_EVALUATION_STAGES
     }
     stage_priority = ("full", "selection", "development", "technical", "holdout")
     decision_stage = next(
@@ -259,6 +280,7 @@ def build_candidate_scorecard(
         decision_stage=decision_stage,
         metrics=metrics,
         metrics_by_stage=by_stage,
+        analysis_by_stage=analysis_by_stage,
         gate_passed=(technical.status == "passed" if technical else None),
         failure_reasons=failure_reasons,
         evidence_ids=tuple(item.evaluation_id for item in evidence),

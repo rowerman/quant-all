@@ -134,6 +134,15 @@ from mining.search_scorecard import (
     build_candidate_scorecard,
     build_run_scorecards,
 )
+from mining.search_selection_diagnostics import (
+    SELECTION_DIAGNOSTICS_STAGE,
+    CandidateCorrelationReport,
+    IncrementalValueReport,
+    SelectionDiagnosticsReport,
+    build_selection_diagnostics,
+    compute_candidate_correlations,
+    compute_incremental_value,
+)
 from mining.search_states import (
     SEARCH_RUN_ACTIVE_STATUSES,
     SEARCH_RUN_STATUSES,
@@ -222,6 +231,13 @@ __all__ = [
     "CandidateScoreCard",
     "build_candidate_scorecard",
     "build_run_scorecards",
+    "SELECTION_DIAGNOSTICS_STAGE",
+    "CandidateCorrelationReport",
+    "IncrementalValueReport",
+    "SelectionDiagnosticsReport",
+    "build_selection_diagnostics",
+    "compute_candidate_correlations",
+    "compute_incremental_value",
     "SEARCH_RUN_ACTIVE_STATUSES",
     "SEARCH_RUN_STATUSES",
     "SEARCH_RUN_TERMINAL_STATUSES",

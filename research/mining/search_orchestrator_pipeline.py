@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+from glob import glob
+from pathlib import Path
 from typing import Any, Mapping
 
+from calculate import open_source
+from mining.contract_candidates import CandidateDefinition
+from mining.evaluation_contract import load_quality_policy
 from mining.search_evaluation_adapter import (
     evaluate_final,
     evaluate_holdout,
     evaluate_selection,
+)
+from mining.search_selection_diagnostics import (
+    SELECTION_DIAGNOSTICS_STAGE,
+    CandidateCorrelationReport,
+    IncrementalValueReport,
+    build_selection_diagnostics,
+    compute_candidate_correlations,
+    compute_incremental_value,
+    load_candidate_values,
+    sample_trade_dates,
 )
 from mining.search_orchestrator_support import (
     candidate_from_v2_record,
@@ -28,6 +43,9 @@ class SearchPipelineMixin:
         ]
         ranked: list[tuple[tuple[Any, ...], str]] = []
         rejected: set[str] = set()
+        selected_results: dict[
+            str, tuple[Mapping[str, Any], CandidateDefinition, Any]
+        ] = {}
         for item in candidates:
             candidate = candidate_from_v2_record(item)
             result = self._selection_evaluator(
@@ -57,12 +75,22 @@ class SearchPipelineMixin:
                 continue
             quick = evaluation_evidence(result.quick, stage="selection")
             self.store.record_evaluation_evidence(quick)
+            selected_results[candidate.candidate_id] = (
+                item,
+                candidate,
+                result,
+            )
             ranked.append(
                 (
                     candidate_sort_key(candidate_score_material(quick)),
                     candidate.candidate_id,
                 )
             )
+        self._record_selection_diagnostics(
+            run=run,
+            context=context,
+            selected_results=selected_results,
+        )
         ranked.sort(key=lambda item: item[0])
         finalists = [
             candidate_id
@@ -102,6 +130,130 @@ class SearchPipelineMixin:
             payload={"candidate_ids": finalists},
             current_action="promote",
         )
+
+    def _record_selection_diagnostics(
+        self,
+        *,
+        run: Mapping[str, Any],
+        context: Any,
+        selected_results: Mapping[
+            str, tuple[Mapping[str, Any], CandidateDefinition, Any]
+        ],
+    ) -> None:
+        """为选择期候选登记相关性、正式因子和增量价值证据。"""
+
+        if not selected_results:
+            return
+        existing = {
+            str(row["evidence"]["candidate_id"])
+            for row in self.store.list_evaluation_evidence(
+                run["run_id"],
+                stage=SELECTION_DIAGNOSTICS_STAGE,
+            )
+        }
+        pending = {
+            candidate_id: values
+            for candidate_id, values in selected_results.items()
+            if candidate_id not in existing
+        }
+        if not pending:
+            return
+        policy = load_quality_policy()
+        try:
+            conn = open_source(self.db_file)
+            try:
+                dates = sample_trade_dates(
+                    conn,
+                    context.windows.selection_start,
+                    context.windows.selection_end,
+                    policy.correlation_sample_days,
+                )
+            finally:
+                conn.close()
+        except Exception:
+            dates = ()
+        values: dict[str, Any] = {}
+        for candidate_id, (_, candidate, result) in pending.items():
+            artifact_glob = str(getattr(result, "factor_glob", ""))
+            if artifact_glob and glob(artifact_glob):
+                try:
+                    values[candidate_id] = load_candidate_values(
+                        candidate.name,
+                        artifact_glob,
+                        dates,
+                    )
+                except Exception:
+                    continue
+        correlations = compute_candidate_correlations(
+            run_id=run["run_id"],
+            window_start=context.windows.selection_start,
+            window_end=context.windows.selection_end,
+            values=values,
+            min_stocks=policy.correlation_min_stocks,
+            min_days=policy.correlation_min_days,
+        )
+        for candidate_id, (_, candidate, result) in pending.items():
+            correlation = correlations.get(candidate_id)
+            if correlation is None:
+                correlation = CandidateCorrelationReport(
+                    run_id=run["run_id"],
+                    candidate_id=candidate_id,
+                    window_start=context.windows.selection_start,
+                    window_end=context.windows.selection_end,
+                    sample_dates=tuple(dates),
+                    peers=(),
+                    max_abs_correlation=None,
+                    cluster_id="cluster-0001",
+                    cluster_candidate_ids=(candidate_id,),
+                    status="not_computable",
+                    reason="选择期候选产物不可用",
+                )
+            technical_metrics = getattr(result.technical, "metrics", {})
+            artifact_glob = str(getattr(result, "factor_glob", ""))
+            if artifact_glob and glob(artifact_glob):
+                incremental = compute_incremental_value(
+                    candidate,
+                    context,
+                    Path(artifact_glob).parents[2],
+                    technical_metrics,
+                    db_file=self.db_file,
+                    factor_dir=self.factor_dir,
+                )
+            else:
+                from mining.search_selection_diagnostics import (
+                    formal_factor_incremental_value,
+                )
+
+                formal_status, peer, value, maximum = (
+                    formal_factor_incremental_value(technical_metrics)
+                )
+                incremental = IncrementalValueReport(
+                    formal_factor_status=formal_status,
+                    formal_factor_peer=peer,
+                    formal_factor_correlation=value,
+                    formal_factor_max_absolute=maximum,
+                    raw_rank_ic=None,
+                    incremental_rank_ic=None,
+                    survivor_share=None,
+                    valid_days=None,
+                    status="not_computable",
+                    reason="选择期候选产物不可用",
+                )
+            diagnostics = build_selection_diagnostics(
+                run_id=run["run_id"],
+                candidate_id=candidate_id,
+                input_material={
+                    "context_hash": run["context_hash"],
+                    "candidate_id": candidate_id,
+                    "factor_sha256": getattr(result, "factor_sha256", None),
+                    "sample_dates": list(dates),
+                },
+                correlation=correlation,
+                incremental=incremental,
+            )
+            self.store.record_evaluation_evidence(
+                diagnostics.to_evaluation_evidence()
+            )
 
     def _evaluate(self, run: Mapping[str, Any], context: Any) -> None:
         trace = self.store.get_search_trace(run["run_id"])

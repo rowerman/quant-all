@@ -21,6 +21,9 @@ SEARCH_EVALUATION_STAGES = (
     "technical",
     "development",
     "selection",
+    "selection_diagnostics",
+    "stability",
+    "multiple_testing",
     "full",
     "holdout",
 )
