@@ -34,6 +34,7 @@ class SandboxExecutionResult:
     stderr: str
     stdout_truncated: bool
     stderr_truncated: bool
+    limit_exceeded: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """返回脱敏审计字典。"""
@@ -49,6 +50,7 @@ class SandboxExecutionResult:
             "stderr": self.stderr,
             "stdout_truncated": self.stdout_truncated,
             "stderr_truncated": self.stderr_truncated,
+            "limit_exceeded": self.limit_exceeded,
         }
 
 
@@ -64,6 +66,18 @@ def _within(path: Path, root: Path) -> Path:
 def _truncated_text(data: bytes, maximum_bytes: int) -> tuple[str, bool]:
     encoded = data[:maximum_bytes]
     return encoded.decode("utf-8", errors="replace"), len(data) > maximum_bytes
+
+
+def _directory_bytes(root: Path) -> int:
+    total = 0
+    for current, _, files in os.walk(root, followlinks=False):
+        for name in files:
+            path = Path(current) / name
+            try:
+                total += path.lstat().st_size
+            except FileNotFoundError:
+                continue
+    return total
 
 
 class DockerSandboxRunner:
@@ -93,6 +107,25 @@ class DockerSandboxRunner:
         command: Sequence[str],
     ) -> tuple[list[str], str, Path, Path]:
         """构造严格 Docker 参数并校验两个挂载目录。"""
+
+        return self._build_command(
+            run_id=run_id,
+            snapshot_dir=snapshot_dir,
+            workspace_dir=workspace_dir,
+            command=command,
+            image=self.policy.image,
+        )
+
+    def _build_command(
+        self,
+        *,
+        run_id: str,
+        snapshot_dir: Path | str,
+        workspace_dir: Path | str,
+        command: Sequence[str],
+        image: str,
+    ) -> tuple[list[str], str, Path, Path]:
+        """使用指定的不可变镜像引用构造容器命令。"""
 
         run_id = identifier(run_id, "run_id")
         snapshot = _within(
@@ -133,6 +166,13 @@ class DockerSandboxRunner:
             f"--cpus={self.policy.cpu_limit:g}",
             "--ulimit",
             "nofile=256:256",
+            "--ulimit",
+            "core=0:0",
+            "--ulimit",
+            (
+                f"fsize={self.policy.workspace_mb * 1024 * 1024}:"
+                f"{self.policy.workspace_mb * 1024 * 1024}"
+            ),
             "--tmpfs",
             "/tmp:rw,noexec,nosuid,size=64m",
             "--workdir",
@@ -141,7 +181,7 @@ class DockerSandboxRunner:
             f"type=bind,src={snapshot},dst=/snapshot,readonly",
             "--mount",
             f"type=bind,src={workspace},dst=/workspace",
-            self.policy.image,
+            image,
             *command,
         ]
         return args, container_name, snapshot, workspace
@@ -186,14 +226,16 @@ class DockerSandboxRunner:
     ) -> SandboxExecutionResult:
         """执行容器；超时后强制终止并返回显式超时状态。"""
 
-        args, container_name, _, _ = self.build_command(
+        image_id = self._image_id()
+        args, container_name, _, workspace = self._build_command(
             run_id=run_id,
             snapshot_dir=snapshot_dir,
             workspace_dir=workspace_dir,
             command=command,
+            image=image_id,
         )
-        image_id = self._image_id()
         maximum_output = self.policy.output_mb * 1024 * 1024
+        maximum_workspace = self.policy.workspace_mb * 1024 * 1024
         started = time.monotonic()
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
             try:
@@ -204,13 +246,31 @@ class DockerSandboxRunner:
                     stdin=subprocess.DEVNULL,
                     start_new_session=True,
                 )
-                try:
-                    exit_code = int(
-                        process.wait(timeout=self.policy.timeout_seconds)
-                    )
-                    timed_out = False
-                except subprocess.TimeoutExpired:
-                    timed_out = True
+                deadline = started + self.policy.timeout_seconds
+                limit_exceeded = None
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        limit_exceeded = "timeout"
+                        break
+                    try:
+                        exit_code = int(
+                            process.wait(timeout=min(0.1, remaining))
+                        )
+                        break
+                    except subprocess.TimeoutExpired:
+                        if (
+                            os.fstat(stdout_file.fileno()).st_size
+                            > maximum_output
+                            or os.fstat(stderr_file.fileno()).st_size
+                            > maximum_output
+                        ):
+                            limit_exceeded = "output"
+                            break
+                        if _directory_bytes(workspace) > maximum_workspace:
+                            limit_exceeded = "workspace"
+                            break
+                if limit_exceeded is not None:
                     self._terminate_container(container_name)
                     try:
                         exit_code = int(process.wait(timeout=5))
@@ -219,6 +279,11 @@ class DockerSandboxRunner:
                         exit_code = -9
             except (OSError, subprocess.SubprocessError) as exc:
                 raise SandboxRunnerError(f"沙箱容器执行失败：{exc}") from exc
+            if (
+                limit_exceeded is None
+                and _directory_bytes(workspace) > maximum_workspace
+            ):
+                limit_exceeded = "workspace"
             duration_ms = (time.monotonic() - started) * 1000
             stdout_file.seek(0)
             stderr_file.seek(0)
@@ -235,12 +300,13 @@ class DockerSandboxRunner:
             container_name=container_name,
             image_id=image_id,
             exit_code=exit_code,
-            timed_out=timed_out,
+            timed_out=limit_exceeded == "timeout",
             duration_ms=duration_ms,
             stdout=stdout,
             stderr=stderr,
             stdout_truncated=stdout_truncated,
             stderr_truncated=stderr_truncated,
+            limit_exceeded=limit_exceeded,
         )
 
     def _terminate_container(self, container_name: str) -> None:

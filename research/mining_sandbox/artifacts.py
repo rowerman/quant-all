@@ -34,6 +34,21 @@ def _strict_mapping(value: Any, name: str, fields: set[str]) -> dict[str, Any]:
     return dict(value)
 
 
+def _tree_files(root: Path) -> set[str]:
+    if root.is_symlink() or not root.is_dir():
+        raise SandboxArtifactError("沙箱产物根目录不可用")
+    files: set[str] = set()
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            raise SandboxArtifactError(f"沙箱产物包含符号链接：{relative}")
+        if path.is_file():
+            files.add(relative)
+        elif not path.is_dir():
+            raise SandboxArtifactError(f"沙箱产物包含非普通文件：{relative}")
+    return files
+
+
 @dataclass(frozen=True)
 class SandboxArtifactManifest:
     """一次沙箱研究的全部尝试、文件和环境证据。"""
@@ -136,6 +151,7 @@ def seal_artifact_tree(
     """写入清单并把整棵产物树封存为只读。"""
 
     root = Path(artifact_dir)
+    _tree_files(root)
     manifest_path = root / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -169,6 +185,14 @@ def verify_artifact_tree(
         )
     except (OSError, json.JSONDecodeError) as exc:
         raise SandboxArtifactError(f"沙箱产物清单不可用：{exc}") from exc
+    actual_files = _tree_files(root)
+    expected_files = set(manifest.files) | {"manifest.json"}
+    if actual_files != expected_files:
+        missing = sorted(expected_files - actual_files)
+        extra = sorted(actual_files - expected_files)
+        raise SandboxArtifactError(
+            f"沙箱产物文件集合变化：缺失={missing}，额外={extra}"
+        )
     for relative, expected in manifest.files.items():
         path = root / relative
         if not path.is_file():

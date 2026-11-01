@@ -194,6 +194,7 @@ def test_runner_rejects_path_escape_and_non_python_entry(
     policy = replace(
         load_sandbox_policy(),
         enabled=True,
+        timeout_seconds=1,
         snapshot_root="snapshots",
         workspace_root="work",
     )
@@ -236,6 +237,7 @@ def test_runner_timeout_kills_container(tmp_path: Path, monkeypatch):
     policy = replace(
         load_sandbox_policy(),
         enabled=True,
+        timeout_seconds=1,
         snapshot_root="snapshots",
         workspace_root="work",
     )

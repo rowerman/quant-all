@@ -366,6 +366,27 @@ def _verify_snapshot_files(
     root: Path,
     manifest: QlibSnapshotManifest,
 ) -> None:
+    if root.is_symlink() or not root.is_dir():
+        raise SandboxSnapshotError("快照根目录不可用")
+    actual_files: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise SandboxSnapshotError(
+                f"快照包含符号链接：{path.relative_to(root).as_posix()}"
+            )
+        if path.is_file():
+            actual_files.add(path.relative_to(root).as_posix())
+        elif not path.is_dir():
+            raise SandboxSnapshotError(
+                f"快照包含非普通文件：{path.relative_to(root).as_posix()}"
+            )
+    expected_files = set(manifest.files) | {"manifest.json"}
+    if actual_files != expected_files:
+        missing = sorted(expected_files - actual_files)
+        extra = sorted(actual_files - expected_files)
+        raise SandboxSnapshotError(
+            f"快照文件集合变化：缺失={missing}，额外={extra}"
+        )
     for relative, expected in manifest.files.items():
         path = root / relative
         if not path.is_file():
@@ -383,9 +404,32 @@ def _verify_snapshot_files(
         raise SandboxSnapshotError("快照股票池哈希变化")
 
 
+def verify_qlib_snapshot(
+    snapshot_dir: Path | str,
+    expected: QlibSnapshotManifest | None = None,
+) -> QlibSnapshotManifest:
+    """校验快照清单、完整文件集合和全部文件哈希。"""
+
+    root = Path(snapshot_dir)
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise SandboxSnapshotError("快照清单不存在或不是普通文件")
+    try:
+        manifest = QlibSnapshotManifest.from_dict(
+            json.loads(manifest_path.read_text(encoding="utf-8"))
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SandboxSnapshotError(f"快照清单不可用：{exc}") from exc
+    if expected is not None and manifest.manifest_hash != expected.manifest_hash:
+        raise SandboxSnapshotError("快照清单与已加载清单不一致")
+    _verify_snapshot_files(root, manifest)
+    return manifest
+
+
 __all__ = [
     "QLIB_FIELDS",
     "QLIB_SNAPSHOT_SCHEMA_VERSION",
     "QlibSnapshotManifest",
     "build_qlib_snapshot",
+    "verify_qlib_snapshot",
 ]

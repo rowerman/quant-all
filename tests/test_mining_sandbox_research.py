@@ -101,7 +101,12 @@ def _prepare_snapshot(snapshot_dir: Path) -> QlibSnapshotManifest:
         "SH600000\t2019-12-27\t2019-12-31\n",
         encoding="utf-8",
     )
-    return _snapshot_manifest(snapshot_dir)
+    manifest = _snapshot_manifest(snapshot_dir)
+    (snapshot_dir / "manifest.json").write_text(
+        json.dumps(manifest.to_dict()),
+        encoding="utf-8",
+    )
+    return manifest
 
 
 class FakeDockerRunner:

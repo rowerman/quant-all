@@ -43,7 +43,7 @@ from mining_sandbox.knowledge_evidence import (
 )
 from mining_sandbox.logging_conf import get_sandbox_logger, log_sandbox_feedback
 from mining_sandbox.policy import SandboxPolicy
-from mining_sandbox.qlib_snapshot import QlibSnapshotManifest
+from mining_sandbox.qlib_snapshot import QlibSnapshotManifest, verify_qlib_snapshot
 from mining_sandbox.runtime import DockerSandboxRunner
 from mining_sandbox.worker_client import SandboxCodeWorkerClient
 from mining_worker.protocol_code import (
@@ -147,6 +147,17 @@ def _code_hash(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
+def _remove_unsafe_workspace_entries(root: Path) -> tuple[str, ...]:
+    removed: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or (
+            not path.is_dir() and not path.is_file()
+        ):
+            removed.append(path.relative_to(root).as_posix())
+            path.unlink()
+    return tuple(removed)
+
+
 class SandboxResearchRunner:
     """协调 RD-Agent 代码提案和隔离容器执行的有限循环。"""
 
@@ -177,6 +188,7 @@ class SandboxResearchRunner:
             raise SandboxSnapshotError("研究请求绑定了不同快照")
         if snapshot.context_hash != request.context_hash:
             raise SandboxSnapshotError("研究请求上下文与快照不一致")
+        verify_qlib_snapshot(snapshot_dir, snapshot)
         artifact_dir = self.policy.workspace_root_path / request.sandbox_run_id
         if artifact_dir.exists() and (artifact_dir / "manifest.json").is_file():
             manifest = verify_artifact_tree(artifact_dir)
@@ -329,6 +341,7 @@ class SandboxResearchRunner:
                 _atomic_json(state_path, {**state, "attempts": attempts})
 
             code = code_path.read_text(encoding="utf-8")
+            submitted_code_hash = _code_hash(code)
             try:
                 validate_proposal_code(code)
             except SandboxFeedbackError as exc:
@@ -350,6 +363,9 @@ class SandboxResearchRunner:
                     "factor_file": None,
                     "evaluation": None,
                     "evaluation_file": None,
+                    "resource_limit": None,
+                    "workspace_violations": [],
+                    "executed_code_hash": None,
                 }
                 attempts = [
                     item
@@ -385,15 +401,47 @@ class SandboxResearchRunner:
                 result.stderr,
                 encoding="utf-8",
             )
+            workspace_violations = _remove_unsafe_workspace_entries(iteration_dir)
+            try:
+                executed_code_hash = _code_hash(
+                    code_path.read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeError):
+                executed_code_hash = None
+            code_modified = executed_code_hash != submitted_code_hash
+            if code_modified:
+                code_path.write_text(code, encoding="utf-8")
             metrics = None
             evaluation = None
             evaluation_file = None
             feedback = None
-            if result.timed_out:
+            if code_modified:
+                feedback = SandboxCodeFeedback.create(
+                    SandboxFailureCategory.CODE_POLICY,
+                    summary="提案代码在容器执行期间发生变化",
+                    repair_hint="研究脚本不得修改、删除或替换自身代码",
+                )
+            elif workspace_violations:
+                feedback = SandboxCodeFeedback.create(
+                    SandboxFailureCategory.CODE_POLICY,
+                    summary="沙箱工作区包含不允许的链接或特殊文件",
+                    repair_hint="只写入固定因子文件和指标文件，不创建符号链接或特殊文件",
+                )
+            elif result.timed_out or result.limit_exceeded == "timeout":
                 feedback = SandboxCodeFeedback.create(
                     SandboxFailureCategory.RESOURCE,
                     summary="沙箱执行超过资源时限",
                     repair_hint="减少计算量或数据读取范围，避免无限循环",
+                )
+            elif result.limit_exceeded in {"output", "workspace"}:
+                feedback = SandboxCodeFeedback.create(
+                    SandboxFailureCategory.RESOURCE,
+                    summary=(
+                        "沙箱输出超过上限"
+                        if result.limit_exceeded == "output"
+                        else "沙箱工作区超过容量上限"
+                    ),
+                    repair_hint="降低输出规模或临时文件数量，只保留研究所需产物",
                 )
             elif (
                 result.exit_code in {137, 143}
@@ -452,6 +500,9 @@ class SandboxResearchRunner:
                 "exit_code": result.exit_code,
                 "timed_out": result.timed_out,
                 "duration_ms": result.duration_ms,
+                "resource_limit": result.limit_exceeded,
+                "workspace_violations": list(workspace_violations),
+                "executed_code_hash": executed_code_hash,
                 "stdout_file": (
                     iteration_dir / "stdout.log"
                 ).relative_to(artifact_dir).as_posix(),

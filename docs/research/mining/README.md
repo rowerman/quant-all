@@ -142,6 +142,7 @@ docker compose --env-file .env -f compose.mining.yaml down
 
 沙箱研究（M5，默认关闭）
   -> mining_sandbox.research       有限代码提案和恢复循环
+  -> mining_sandbox.runtime        断网、只读、资源限制和故障终止
   -> mining_sandbox.evaluator      代码限制、因子明细和索引确定性评估
   -> mining_sandbox.feedback        结构化失败分类、稳定错误码和脱敏
   -> mining_sandbox.knowledge       当前运行的失败轨迹、成功实现和修复摘要

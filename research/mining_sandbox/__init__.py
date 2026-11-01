@@ -62,6 +62,7 @@ from mining_sandbox.qlib_snapshot import (
     QLIB_SNAPSHOT_SCHEMA_VERSION,
     QlibSnapshotManifest,
     build_qlib_snapshot,
+    verify_qlib_snapshot,
 )
 from mining_sandbox.runtime import DockerSandboxRunner, SandboxExecutionResult
 from mining_sandbox.research import SandboxResearchRequest, SandboxResearchRunner
@@ -123,6 +124,7 @@ __all__ = [
     "sanitize_feedback_text",
     "validate_proposal_code",
     "verify_artifact_tree",
+    "verify_qlib_snapshot",
     "write_sandbox_knowledge",
     "worker_feedback_evidence",
     "worker_previous_attempt",

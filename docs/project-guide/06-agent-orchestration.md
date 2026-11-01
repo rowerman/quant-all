@@ -897,6 +897,7 @@ orchestrator.close()
 | [V2 diagnostics](../../tests/test_mining_selection_diagnostics.py) | 相关性、增量价值、稳定性和统计诊断 |
 | [V2 tools](../../tests/test_mining_analysis_tools.py) | 白名单、预算、超时、缓存和审计 |
 | [sandbox](../../tests/test_mining_sandbox.py) | 政策、路径、网络、资源和隔离边界 |
+| [sandbox security](../../tests/test_mining_sandbox_security.py) | 故障注入、知识污染、资源超限、恢复和真实镜像安全验收 |
 | [sandbox research](../../tests/test_mining_sandbox_research.py) | 代码提案、执行、恢复、产物和人工提升 |
 | [sandbox evaluator](../../tests/test_mining_sandbox_evaluator.py) | 代码限制、因子明细、索引、覆盖率和稳定反馈 |
 
