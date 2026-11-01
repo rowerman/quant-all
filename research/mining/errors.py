@@ -292,3 +292,24 @@ class ResearchMaterialResourceError(MiningError):
 
     code = "MINING-152"
     status = 422
+
+
+class ResearchExtractionContractError(MiningError):
+    """研报字段抽取请求或结果不符合契约。"""
+
+    code = "MINING-153"
+    status = 400
+
+
+class ResearchExtractionEvidenceError(MiningError):
+    """模型引用无法验证或抽取内容越过安全边界。"""
+
+    code = "MINING-154"
+    status = 422
+
+
+class ResearchExtractionResourceError(MiningError):
+    """研报正文或抽取窗口超过固定上限。"""
+
+    code = "MINING-155"
+    status = 422

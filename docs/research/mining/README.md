@@ -4,7 +4,8 @@
 幂等、中断恢复、受控 DSL、候选评估、RD-Agent Worker、Web 人工审核和批量正式发布；
 V2 证据驱动搜索、四段时序窗口、尝试台账、受控分析工具、组合价值和统计诊断；M5
 隔离代码研究沙箱及当前运行内的失败、成功和修复知识索引。V135 已复核路线图 34 项，
-当前 M1～M5 均已完成；P2-02 已支持文本型 PDF 解析、金融研报分类和逐文件失败隔离。
+当前 M1～M5 均已完成；P2-02 已支持文本型 PDF 解析、金融研报分类和逐文件失败隔离，
+P2-03 已支持带页内原文引用和证据状态的因子字段语义抽取。
 
 V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用，运行停在
 `review_ready` 后进入人工审核；候选批准、拒绝、整批正式发布和失败重试均已接入页面。
@@ -152,8 +153,11 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> mining_worker /v4/jobs        RD-Agent 模型生成未信任代码提案
   -> DockerSandboxRunner           断网、非 root、只读根和资源受限执行
 
-资料驱动（P2-02 解析）
+资料驱动（P2-02 解析、P2-03 字段抽取）
   -> mining.research_materials     资料清单、PDF 页正文、分类、来源和解析失败
+  -> mining.research_material_extractor
+                                     页窗口、字段草稿、原文引用和证据状态
+  -> mining_worker /v5/jobs        RD-Agent 严格 JSON 研报字段抽取
 ```
 
 `mining.orchestrator` 组合研究与测试阶段。S8 由独立

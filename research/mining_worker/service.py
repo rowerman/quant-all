@@ -30,9 +30,14 @@ from mining_worker.protocol import (
 )
 from mining_worker.protocol_v2 import WorkerSearchRequest, WorkerSearchResponse
 from mining_worker.protocol_v3 import WorkerSearchTurnRequest, WorkerSearchTurnResponse
+from mining_worker.protocol_research import (
+    WorkerResearchExtractionRequest,
+    WorkerResearchExtractionResponse,
+)
 from mining_worker.search_generator import SubprocessSearchGenerator
 from mining_worker.search_generator_v3 import SubprocessSearchTurnGenerator
 from mining_worker.code_generator import SubprocessCodeGenerator
+from mining_worker.research_generator import SubprocessResearchGenerator
 from mining_worker.worker_config import load_worker_config
 
 
@@ -108,6 +113,24 @@ class CodeGenerator(Protocol):
         """取消运行中的生成。"""
 
 
+class ResearchGenerator(Protocol):
+    """Worker 服务依赖的研报字段抽取生成器。"""
+
+    def health(self) -> Mapping[str, object]:
+        """返回健康状态。"""
+
+    def generate(
+        self,
+        request: WorkerResearchExtractionRequest,
+        *,
+        timeout_seconds: float,
+    ) -> WorkerResearchExtractionResponse:
+        """执行一个研报字段抽取窗口。"""
+
+    def cancel(self, request_id: str) -> None:
+        """取消运行中的生成。"""
+
+
 def _load_token() -> str:
     direct = os.environ.get("MINING_WORKER_TOKEN", "").strip()
     if direct:
@@ -139,6 +162,7 @@ def create_app(
     search_generator: SearchGenerator | None = None,
     search_turn_generator: SearchTurnGenerator | None = None,
     code_generator: CodeGenerator | None = None,
+    research_generator: ResearchGenerator | None = None,
     state_dir: Path | str | None = None,
     token: str | None = None,
     job_timeout: float | None = None,
@@ -158,6 +182,7 @@ def create_app(
         search_turn_generator or SubprocessSearchTurnGenerator()
     )
     worker_code_generator = code_generator or SubprocessCodeGenerator()
+    worker_research_generator = research_generator or SubprocessResearchGenerator()
     worker_token = _load_token() if token is None else token
     logger = get_worker_logger("mining_worker.service")
     timeout_seconds = float(
@@ -175,6 +200,7 @@ def create_app(
     app.extensions["worker_search_generator"] = worker_search_generator
     app.extensions["worker_search_turn_generator"] = worker_search_turn_generator
     app.extensions["worker_code_generator"] = worker_code_generator
+    app.extensions["worker_research_generator"] = worker_research_generator
     app.extensions["worker_cancel_events"] = cancel_events
 
     def authorized() -> bool:
@@ -428,6 +454,68 @@ def create_app(
             with cancel_lock:
                 cancel_events.pop(job_id, None)
 
+    def run_research_job(job_id: str, request_id: str) -> None:
+        event = cancel_events[job_id]
+        if event.is_set():
+            with cancel_lock:
+                cancel_events.pop(job_id, None)
+            return
+        if not store.mark_running(job_id):
+            with cancel_lock:
+                cancel_events.pop(job_id, None)
+            return
+        try:
+            payload = store.request(job_id)
+            if payload is None:
+                raise WorkerGenerationFailed("研报抽取请求已丢失")
+            research_request = WorkerResearchExtractionRequest.from_dict(payload)
+            if event.is_set():
+                raise WorkerJobCancelled("作业已取消")
+            response = worker_research_generator.generate(
+                research_request,
+                timeout_seconds=timeout_seconds,
+            )
+            if not event.is_set():
+                store.finish_success(job_id, response.to_dict())
+                log_worker_event(
+                    logger,
+                    "worker_research_extraction_succeeded",
+                    job_id=job_id,
+                    window_index=research_request.window_index,
+                    factor_count=len(response.factors),
+                )
+        except WorkerJobTimeout:
+            store.finish_failure(job_id, "MINING-116", "Worker v5 研报抽取超时")
+            log_worker_event(
+                logger,
+                "worker_research_extraction_failed",
+                job_id=job_id,
+                error_code="MINING-116",
+            )
+        except WorkerJobCancelled:
+            store.cancel(job_id, "作业已取消")
+            log_worker_event(
+                logger,
+                "worker_research_extraction_cancelled",
+                job_id=job_id,
+                error_code="MINING-117",
+            )
+        except Exception as exc:
+            store.finish_failure(
+                job_id,
+                "MINING-118",
+                f"Worker v5 研报抽取失败：{type(exc).__name__}: {str(exc)[:400]}",
+            )
+            log_worker_event(
+                logger,
+                "worker_research_extraction_failed",
+                job_id=job_id,
+                error_code="MINING-118",
+            )
+        finally:
+            with cancel_lock:
+                cancel_events.pop(job_id, None)
+
     @app.get("/health")
     def health():
         if len(worker_token) < 32:
@@ -445,6 +533,7 @@ def create_app(
                     "mining_worker_v3",
                     "mining_worker_code_v1",
                     "mining_worker_code_v2",
+                    "mining_worker_research_extraction_v1",
                 ],
             }
         )
@@ -609,6 +698,52 @@ def create_app(
             ).start()
         return jsonify(job.to_dict()), 202
 
+    @app.post("/v5/jobs")
+    def create_research_job():
+        denied = require_auth()
+        if denied is not None:
+            return denied
+        if not request.is_json:
+            return _error("MINING-118", "请求必须是 JSON", 400)
+        try:
+            research_request = WorkerResearchExtractionRequest.from_dict(
+                request.get_json()
+            )
+        except (WorkerProtocolError, TypeError) as exc:
+            return _error(
+                "MINING-118",
+                f"请求不符合研报抽取协议：{exc}",
+                400,
+            )
+        try:
+            job, created = store.create(
+                job_id=research_request.job_id,
+                request_id=research_request.request_id,
+                payload_hash=research_request.payload_hash,
+                request=research_request.to_dict(),
+            )
+        except JobConflictError as exc:
+            return _error("MINING-105", str(exc), 409)
+        except JobBusyError as exc:
+            return _error("MINING-102", str(exc), 429)
+        if created:
+            log_worker_event(
+                logger,
+                "worker_research_extraction_created",
+                job_id=job.job_id,
+                window_index=research_request.window_index,
+                max_factors=research_request.max_factors,
+            )
+            with cancel_lock:
+                cancel_events[job.job_id] = threading.Event()
+            threading.Thread(
+                target=run_research_job,
+                args=(job.job_id, research_request.request_id),
+                name=f"mining-worker-research-{job.job_id}",
+                daemon=True,
+            ).start()
+        return jsonify(job.to_dict()), 202
+
     @app.get("/v1/jobs/<job_id>")
     def get_job(job_id: str):
         denied = require_auth()
@@ -642,6 +777,7 @@ def create_app(
             worker_search_generator.cancel(request_id)
             worker_search_turn_generator.cancel(request_id)
             worker_code_generator.cancel(request_id)
+            worker_research_generator.cancel(request_id)
         cancelled = store.cancel(job_id, "调用方取消作业")
         log_worker_event(
             logger, "worker_job_cancel_requested", job_id=job_id

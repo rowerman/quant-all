@@ -3149,3 +3149,23 @@ Worker v4 请求属于 P1-04。
 目标研报、过滤资料和失败资料，单文件错误继续保留为隔离记录。资料定向回归
 `57 passed`；完整挖掘回归 `474 passed、10 failed`，失败均为既有
 `test_mining_analysis_tools.py` DuckDB schema 歧义。下一项为 P2-03。
+
+## V149（2026-11-01）
+
+**需求提出**：按 `FACTOR_MINING_PROGRESS.md` 的优先级推进 P2-03，从已解析金融研报
+抽取因子名称、经济机制、公式、变量、预期方向和可证伪条件，并保存可审计页码来源。
+
+**需求拆分**：
+
+- V149-1：定义六类因子字段、逐字段证据状态、页内引用和稳定结果契约。
+- V149-2：切分带重叠的研报窗口，并为主服务提供可注入的 Worker 抽取入口。
+- V149-3：新增 Worker v5 严格协议、固定提示、独立子进程和研报抽取作业路由。
+- V149-4：在服务端重新定位逐字原文，拒绝伪造引用、敏感正文、超限和非法响应。
+- V149-5：完成定向测试、文档、版本、进度、变更、差异和提交记录。
+
+**状态**：V149-1～V149-5 已完成。`mining_research_extraction_v1` 固定六类字段和
+`explicit/inferred/missing` 证据状态；`extract_research_factor_drafts()` 以最多 8 个
+重叠页窗口调用 Worker，服务端从完整页正文重算引用偏移和摘录哈希。Worker v5 使用
+`mining_worker_research_extraction_v1` 和 `mining_research_extraction_prompt_v1`，
+新增 `MINING-153`～`MINING-155`。契约、抽取、Worker 和项目布局定向回归
+`100 passed`。未调用真实付费 Worker。下一项为 P2-04。

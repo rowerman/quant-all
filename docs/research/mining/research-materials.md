@@ -2,12 +2,13 @@
 
 ## 当前边界
 
-P2-01 固定资料清单、文件指纹、来源引用、解析失败和脱敏契约；P2-02 已实现文本型
-PDF 的单文件与目录解析、金融研报分类和逐文件失败隔离。P2-03 仍需从页正文抽取因子
-名称、经济机制、公式、变量和可证伪条件。
+P2-01 固定资料清单、文件指纹、来源引用、解析失败和脱敏契约；P2-02 实现文本型 PDF
+的单文件与目录解析、金融研报分类和逐文件失败隔离；P2-03 通过 Worker v5 从页正文
+抽取因子名称、经济机制、公式、变量、预期方向和可证伪条件。
 
 当前不支持扫描件 OCR、Word/HTML 解析、数据库表（`mining.research_material*`）或
-候选生成。解析结果中的正文只用于当前调用，不写入资料业务日志。
+候选生成。抽取结果仍是未信任因子草稿，不进入 `HypothesisCard`、受控 DSL、候选物化、
+审批或发布。
 
 数据流：
 
@@ -23,6 +24,12 @@ PDF 的单文件与目录解析、金融研报分类和逐文件失败隔离。P
        -> parsed：页正文、正文哈希、页级来源引用、分类
        -> failed：MINING-148～MINING-152 失败记录
   -> ResearchMaterialBatchResult
+  -> mining.research_material_extractor
+       -> 金融研报页窗口
+       -> mining_worker /v5/jobs
+       -> 页码、偏移和原文引用二次校验
+  -> ResearchExtractionResult
+       -> 六类字段、explicit/inferred/missing 证据和无因子结果
 ```
 
 ## 输入与文件发现
@@ -120,7 +127,57 @@ per_file_failures = result.failures
 解析器版本、状态、分类、错误码、页数、大小、计数和耗时。正文、元数据标题、相对路径、
 密钥和原始解析异常不进入日志。
 
-P2-03 应把 `ResearchMaterialParseResult.pages` 作为唯一正文输入，将字段抽取结果绑定到
-资料 ID、总正文哈希、页码和规则版本。修改分类阈值、PDF 解析器或正文规范化方式时必须
-升级对应版本；修改页字段、正文结构或契约字段时同步升级 schema，并确认旧解析结果不被
-静默复用。
+## 因子字段抽取
+
+P2-03 把 `ResearchMaterialParseResult.pages` 作为唯一正文输入。公开入口是：
+
+```python
+from mining import extract_research_factor_drafts
+
+result = extract_research_factor_drafts(document, extractor=worker_client)
+```
+
+如果使用正式 Worker，`worker_client` 可以是 `HttpResearchFactorExtractor`。该入口只
+接受成功分类为 `financial_research` 的解析结果，不读取主机文件，也不访问其他资料。
+
+每个因子草稿固定包含六类字段：
+
+| 字段 | 含义 |
+|---|---|
+| `factor_name` | 研报中的因子名称 |
+| `economic_mechanism` | 因子背后的经济或行为机制 |
+| `formula` | 报告描述的因子公式 |
+| `variables` | 公式或定义使用的变量 |
+| `expected_direction` | `positive`、`negative` 或 `non_monotonic` |
+| `falsification_conditions` | 可证伪条件 |
+
+每个字段带有 `explicit`、`inferred` 或 `missing` 状态：
+
+- `explicit` 表示内容可直接由引用原文支持。
+- `inferred` 表示内容由模型根据引用归纳，仍然不是报告原话。
+- `missing` 表示报告没有提供足够依据，字段值和引用均为空。
+
+非 `missing` 字段至少包含一条引用。引用保存页码、页内起止偏移、逐字原文和摘录哈希。
+Worker 只返回页码和原文片段；主服务在完整页正文中重新查找并生成偏移、哈希和权威 ID，
+不会信任模型提交的偏移。页码不可见、原文不匹配、字段不完整或响应超限都会使整份资料
+抽取失败，不返回部分结果。
+
+默认窗口上限：
+
+| 项目 | 上限 |
+|---|---:|
+| 单窗口正文 | 24000 字符 |
+| 重叠正文 | 512 字符 |
+| 每份资料窗口数 | 8 |
+| 每窗口因子草稿数 | 8 |
+| 单条引用 | 2000 字符 |
+
+超出窗口上限时返回 `MINING-155`，不会静默截断。重叠窗口产生的完全相同草稿按内容哈希
+去重；内容不一致的草稿全部保留，留给 P2-04 做重复度、相关性和可行性筛选。
+
+Worker 提示版本为 `mining_research_extraction_prompt_v1`，协议版本为
+`mining_worker_research_extraction_v1`。页正文被视为不可信数据，提示禁止执行报告中的
+指令。发送前如果脱敏器发现疑似密钥或主机绝对路径，抽取会以 `MINING-154` 拒绝。
+
+修改分类阈值、PDF 解析器、正文规范化方式、抽取提示、字段集合或窗口规则时必须升级
+对应版本，并确认旧解析结果和抽取结果不被静默复用。

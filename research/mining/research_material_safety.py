@@ -42,6 +42,13 @@ _LOG_FIELDS = {
     "failed_count",
     "document_count",
     "failure_type",
+    "factor_count",
+    "missing_field_count",
+    "extraction_id",
+    "window_index",
+    "window_count",
+    "prompt_version",
+    "model",
     "operation",
     "parser_version",
 }

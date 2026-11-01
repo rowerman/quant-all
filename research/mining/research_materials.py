@@ -1,4 +1,4 @@
-"""资料驱动输入、PDF 解析、研报分类和来源引用契约的公开入口。"""
+"""资料驱动输入、PDF 解析、研报分类、字段抽取和来源契约的公开入口。"""
 
 from mining.research_material_classification import (
     RESEARCH_CLASSIFICATION_TEXT_CHAR_LIMIT,
@@ -43,6 +43,24 @@ from mining.research_material_parser import (
     parse_research_material_target,
     parse_research_materials,
 )
+from mining.research_extraction_contracts import (
+    RESEARCH_EXPECTED_DIRECTIONS,
+    RESEARCH_EXTRACTION_PROMPT_VERSION,
+    RESEARCH_EXTRACTION_RULE_VERSION,
+    RESEARCH_EXTRACTION_SCHEMA_VERSION,
+    RESEARCH_FACTOR_FIELDS,
+    RESEARCH_FIELD_EVIDENCE_STATUSES,
+    ResearchExtractedFactor,
+    ResearchExtractionCitation,
+    ResearchExtractionResult,
+    ResearchFieldClaim,
+)
+from mining.research_material_extractor import (
+    HttpResearchFactorExtractor,
+    ResearchExtractionLimits,
+    ResearchFactorExtractor,
+    extract_research_factor_drafts,
+)
 from mining.research_material_safety import (
     redact_research_material_text,
     safe_research_material_log_fields,
@@ -54,7 +72,13 @@ __all__ = [
     "RESEARCH_CLASSIFICATION_SCHEMA_VERSION",
     "RESEARCH_CLASSIFICATION_TEXT_CHAR_LIMIT",
     "RESEARCH_DOCUMENT_STATUSES",
+    "RESEARCH_EXPECTED_DIRECTIONS",
+    "RESEARCH_EXTRACTION_PROMPT_VERSION",
+    "RESEARCH_EXTRACTION_RULE_VERSION",
+    "RESEARCH_EXTRACTION_SCHEMA_VERSION",
+    "RESEARCH_FACTOR_FIELDS",
     "RESEARCH_FAILURE_CATEGORIES",
+    "RESEARCH_FIELD_EVIDENCE_STATUSES",
     "RESEARCH_FINANCE_SIGNALS",
     "RESEARCH_MATERIAL_PARSE_SCHEMA_VERSION",
     "RESEARCH_MATERIAL_SCHEMA_VERSION",
@@ -62,6 +86,12 @@ __all__ = [
     "RESEARCH_PDF_PARSER_VERSION",
     "RESEARCH_REPORT_SIGNALS",
     "ResearchDocumentRecord",
+    "ResearchExtractedFactor",
+    "ResearchExtractionCitation",
+    "ResearchExtractionLimits",
+    "ResearchExtractionResult",
+    "ResearchFactorExtractor",
+    "ResearchFieldClaim",
     "ResearchMaterialBatchResult",
     "ResearchMaterialClassification",
     "ResearchMaterialFailure",
@@ -71,9 +101,11 @@ __all__ = [
     "ResearchMaterialParseResult",
     "ResearchPageText",
     "SourceReference",
+    "HttpResearchFactorExtractor",
     "build_research_material_manifest",
     "classify_research_material",
     "discover_research_material_paths",
+    "extract_research_factor_drafts",
     "fingerprint_research_file",
     "normalize_research_text",
     "page_text_material",
