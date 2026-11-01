@@ -20,7 +20,7 @@ from mining_sandbox.artifacts import (
     record_manual_promotion,
     verify_artifact_tree,
 )
-from mining_sandbox.errors import SandboxArtifactError
+from mining_sandbox.errors import SandboxArtifactError, SandboxRunnerError
 from mining_sandbox.feedback import SandboxFailureCategory
 from mining_sandbox.knowledge import load_sandbox_knowledge
 from mining_sandbox.policy import load_sandbox_policy
@@ -269,6 +269,18 @@ def test_research_loop_archives_all_attempts_and_reuses_sealed_run(
     assert runner.worker.requests[1].previous_attempt["code_hash"] == (
         manifest.attempts[0]["code_hash"]
     )
+    second_request = runner.worker.requests[1]
+    assert second_request.iteration == 2
+    assert second_request.task_hash == request.task_hash
+    assert second_request.knowledge_evidence is not None
+    assert second_request.knowledge_evidence.index_hash == (
+        manifest.attempts[1]["knowledge_index_hash"]
+    )
+    assert second_request.knowledge_evidence.retrieval_hash == (
+        manifest.attempts[1]["knowledge_selection_hash"]
+    )
+    assert second_request.previous_attempt["feedback"] is None
+    assert second_request.previous_attempt["feedback_hash"] is None
     artifact_dir = policy.workspace_root_path / request.sandbox_run_id
     assert verify_artifact_tree(artifact_dir).manifest_hash == manifest.manifest_hash
     assert (artifact_dir / "iterations/001/proposal.py").stat().st_mode & 0o222 == 0
@@ -375,6 +387,15 @@ def test_failed_attempt_is_preserved_and_fed_to_next_round(
     assert manifest.attempts[0]["feedback"]["category"] == "execution"
     assert manifest.attempts[0]["feedback"]["repair_hint"]
     assert runner.worker.requests[1].previous_attempt["status"] == "failed"
+    failed_feedback = runner.worker.requests[1].previous_attempt["feedback"]
+    assert failed_feedback["error_code"] == "MINING-139"
+    assert failed_feedback["repair_hint"]
+    assert runner.worker.requests[1].previous_attempt["feedback_hash"] == (
+        failed_feedback["feedback_hash"]
+    )
+    evidence = runner.worker.requests[1].knowledge_evidence
+    assert evidence is not None
+    assert [item.kind for item in evidence.entries] == ["failure"]
     knowledge = load_sandbox_knowledge(
         tmp_path / "work" / request.sandbox_run_id
     )
@@ -631,6 +652,108 @@ def test_resume_reuses_persisted_code_without_new_model_call(
     assert reused is False
     assert manifest.status == "completed"
     assert runner.worker.requests == []
+
+
+def test_resume_with_completed_round_only_calls_unfinished_proposal(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
+    policy = replace(
+        load_sandbox_policy(),
+        enabled=True,
+        snapshot_root="snapshots",
+        workspace_root="work",
+        review_root="review",
+    )
+    snapshot_dir = tmp_path / "snapshots" / "dev"
+    snapshot = _prepare_snapshot(snapshot_dir)
+    request = _request(snapshot)
+
+    class InterruptBeforeSecond(MockSandboxCodeWorkerClient):
+        def propose(self, proposal_request, *, should_cancel=None):
+            if self.requests:
+                raise RuntimeError("模拟第二轮提案前中断")
+            return super().propose(
+                proposal_request,
+                should_cancel=should_cancel,
+            )
+
+    first_worker = InterruptBeforeSecond(
+        (
+            WorkerCodeProposalResponse(
+                proposal_id="proposal_resume_1",
+                code="print('first')",
+                rationale="第一轮",
+                model="deepseek/deepseek-chat",
+            ),
+        )
+    )
+    with pytest.raises(RuntimeError, match="模拟"):
+        SandboxResearchRunner(
+            policy=policy,
+            worker=first_worker,
+            docker_runner=FakeDockerRunner(),
+        ).run(
+            request=request,
+            snapshot=snapshot,
+            snapshot_dir=snapshot_dir,
+        )
+
+    resumed_worker = MockSandboxCodeWorkerClient(
+        (
+            WorkerCodeProposalResponse(
+                proposal_id="proposal_resume_2",
+                code="print('second')",
+                rationale="使用第一轮证据修复",
+                model="deepseek/deepseek-chat",
+            ),
+        )
+    )
+    manifest, reused = SandboxResearchRunner(
+        policy=policy,
+        worker=resumed_worker,
+        docker_runner=FakeDockerRunner(),
+    ).run(
+        request=request,
+        snapshot=snapshot,
+        snapshot_dir=snapshot_dir,
+    )
+
+    assert reused is False
+    assert manifest.status == "completed"
+    assert len(resumed_worker.requests) == 1
+    resumed_request = resumed_worker.requests[0]
+    assert resumed_request.iteration == 2
+    assert resumed_request.knowledge_evidence is not None
+    assert resumed_request.knowledge_evidence.entries[0].kind == "success"
+    assert manifest.attempts[0]["proposal_id"] == "proposal_resume_1"
+    assert manifest.attempts[1]["proposal_id"] == "proposal_resume_2"
+
+
+def test_cancel_at_next_safe_boundary_does_not_call_worker_again(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
+    runner, _ = _runner(tmp_path, FakeDockerRunner())
+    snapshot_dir = tmp_path / "snapshots" / "dev"
+    snapshot = _prepare_snapshot(snapshot_dir)
+    checks = {"count": 0}
+
+    def should_cancel() -> bool:
+        checks["count"] += 1
+        return checks["count"] > 2
+
+    with pytest.raises(SandboxRunnerError, match="已取消"):
+        runner.run(
+            request=_request(snapshot),
+            snapshot=snapshot,
+            snapshot_dir=snapshot_dir,
+            should_cancel=should_cancel,
+        )
+
+    assert len(runner.worker.requests) == 1
 
 
 def _database(path: Path) -> None:

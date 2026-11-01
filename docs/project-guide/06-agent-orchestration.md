@@ -75,7 +75,7 @@ flowchart TD
 | RD-Agent | 1.0.0 |
 | 默认模型 | `deepseek/deepseek-chat` |
 | Worker 镜像 | `quant-mining-worker:s4` |
-| Worker schema | `mining_worker_v1/v2/v3`、`mining_worker_code_v1` |
+| Worker schema | `mining_worker_v1/v2/v3`、`mining_worker_code_v1/v2` |
 | 编排配置 schema | `mining_orchestrator_v1` |
 | 挖掘领域 schema | V1 `mining_v1`、V2 `mining_v2` |
 | 沙箱镜像 | `quant-mining-sandbox:s5`，默认关闭 |
@@ -193,6 +193,7 @@ M5 只能在隔离沙箱中运行有限代码研究，不能直接创建正式�
 | [mining_sandbox.code_policy](../../research/mining_sandbox/code_policy.py) | M5 提案导入、调用和固定路径静态限制 |
 | [mining_sandbox.metrics](../../research/mining_sandbox/metrics.py) | M5 汇总指标严格读取、类型和范围校验 |
 | [mining_sandbox.knowledge](../../research/mining_sandbox/knowledge.py) | M5 当前运行的失败轨迹、成功实现和修复摘要 |
+| [mining_sandbox.knowledge_evidence](../../research/mining_sandbox/knowledge_evidence.py) | 把当前运行知识转换为 Worker 白名单证据 |
 
 主服务保存候选、评估和正式数据，只通过 HTTP 把有界请求发给 Worker。V2 的工具结果、
 选择期诊断、最终评估和测试段都由主服务确定性执行，Worker 不能直接访问数据库。
@@ -284,7 +285,7 @@ V2 Web 层复用现有候选详情、审批和发布批次接口。`MiningV2Stor
 `/health` 不校验 Bearer，但会先检查 Worker Token 是否至少 32 个字符。Compose
 健康检查不需要把 Token 写进命令；如果 Token 未配置，健康检查会收到 503。健康响应
 的 `protocol_versions` 同时列出 `mining_worker_v1`、`mining_worker_v2`、
-`mining_worker_v3` 和 `mining_worker_code_v1`。
+`mining_worker_v3`、`mining_worker_code_v1` 和 `mining_worker_code_v2`。
 
 业务接口要求：
 
@@ -303,7 +304,8 @@ Authorization: Bearer <mining_worker_token>
 
 HTTP 请求体按协议限制，最大不超过 512 KiB。Worker 使用严格 JSON 字段解析，缺少字段、
 未知字段、类型错误和越界值都会在启动 LLM 前失败。V3 工具响应单次不超过 64 KiB，
-V4 代码提案受 `max_code_bytes` 和最多 3 轮限制。
+V4 代码提案受 `max_code_bytes`、最多 3 轮和 64 KiB 知识证据上限约束。新请求使用
+`mining_worker_code_v2`，旧 v1 请求只读兼容。
 
 ### 4.3 WorkerGenerateRequest
 
@@ -714,6 +716,10 @@ Worker 启动时会把遗留的 `queued/running` 作业改成 `interrupted`，�
 - 未完成阶段从原阶段继续，运行和候选回到中断前状态。
 
 中断运行只能恢复到原阶段，不能借恢复跳转阶段。
+
+M5 代码研究在 Worker 返回后先持久化代码、提案元数据、Worker 请求哈希和知识证据哈希，
+再执行沙箱。恢复时只要代码与提案元数据完整，就直接复用该轮，不再调用模型或 Worker；
+只有尚未生成提案的轮次会重新请求，并继续使用原任务、预算和提示版本。
 
 ### 8.5 快照失效
 

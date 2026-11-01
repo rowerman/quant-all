@@ -102,7 +102,10 @@ class MockSandboxCodeWorkerClient:
         return {
             "status": "ready",
             "mode": "mock",
-            "protocol_versions": ["mining_worker_code_v1"],
+            "protocol_versions": [
+                "mining_worker_code_v1",
+                "mining_worker_code_v2",
+            ],
         }
 
     def propose(

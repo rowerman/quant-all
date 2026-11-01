@@ -56,17 +56,20 @@ Worker 随后必须给出最终 `refine/branch/stop/promote` 决策。工具失�
 
 ## V4 代码研究协议
 
-`mining_worker_code_v1` 接收开发期快照标识、上一轮代码哈希、状态、指标和错误码，
-返回最多 3 轮迭代中的一轮未信任 Python 代码提案。宿主服务把代码写入独立工作区，
-由 `DockerSandboxRunner` 执行。提示版本 `mining_qlib_code_prompt_v2` 要求脚本写出
+`mining_worker_code_v2` 接收开发期快照标识、任务哈希、上一轮代码和完整结构化反馈，
+以及经过白名单转换的当前运行知识证据，返回最多 3 轮迭代中的一轮未信任 Python 代码
+提案。知识证据只包含失败、成功和修复条目的轮次、脱敏摘要、固定指标、反馈和稳定哈希，
+不包含原始代码、stdout/stderr、宿主路径或来源文件路径。宿主服务把代码写入独立工作区，
+由 `DockerSandboxRunner` 执行。提示版本 `mining_qlib_code_prompt_v3` 要求脚本写出
 `factor.parquet` 和 `rank_ic / icir / coverage / valid_days`，宿主再用
 `mining_sandbox.evaluator` 校验冻结索引、覆盖率、非有限值和代码限制。该流程是项目
 自定义的 CoSTEER 兼容循环，不是直接运行上游 `FactorCoSTEER`，代码产物不能直接进入
 候选、审批或发布。
 
-当前 `mining_sandbox.knowledge` 会把同一运行内的失败、成功和修复摘要写入运行产物，
-但尚未加入 V4 请求提示或协议。下一项 P1-04 才负责把经过校验的检索结果注入下一轮
-代码提案，并继续限制预算、取消、恢复和产物边界。
+研究循环在每轮提案前读取当前运行已验证的 `knowledge.json`，校验任务、索引和检索哈希
+后注入请求。第一轮不带历史知识，后续轮次必须带上一尝试和证据。恢复复用已经持久化的
+代码与请求哈希，不会重复调用已完成的付费步骤。`mining_worker_code_v1` 请求仍可只读
+解析，以兼容旧作业库。
 
 ## 启动
 

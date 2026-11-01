@@ -444,6 +444,7 @@ def create_app(
                     "mining_worker_v2",
                     "mining_worker_v3",
                     "mining_worker_code_v1",
+                    "mining_worker_code_v2",
                 ],
             }
         )

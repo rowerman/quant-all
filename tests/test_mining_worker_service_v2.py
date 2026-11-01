@@ -295,8 +295,14 @@ def test_v4_code_job_returns_strict_qlib_proposal(tmp_path: Path):
         previous_attempt=None,
         max_code_bytes=32768,
         llm_model="deepseek/deepseek-chat",
+        task_hash="c" * 64,
     )
     with app.test_client() as client:
+        health = client.get("/health")
+        assert {
+            "mining_worker_code_v1",
+            "mining_worker_code_v2",
+        } <= set(health.get_json()["protocol_versions"])
         created = client.post(
             "/v4/jobs",
             json=request.to_dict(),

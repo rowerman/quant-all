@@ -48,6 +48,11 @@ from mining_sandbox.knowledge import (
     load_sandbox_knowledge,
     write_sandbox_knowledge,
 )
+from mining_sandbox.knowledge_evidence import (
+    build_worker_knowledge_evidence,
+    worker_feedback_evidence,
+    worker_previous_attempt,
+)
 from mining_sandbox.policy import (
     SANDBOX_SCHEMA_VERSION,
     SandboxPolicy,
@@ -105,6 +110,7 @@ __all__ = [
     "SandboxSnapshotError",
     "build_qlib_snapshot",
     "build_sandbox_knowledge",
+    "build_worker_knowledge_evidence",
     "copy_artifacts_for_review",
     "evaluate_factor_output",
     "load_sandbox_policy",
@@ -118,4 +124,6 @@ __all__ = [
     "validate_proposal_code",
     "verify_artifact_tree",
     "write_sandbox_knowledge",
+    "worker_feedback_evidence",
+    "worker_previous_attempt",
 ]

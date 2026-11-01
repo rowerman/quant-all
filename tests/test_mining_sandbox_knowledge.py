@@ -25,6 +25,9 @@ from mining_sandbox.knowledge import (
     load_sandbox_knowledge,
     write_sandbox_knowledge,
 )
+from mining_sandbox.knowledge_evidence import (
+    build_worker_knowledge_evidence,
+)
 from mining_sandbox.research import SandboxResearchRequest
 
 
@@ -176,6 +179,41 @@ def test_failure_trajectory_success_and_repair_are_stable(tmp_path: Path):
     assert selected.repairs[0].feedback["error_code"] == "MINING-139"
     assert selected.repairs[0].summary.startswith("第 1,2 轮失败后")
     assert len({item.source_hash for item in selected.repairs[0].sources}) == 3
+
+
+def test_worker_evidence_is_a_stable_whitelist(tmp_path: Path):
+    request = _request()
+    root = tmp_path / request.sandbox_run_id
+    root.mkdir()
+    attempts = [
+        _attempt(root, 1, status="failed"),
+        _attempt(root, 2, status="passed"),
+    ]
+    _state(root, request, attempts)
+    knowledge = build_sandbox_knowledge(root, request, attempts=attempts)
+
+    first = build_worker_knowledge_evidence(knowledge)
+    second = build_worker_knowledge_evidence(knowledge)
+    payload = first.to_dict()
+    encoded = json.dumps(payload, ensure_ascii=False)
+
+    assert first == second
+    assert first.task_hash == knowledge.task_hash
+    assert first.index_hash == knowledge.index_hash
+    assert first.retrieval_hash == knowledge.retrieve(
+        request.task_hash
+    ).selection_hash
+    assert [item.kind for item in first.entries] == [
+        "failure",
+        "success",
+        "repair",
+    ]
+    assert "sources" not in encoded
+    assert "sandbox_run_id" not in encoded
+    assert str(root) not in encoded
+    assert payload["entries"][0]["feedback"]["repair_hint"] == (
+        "修复运行时异常"
+    )
 
 
 def test_pure_success_has_no_repair_entry(tmp_path: Path):

@@ -34,7 +34,12 @@ from mining_sandbox.feedback import (
 )
 from mining_sandbox.knowledge import (
     build_sandbox_knowledge,
+    load_sandbox_knowledge,
     write_sandbox_knowledge,
+)
+from mining_sandbox.knowledge_evidence import (
+    build_worker_knowledge_evidence,
+    worker_previous_attempt,
 )
 from mining_sandbox.logging_conf import get_sandbox_logger, log_sandbox_feedback
 from mining_sandbox.policy import SandboxPolicy
@@ -43,6 +48,9 @@ from mining_sandbox.runtime import DockerSandboxRunner
 from mining_sandbox.worker_client import SandboxCodeWorkerClient
 from mining_worker.protocol_code import (
     CODE_PROMPT_VERSION,
+    LEGACY_CODE_PROMPT_VERSION,
+    LEGACY_WORKER_CODE_SCHEMA_VERSION,
+    WORKER_CODE_SCHEMA_VERSION,
     WorkerCodeProposalRequest,
 )
 
@@ -95,7 +103,10 @@ class SandboxResearchRequest:
             raise SandboxRunnerError("max_code_bytes 必须在 1024～65536")
         if not isinstance(self.llm_model, str) or not self.llm_model.strip():
             raise SandboxRunnerError("llm_model 不能为空")
-        if self.prompt_version != CODE_PROMPT_VERSION:
+        if self.prompt_version not in {
+            LEGACY_CODE_PROMPT_VERSION,
+            CODE_PROMPT_VERSION,
+        }:
             raise SandboxRunnerError("prompt_version 不匹配")
 
     def material(self) -> dict[str, Any]:
@@ -231,40 +242,62 @@ class SandboxResearchRunner:
                 None,
             )
             if not code_path.is_file() or proposal_meta is None:
-                proposal = self.worker.propose(
-                    WorkerCodeProposalRequest(
-                        request_id=f"{request.sandbox_run_id}:code:{iteration}",
-                        run_id=request.sandbox_run_id,
-                        iteration=iteration,
-                        hypothesis=request.hypothesis,
-                        snapshot={
-                            "context_hash": snapshot.context_hash,
-                            "manifest_hash": snapshot.manifest_hash,
-                            "start_date": snapshot.start_date,
-                            "end_date": snapshot.end_date,
-                            "fields": list(snapshot.fields),
-                            "image_id": self.policy.image,
-                        },
-                        previous_attempt=(
-                            {
-                                "iteration": int(latest_attempt["iteration"]),
-                                "code_hash": str(latest_attempt["code_hash"]),
-                                "status": str(latest_attempt["status"]),
-                                "metrics": latest_attempt.get("metrics"),
-                                "error_code": latest_attempt.get("error_code"),
-                            }
-                            if latest_attempt is not None
-                            else None
-                        ),
-                        max_code_bytes=request.max_code_bytes,
-                        llm_model=request.llm_model,
+                is_legacy = request.prompt_version == LEGACY_CODE_PROMPT_VERSION
+                knowledge_evidence = None
+                if not is_legacy and latest_attempt is not None:
+                    knowledge_evidence = build_worker_knowledge_evidence(
+                        load_sandbox_knowledge(artifact_dir)
+                    )
+                previous_attempt = (
+                    worker_previous_attempt(latest_attempt)
+                    if latest_attempt is not None and not is_legacy
+                    else (
+                        {
+                            "iteration": int(latest_attempt["iteration"]),
+                            "code_hash": str(latest_attempt["code_hash"]),
+                            "status": str(latest_attempt["status"]),
+                            "metrics": latest_attempt.get("metrics"),
+                            "error_code": latest_attempt.get("error_code"),
+                        }
+                        if latest_attempt is not None
+                        else None
+                    )
+                )
+                proposal_request = WorkerCodeProposalRequest(
+                    request_id=f"{request.sandbox_run_id}:code:{iteration}",
+                    run_id=request.sandbox_run_id,
+                    iteration=iteration,
+                    hypothesis=request.hypothesis,
+                    snapshot={
+                        "context_hash": snapshot.context_hash,
+                        "manifest_hash": snapshot.manifest_hash,
+                        "start_date": snapshot.start_date,
+                        "end_date": snapshot.end_date,
+                        "fields": list(snapshot.fields),
+                        "image_id": self.policy.image,
+                    },
+                    previous_attempt=previous_attempt,
+                    max_code_bytes=request.max_code_bytes,
+                    llm_model=request.llm_model,
+                    task_hash=None if is_legacy else request.task_hash,
+                    knowledge_evidence=knowledge_evidence,
+                    prompt_version=request.prompt_version,
+                    schema_version=(
+                        LEGACY_WORKER_CODE_SCHEMA_VERSION
+                        if is_legacy
+                        else WORKER_CODE_SCHEMA_VERSION
                     ),
+                )
+                proposal = self.worker.propose(
+                    proposal_request,
                     should_cancel=should_cancel,
                 )
                 if len(proposal.code.encode("utf-8")) > request.max_code_bytes:
                     raise SandboxRunnerError("代码提案超过请求上限")
                 if proposal.model != request.llm_model:
                     raise SandboxRunnerError("代码提案模型与请求不一致")
+                if proposal.prompt_version != request.prompt_version:
+                    raise SandboxRunnerError("代码提案提示版本与请求不一致")
                 code_path.write_text(proposal.code, encoding="utf-8")
                 proposal_meta = {
                     "iteration": iteration,
@@ -274,6 +307,17 @@ class SandboxResearchRunner:
                     "rationale": proposal.rationale,
                     "model": proposal.model,
                     "prompt_version": proposal.prompt_version,
+                    "worker_request_hash": proposal_request.payload_hash,
+                    "knowledge_index_hash": (
+                        knowledge_evidence.index_hash
+                        if knowledge_evidence is not None
+                        else None
+                    ),
+                    "knowledge_selection_hash": (
+                        knowledge_evidence.retrieval_hash
+                        if knowledge_evidence is not None
+                        else None
+                    ),
                     "usage": dict(proposal.usage),
                     "status": "proposed",
                     "metrics": None,

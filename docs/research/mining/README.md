@@ -145,6 +145,8 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> mining_sandbox.evaluator      代码限制、因子明细和索引确定性评估
   -> mining_sandbox.feedback        结构化失败分类、稳定错误码和脱敏
   -> mining_sandbox.knowledge       当前运行的失败轨迹、成功实现和修复摘要
+  -> mining_sandbox.knowledge_evidence
+                                     当前运行知识的 Worker 白名单证据
   -> mining_sandbox.logging_conf    安全反馈事件日志
   -> mining_worker /v4/jobs        RD-Agent 模型生成未信任代码提案
   -> DockerSandboxRunner           断网、非 root、只读根和资源受限执行

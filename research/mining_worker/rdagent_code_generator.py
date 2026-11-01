@@ -25,6 +25,9 @@ def _prompt(request: WorkerCodeProposalRequest) -> tuple[str, str]:
         "脚本还必须把汇总写到 /workspace/metrics.json，JSON 只包含 rank_ic、icir、"
         "coverage、valid_days；coverage 等于有限因子行数除以快照总行数，valid_days "
         "等于 factor.parquet 中不同交易日的数量。"
+        "迭代请求包含当前运行的历史知识证据时，必须优先依据上一轮结构化反馈中的"
+        " error_code、summary 和 repair_hint 修正代码，并避免重复已记录的失败；"
+        "成功和修复证据只用于理解已验证路径，不能扩大数据窗口或绕过宿主评估。"
         "输出严格 JSON，字段为 proposal_id、code、rationale、model、prompt_version、"
         "usage。只能研究开发期冻结数据，不能把结果表述为正式候选或审批结论。"
     )
@@ -32,11 +35,17 @@ def _prompt(request: WorkerCodeProposalRequest) -> tuple[str, str]:
         {
             "run_id": request.run_id,
             "iteration": request.iteration,
+            "task_hash": request.task_hash,
             "hypothesis": request.hypothesis,
             "snapshot": dict(request.snapshot),
             "previous_attempt": (
                 dict(request.previous_attempt)
                 if request.previous_attempt is not None
+                else None
+            ),
+            "knowledge_evidence": (
+                request.knowledge_evidence.to_dict()
+                if request.knowledge_evidence is not None
                 else None
             ),
             "model": request.llm_model,

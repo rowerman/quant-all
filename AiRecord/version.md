@@ -3066,3 +3066,25 @@ P0 已全部完成，下一项为 P1-01。
 尝试即原子刷新 `knowledge.json`，下一轮可在封存前读取，恢复时从运行状态重建，最终
 知识文件进入封存清单。`MINING-146` 拒绝任务、来源、路径、版本或哈希不一致。知识注入
 Worker v4 请求属于 P1-04。
+
+## V145（2026-11-01）
+
+**需求提出**：按 `FACTOR_MINING_PROGRESS.md` 的优先级推进 P1-04，把当前沙箱运行的
+知识检索证据接入 Worker v4 下一轮代码提案，并保持预算、取消、恢复和产物封存边界。
+
+**需求拆分**：
+
+- V145-1：定义当前运行知识的 Worker 白名单证据、稳定哈希和安全转换。
+- V145-2：升级 Worker 代码协议和提示，传入上一轮结构化反馈与历史知识。
+- V145-3：把证据哈希和 Worker 请求哈希写入尝试记录，补齐恢复与取消边界。
+- V145-4：兼容旧 v1 请求和旧提示响应，拒绝跨任务、未来轮次和越权字段。
+- V145-5：完成定向回归、文档、版本、进度、变更、差异和提交记录。
+
+**状态**：V145-1～V145-5 已完成。`mining_sandbox.knowledge_evidence` 从当前运行
+`knowledge.json` 生成 `mining_worker_code_knowledge_v1` 证据；请求升级到
+`mining_worker_code_v2`，提示升级到 `mining_qlib_code_prompt_v3`。后续轮次携带
+上一轮完整反馈、最多 4 条知识条目、知识索引与检索哈希；首轮不带历史知识。恢复复用
+已持久化提案，不重复调用付费步骤。沙箱、Worker、日志和项目布局定向测试
+`120 passed`。全部 `tests/test_mining*.py` 回归为 `432 passed、10 failed`；失败均在
+未修改的 `test_mining_analysis_tools.py`，由既有 DuckDB `mining.mining` schema 歧义
+导致，单测可复现。下一项为 P1-05。

@@ -60,11 +60,12 @@ docker build -t quant-mining-sandbox:s5 \
 
 ## 代码研究闭环
 
-Worker v4 使用 `mining_worker_code_v1`，由固定 RD-Agent 模型生成 Qlib 研究脚本；脚本
+Worker v4 使用 `mining_worker_code_v2`，由固定 RD-Agent 模型生成 Qlib 研究脚本；脚本
 只作为未信任提案返回主服务。Host 研究循环最多执行 3 轮，每轮把代码写入独立工作区，
 先做静态编译和代码限制检查，再由断网容器执行。提示版本
-`mining_qlib_code_prompt_v2` 要求脚本同时写出 `factor.parquet` 和
-`rank_ic / icir / coverage / valid_days` 指标，并把上一轮失败或指标反馈给下一轮。
+`mining_qlib_code_prompt_v3` 要求脚本同时写出 `factor.parquet` 和
+`rank_ic / icir / coverage / valid_days` 指标，并依据上一轮结构化反馈和当前运行知识
+证据修正下一轮提案。
 
 代码模型不直接运行在 Worker 容器。沙箱只挂载冻结快照和工作区，不能访问主数据库、正式
 候选、正式因子、Token 或 Docker socket。沙箱指标只用于产生研究提案，不是正式质量结论。
@@ -129,7 +130,19 @@ Prompt 或研究假设，并遮蔽 API Key、Bearer Token、已知密钥和宿�
 研究循环每完成一个尝试就原子刷新 `knowledge.json`，因此下一轮可以在运行封存前读取
 已完成历史。恢复时从 `run-state.json` 重建索引，最终知识文件进入 `manifest.json`
 并随产物目录封存。旧运行没有知识文件时，可用原研究请求只读派生，不会修改已封存
-产物。P1-03 只建立运行内知识；把知识注入 Worker v4 请求属于 P1-04。
+产物。
+
+## Worker 知识证据
+
+`mining_sandbox.knowledge_evidence` 从当前运行的 `SandboxKnowledgeBase` 生成
+`mining_worker_code_knowledge_v1` 证据。首轮不携带历史知识；后续轮次必须携带同一任务
+索引、检索结果及上一尝试反馈。每条证据保留知识条目哈希、代码/评估哈希、轮次、固定
+四项指标和脱敏摘要，最多 4 条。
+
+证据不包含 `sandbox_run_id`、来源产物路径、原始代码、stdout/stderr 或完整知识来源。
+每个失败反馈还包含稳定 `feedback_hash`。研究循环把知识索引哈希、检索哈希和实际 Worker
+请求哈希写入尝试记录，随后随整个运行封存。协议、Worker 服务和提示层都拒绝未知字段、
+跨任务证据、当前或未来轮次证据以及非法指标。
 
 ## 产物与人工提升
 
