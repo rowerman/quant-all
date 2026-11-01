@@ -133,6 +133,8 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> backend.mining_search_service 搜索视图、分析工具和审核证据
   -> mining.search_orchestrator    逐轮搜索、选择、最终评估和测试段
   -> mining.storage_v2             mining_v2 轨迹、尝试、证据和工具审计
+  -> mining.search_publication_contracts
+                                     只读候选、证据和上下文发布映射
 
 沙箱研究（M5，默认关闭）
   -> mining_sandbox.research       有限代码提案和恢复循环
@@ -144,6 +146,8 @@ docker compose --env-file .env -f compose.mining.yaml down
 `MiningPublicationService` 重建并原子提交正式 `mined` 族，详见
 [正式入库](publication.md)。S6 的详细流程和恢复规则见
 [挖掘编排](orchestration.md)，Web 路由、事件流和审批规则见 [挖掘 Web](web.md)。
+V2 搜索候选进入现有审批和发布链路前的只读字段边界见
+[V2 到 V1 发布桥接](v2-publication-bridge.md)。
 
 字段和算子的冻结配置位于 `configs/mining/catalog.json`。完整字段、单位和可用时点见
 [字段与算子目录](catalog.md)，DSL 语法、编译和安全边界见 [受控 DSL](dsl.md)。
