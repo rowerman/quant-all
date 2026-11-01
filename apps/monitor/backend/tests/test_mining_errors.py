@@ -15,6 +15,9 @@ from mining.errors import (
     MiningNotFoundError,
     MiningPublicationError,
     MiningRecoveryError,
+    ResearchScreeningContractError,
+    ResearchScreeningEvidenceError,
+    ResearchScreeningResourceError,
     MiningStateError,
     MiningStorageError,
     MiningWorkerError,
@@ -56,6 +59,9 @@ def test_mining_errors_preserve_code_status_and_request_id():
         (MiningStateError("a"), 409),
         (MiningStorageError("a"), 503),
         (MiningRecoveryError("a"), 409),
+        (ResearchScreeningContractError("a"), 400),
+        (ResearchScreeningEvidenceError("a"), 422),
+        (ResearchScreeningResourceError("a"), 422),
     ],
 )
 def test_all_mining_error_families_keep_http_mapping(error, expected):

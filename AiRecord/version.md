@@ -3169,3 +3169,26 @@ Worker v4 请求属于 P1-04。
 `mining_worker_research_extraction_v1` 和 `mining_research_extraction_prompt_v1`，
 新增 `MINING-153`～`MINING-155`。契约、抽取、Worker 和项目布局定向回归
 `100 passed`。未调用真实付费 Worker。下一项为 P2-04。
+
+## V150（2026-11-01）
+
+**需求提出**：按 `FACTOR_MINING_PROGRESS.md` 的优先级推进 P2-04，对研报因子草稿执行
+证据、方向、字段可用性和重复度筛查，并转换为可审计的 `HypothesisCard` 与受控 DSL
+候选草稿。
+
+**需求拆分**：
+
+- V150-1：定义转换上下文、资源上限、筛选结论、候选结果和稳定哈希契约。
+- V150-2：实现六字段完整性、方向、安全、冻结目录和来源绑定筛查。
+- V150-3：新增 Worker v6 批量 DSL 转换协议、固定提示、子进程和 HTTP 客户端。
+- V150-4：在主服务复核变量映射、DSL、排除字段和依赖，并生成跨报告语义去重台账。
+- V150-5：完成定向回归、文档、版本、进度、变更、差异和提交记录。
+
+**状态**：V150-1～V150-5 已完成。`mining.research_factor_screening` 对六字段完整、
+方向为 `positive/negative` 且证据已脱敏的草稿按每份研报最多 8 项调用 Worker v6；
+`mining.research_factor_conversion_support` 重新校验冻结字段、算子、排除字段、变量
+映射和表达式依赖。通过项生成未落库的 `HypothesisCard` 与 `CandidateDefinition`，
+跨报告按候选 `semantic_hash` 去重，并为每个输入草稿生成 `TrialRecord` 形态的尝试
+记录。新增 `MINING-156`～`MINING-158`。新增定向测试 `15 passed`，相关定向回归
+`111 passed`；挖掘全量回归 `520 passed、10 failed`，失败均为既有分析工具 DuckDB
+schema 歧义。未调用真实付费 Worker。下一项为 P2-05。

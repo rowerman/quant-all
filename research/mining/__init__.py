@@ -83,6 +83,9 @@ from mining.errors import (
     ResearchMaterialReadError,
     ResearchMaterialResourceError,
     ResearchMaterialSecurityError,
+    ResearchScreeningContractError,
+    ResearchScreeningEvidenceError,
+    ResearchScreeningResourceError,
     SnapshotStaleError,
     WorkerCancelledError,
     WorkerConfigurationError,
@@ -139,6 +142,22 @@ from mining.research_materials import (
     research_pages_text_sha256,
     resolve_research_file,
     safe_research_material_log_fields,
+)
+from mining.research_factor_conversion_client import (
+    HttpResearchFactorConverter,
+    ResearchFactorConverter,
+)
+from mining.research_factor_screening import convert_research_factor_drafts
+from mining.research_factor_screening_contracts import (
+    RESEARCH_CONVERSION_PROMPT_VERSION,
+    RESEARCH_CONVERSION_SCHEMA_VERSION,
+    RESEARCH_SCREENING_SCHEMA_VERSION,
+    RESEARCH_SCREENING_STATUSES,
+    ResearchConversionContext,
+    ResearchConversionLimits,
+    ResearchConversionResult,
+    ResearchConvertedCandidate,
+    ResearchScreeningDecision,
 )
 from mining.evaluation_contract import (
     CandidateEvaluationInput,
@@ -467,6 +486,9 @@ __all__ = [
     "ResearchMaterialReadError",
     "ResearchMaterialResourceError",
     "ResearchMaterialSecurityError",
+    "ResearchScreeningContractError",
+    "ResearchScreeningEvidenceError",
+    "ResearchScreeningResourceError",
     "SnapshotStaleError",
     "WorkerCancelledError",
     "WorkerConfigurationError",
@@ -499,6 +521,18 @@ __all__ = [
     "NormalizedSearchWorkerResult",
     "generate_search_candidates",
     "generate_search_candidates_with_tools",
+    "RESEARCH_CONVERSION_PROMPT_VERSION",
+    "RESEARCH_CONVERSION_SCHEMA_VERSION",
+    "RESEARCH_SCREENING_SCHEMA_VERSION",
+    "RESEARCH_SCREENING_STATUSES",
+    "ResearchConversionContext",
+    "ResearchConversionLimits",
+    "ResearchConversionResult",
+    "ResearchConvertedCandidate",
+    "ResearchScreeningDecision",
+    "HttpResearchFactorConverter",
+    "ResearchFactorConverter",
+    "convert_research_factor_drafts",
     "tool_catalog",
     "migrate_v1_to_v2",
 ]

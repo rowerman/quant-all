@@ -31,6 +31,16 @@ from mining_worker.protocol_v2 import (
     WorkerSearchRequest,
     WorkerSearchResponse,
 )
+from mining_worker.protocol_research_conversion import (
+    WORKER_RESEARCH_CONVERSION_PROMPT_VERSION,
+    WORKER_RESEARCH_CONVERSION_SCHEMA_VERSION,
+    WorkerResearchCatalogField,
+    WorkerResearchCatalogOperator,
+    WorkerResearchConversionDraft,
+    WorkerResearchConversionOutcome,
+    WorkerResearchConversionRequest,
+    WorkerResearchConversionResponse,
+)
 
 __all__ = [
     "WORKER_SEARCH_SCHEMA_VERSION",
@@ -39,4 +49,12 @@ __all__ = [
     "WorkerSearchHypothesis",
     "WorkerSearchRequest",
     "WorkerSearchResponse",
+    "WORKER_RESEARCH_CONVERSION_PROMPT_VERSION",
+    "WORKER_RESEARCH_CONVERSION_SCHEMA_VERSION",
+    "WorkerResearchCatalogField",
+    "WorkerResearchCatalogOperator",
+    "WorkerResearchConversionDraft",
+    "WorkerResearchConversionOutcome",
+    "WorkerResearchConversionRequest",
+    "WorkerResearchConversionResponse",
 ]

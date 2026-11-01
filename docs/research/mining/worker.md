@@ -3,9 +3,10 @@
 ## 职责与隔离
 
 Worker 固定使用 Python 3.11 和 RD-Agent 1.0.0，通过 DeepSeek 兼容的 LiteLLM 后端
-生成 V1 候选表达式、V2 搜索建议、V3 工具补充响应、V4 未信任 Qlib 研究代码和 V5
-研报因子字段草稿。它不读取行情数据库、候选库或正式因子目录，也不在 Worker 容器内
-执行模型生成代码。代码只由宿主侧沙箱在断网容器中运行。
+生成 V1 候选表达式、V2 搜索建议、V3 工具补充响应、V4 未信任 Qlib 研究代码、V5
+研报因子字段草稿和 V6 研报草案到受控 DSL 的映射建议。它不读取行情数据库、候选库或
+正式因子目录，也不在 Worker 容器内执行模型生成代码。代码只由宿主侧沙箱在断网容器中
+运行。
 
 主服务客户端位于 `mining.worker_client`，共享协议与 Worker 服务位于独立
 `mining_worker` 包。Worker 返回的表达式全部重新经过 S3；主服务不信任 Worker 给出的
@@ -21,6 +22,7 @@ Worker 固定使用 Python 3.11 和 RD-Agent 1.0.0，通过 DeepSeek 兼容的 L
 | POST | `/v3/jobs` | 提交一轮工具感知搜索请求，返回工具批次或最终决策 |
 | POST | `/v4/jobs` | 提交一轮隔离沙箱代码提案请求 |
 | POST | `/v5/jobs` | 提交一个研报页窗口字段抽取请求 |
+| POST | `/v6/jobs` | 提交一个最多 8 项的研报 DSL 转换请求 |
 | GET | `/v1/jobs/<job_id>` | 查询作业状态 |
 | POST | `/v1/jobs/<job_id>/cancel` | 取消排队或运行中的作业 |
 
@@ -83,6 +85,17 @@ Worker 随后必须给出最终 `refine/branch/stop/promote` 决策。工具失�
 缺失字段状态或超出窗口上限均被拒绝，不能把模型猜测写成原文事实。页正文属于不可信
 输入，提示版本 `mining_research_extraction_prompt_v1` 明确禁止执行报告内的指令；
 主服务发送前还会拒绝疑似密钥和主机绝对路径。
+
+## V6 研报 DSL 转换协议
+
+`mining_worker_research_conversion_v1` 接收一份研报中最多 8 个六字段完整的草稿，
+以及白名单字段和算子目录。Worker 只返回每个草稿的受控表达式和“研报变量到目录字段”
+映射，或明确拒绝原因；它不能返回候选 ID、语义哈希、状态迁移或运行结论。
+
+主服务在 Worker 返回后重新执行 `validate_expression()`，并核对映射键来自研报变量、
+映射值在冻结目录中、表达式依赖全部由映射覆盖。候选方向来自研报声明，不接受模型
+修改。提示版本 `mining_research_dsl_conversion_prompt_v1` 把研报字段和引用视为
+不可信数据，无法确定映射时必须拒绝。
 
 ## 启动
 

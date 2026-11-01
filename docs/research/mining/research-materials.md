@@ -4,11 +4,12 @@
 
 P2-01 固定资料清单、文件指纹、来源引用、解析失败和脱敏契约；P2-02 实现文本型 PDF
 的单文件与目录解析、金融研报分类和逐文件失败隔离；P2-03 通过 Worker v5 从页正文
-抽取因子名称、经济机制、公式、变量、预期方向和可证伪条件。
+抽取因子名称、经济机制、公式、变量、预期方向和可证伪条件；P2-04 对六字段完整的
+草稿执行研报一致性筛查、变量映射、受控 DSL 转换和语义去重。
 
 当前不支持扫描件 OCR、Word/HTML 解析、数据库表（`mining.research_material*`）或
-候选生成。抽取结果仍是未信任因子草稿，不进入 `HypothesisCard`、受控 DSL、候选物化、
-审批或发布。
+运行入口。P2-04 只返回未落库的 `HypothesisCard`、`CandidateDefinition` 和尝试记录；
+候选物化、审批和发布由后续运行入口接入。
 
 数据流：
 
@@ -30,6 +31,12 @@ P2-01 固定资料清单、文件指纹、来源引用、解析失败和脱敏�
        -> 页码、偏移和原文引用二次校验
   -> ResearchExtractionResult
        -> 六类字段、explicit/inferred/missing 证据和无因子结果
+  -> mining.research_factor_screening
+       -> 六字段完整性、方向、安全和目录筛查
+       -> mining_worker /v6/jobs
+       -> 受控 DSL、变量映射和方向二次校验
+  -> ResearchConversionResult
+       -> HypothesisCard、CandidateDefinition、筛选结论和 TrialRecord
 ```
 
 ## 输入与文件发现
@@ -181,3 +188,69 @@ Worker 提示版本为 `mining_research_extraction_prompt_v1`，协议版本为
 
 修改分类阈值、PDF 解析器、正文规范化方式、抽取提示、字段集合或窗口规则时必须升级
 对应版本，并确认旧解析结果和抽取结果不被静默复用。
+
+## 候选草稿筛选与 DSL 转换
+
+P2-04 的公开入口是：
+
+```python
+from mining import (
+    HttpResearchFactorConverter,
+    ResearchConversionContext,
+    convert_research_factor_drafts,
+)
+
+result = convert_research_factor_drafts(
+    (extraction_result,),
+    context=ResearchConversionContext(
+        run_id="searchrun_12345678",
+        turn_index=1,
+        branch_id="branch-0001",
+    ),
+    converter=HttpResearchFactorConverter(url, token),
+)
+```
+
+进入模型转换前必须满足：
+
+- 六类字段都不是 `missing`，并保留 P2-03 的字段状态、页码引用和稳定哈希。
+- `expected_direction` 是 `positive` 或 `negative`；`non_monotonic` 不能映射为现有
+  候选方向，因此明确拒绝。
+- 字段值和短引用再次经过敏感信息检查，发现问题时不发送给 Worker。
+
+每份研报的待转换草稿按稳定 `draft_id` 排序，最多 8 项组成一个 Worker v6 作业；超过
+8 项继续分块，不截断。Worker 只返回以下两类逐草稿结论：
+
+```json
+{
+  "draft_id": "factordraft_...",
+  "status": "converted",
+  "expression": "rank(ret)",
+  "field_mapping": {"ret_5": "ret"},
+  "reason_code": null,
+  "message": null
+}
+```
+
+模型不能改变研报预期方向。主服务用 `validate_expression()` 重新解析并校验表达式，
+还要求映射键来自研报声明的 `variables`、映射值都在允许字段目录中、表达式依赖均由
+映射覆盖。未知字段、非法算子、排除字段、伪造变量、窗口越界或不完整 Worker 响应都
+会被拒绝。
+
+通过项生成未落库的 `HypothesisCard` 和 `CandidateDefinition`。假设卡 metadata 只保存
+资料、抽取、草稿、字段声明和引用 ID、目录、模型、提示及变量映射，不复制报告正文。
+跨报告结果按候选 `semantic_hash` 去重，稳定保留 `(document_id, draft_id)` 较小的
+实现。
+
+每个输入草稿对应一条现有 `TrialRecord` 形态的尝试记录：
+
+| 结论 | 尝试类型 | 含义 |
+|---|---|---|
+| `accepted` | `proposed` | 已通过全部确定性校验 |
+| `rejected` | `rejected` | 六字段证据、方向或安全门禁不通过 |
+| `invalid` | `invalid` | Worker 拒绝或 DSL、字段映射非法 |
+| `duplicate` | `duplicate` | 与已保留候选语义相同 |
+
+P2-04 不写入 V2 台账、数据库、审批或发布；P2-05 负责运行入口、持久化、来源展示和
+端到端接入。Worker 协议为 `mining_worker_research_conversion_v1`，提示版本为
+`mining_research_dsl_conversion_prompt_v1`，新增错误码 `MINING-156`～`MINING-158`。

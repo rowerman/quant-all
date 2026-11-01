@@ -313,3 +313,24 @@ class ResearchExtractionResourceError(MiningError):
 
     code = "MINING-155"
     status = 422
+
+
+class ResearchScreeningContractError(MiningError):
+    """研报筛选、转换请求或结果不符合契约。"""
+
+    code = "MINING-156"
+    status = 400
+
+
+class ResearchScreeningEvidenceError(MiningError):
+    """研报变量映射、DSL 或来源证据无法通过校验。"""
+
+    code = "MINING-157"
+    status = 422
+
+
+class ResearchScreeningResourceError(MiningError):
+    """研报转换批次超过固定资源上限。"""
+
+    code = "MINING-158"
+    status = 422

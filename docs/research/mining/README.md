@@ -5,7 +5,8 @@
 V2 证据驱动搜索、四段时序窗口、尝试台账、受控分析工具、组合价值和统计诊断；M5
 隔离代码研究沙箱及当前运行内的失败、成功和修复知识索引。V135 已复核路线图 34 项，
 当前 M1～M5 均已完成；P2-02 已支持文本型 PDF 解析、金融研报分类和逐文件失败隔离，
-P2-03 已支持带页内原文引用和证据状态的因子字段语义抽取。
+P2-03 已支持带页内原文引用和证据状态的因子字段语义抽取，P2-04 已支持六字段筛查、
+模型辅助变量映射、受控 DSL 转换和跨报告语义去重。
 
 V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用，运行停在
 `review_ready` 后进入人工审核；候选批准、拒绝、整批正式发布和失败重试均已接入页面。
@@ -153,11 +154,14 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> mining_worker /v4/jobs        RD-Agent 模型生成未信任代码提案
   -> DockerSandboxRunner           断网、非 root、只读根和资源受限执行
 
-资料驱动（P2-02 解析、P2-03 字段抽取）
+资料驱动（P2-02 解析、P2-03 字段抽取、P2-04 筛选转换）
   -> mining.research_materials     资料清单、PDF 页正文、分类、来源和解析失败
   -> mining.research_material_extractor
                                      页窗口、字段草稿、原文引用和证据状态
   -> mining_worker /v5/jobs        RD-Agent 严格 JSON 研报字段抽取
+  -> mining.research_factor_screening
+                                     六字段筛查、变量映射和受控 DSL 二次校验
+  -> mining_worker /v6/jobs        RD-Agent 研报草案到 DSL 的批量映射建议
 ```
 
 `mining.orchestrator` 组合研究与测试阶段。S8 由独立
@@ -356,6 +360,12 @@ progress = orchestrator.progress(run["run_id"])
 | `MINING-150` | 资料格式、正文或加密状态不允许解析 | 422 |
 | `MINING-151` | 资料解析器发生未预期失败 | 500 |
 | `MINING-152` | 资料文件、页数或正文字符超过解析限制 | 422 |
+| `MINING-153` | 研报字段抽取请求或结果不符合契约 | 400 |
+| `MINING-154` | 研报引用无法验证或抽取内容越过安全边界 | 422 |
+| `MINING-155` | 研报正文、窗口或抽取输出超过固定上限 | 422 |
+| `MINING-156` | 研报筛选、转换请求或结果不符合契约 | 400 |
+| `MINING-157` | 研报变量映射、DSL 或来源证据无法通过校验 | 422 |
+| `MINING-158` | 研报转换批次超过固定资源上限 | 422 |
 
 候选评估执行错误使用 `MINING-106`。门禁不通过是正常业务结论，通过
 `TechnicalGate.passed=false` 和逐项 `checks` 表达，不伪装成系统异常。
