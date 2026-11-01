@@ -754,11 +754,13 @@ Token 首次由 `ensure_worker_token()` 生成，值是 `secrets.token_urlsafe(4
 | 候选存储 | `logs/research/mining/mining_storage/` |
 | V2 搜索 | `logs/research/mining/mining_search_orchestrator/` |
 | V2 工具与 Web | `logs/research/mining/mining_analysis_tool_gateway/`、`mining_search_web/` |
-| M5 沙箱 | `logs/research/mining/mining_sandbox/` |
+| M5 沙箱 | `logs/research/mining_sandbox/mining_sandbox_research/` |
 
 日志继续使用项目统一的分段时间戳文件，单段达到 128 MB 后轮转。Worker 事件只写
 作业 ID、轮次、候选数量、状态和错误码；假设、表达式、Prompt、模型响应和 Key 被排除
-或遮盖。HTTP 访问日志仍会记录请求路径和状态码，因此日志目录本身也需要访问控制。
+或遮盖。沙箱反馈事件只写运行 ID、轮次、代码哈希、错误码、分类、阶段、可重试性和反馈
+哈希，不写原始代码、完整 stderr、宿主机路径或密钥。HTTP 访问日志仍会记录请求路径和
+状态码，因此日志目录本身也需要访问控制。
 
 ### 9.3 错误边界
 
@@ -785,6 +787,7 @@ Token 首次由 `ensure_worker_token()` 生成，值是 `secrets.token_urlsafe(4
 | `MINING-126` | V2 存储迁移失败 | V2 存储 |
 | `MINING-127`～`MINING-132` | 分析工具不存在、参数、越权、超时、结果或执行失败 | 工具网关 |
 | `MINING-133`～`MINING-137` | 沙箱政策、运行、快照、隔离或产物失败 | M5 沙箱 |
+| `MINING-138`～`MINING-145` | 沙箱编译、运行、输出、索引、覆盖率、数值、代码限制或资源反馈 | M5 研究循环 |
 
 主服务 HTTP 层根据 `MiningError.status` 映射 400、404、409、422、429、500、502、
 503 或 504。Worker 客户端还会把作业错误码映射回

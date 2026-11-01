@@ -437,6 +437,7 @@ Worker 的
 | 因子评估 | `calculate.errors.CalculateError` | `EVAL-*` |
 | 模型 | `alpha.errors.AlphaError` | `ALPHA-*` |
 | 挖掘 | `mining.errors.MiningError` | `MINING-*` |
+| 沙箱代码研究 | `mining_sandbox.errors.SandboxError` | `MINING-133`～`MINING-145` |
 | 回测 | `backtest.errors.BacktestError`，继承 `QuantError` | `BT-*` |
 | Web 入口 | `backend.errors.MonitorError` | `MONITOR-*` |
 
@@ -511,6 +512,9 @@ Worker 的
 | `MINING-116`～`MINING-119` | Worker 超时、取消、响应和配置 | 504/409/502/503 |
 | `MINING-120` | 数据或规则快照过期 | 409 |
 | `MINING-121`～`MINING-123` | 发布冲突、校验和文件系统 | 409/422/503 |
+| `MINING-124`～`MINING-132` | 候选物化、V2 搜索和受控分析工具 | 400～504 |
+| `MINING-133`～`MINING-137` | 沙箱政策、运行、快照、隔离和产物 | 400～500 |
+| `MINING-138`～`MINING-145` | 沙箱内部代码反馈，不直接映射 Web | 研究产物 |
 
 回测：
 

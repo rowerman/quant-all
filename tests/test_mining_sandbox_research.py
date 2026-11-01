@@ -20,6 +20,7 @@ from mining_sandbox.artifacts import (
     verify_artifact_tree,
 )
 from mining_sandbox.errors import SandboxArtifactError
+from mining_sandbox.feedback import SandboxFailureCategory
 from mining_sandbox.policy import load_sandbox_policy
 from mining_sandbox.qlib_snapshot import QlibSnapshotManifest, build_qlib_snapshot
 from mining_sandbox.research import SandboxResearchRequest, SandboxResearchRunner
@@ -44,9 +45,28 @@ def _snapshot_manifest() -> QlibSnapshotManifest:
     )
 
 
+_DEFAULT_METRICS = {
+    "rank_ic": 0.03,
+    "icir": 0.4,
+    "coverage": 0.8,
+    "valid_days": 100,
+}
+_UNSET = object()
+
+
 class FakeDockerRunner:
-    def __init__(self, *, passed: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        passed: bool = True,
+        timed_out: bool = False,
+        metrics: object = _UNSET,
+        metrics_text: str | None = None,
+    ) -> None:
         self.passed = passed
+        self.timed_out = timed_out
+        self.metrics = _DEFAULT_METRICS if metrics is _UNSET else metrics
+        self.metrics_text = metrics_text
         self.calls = 0
 
     def run(
@@ -59,24 +79,23 @@ class FakeDockerRunner:
     ) -> SandboxExecutionResult:
         self.calls += 1
         workspace = Path(workspace_dir)
-        if self.passed:
+        if self.metrics_text is not None:
             (workspace / "metrics.json").write_text(
-                json.dumps(
-                    {
-                        "rank_ic": 0.03,
-                        "icir": 0.4,
-                        "coverage": 0.8,
-                        "valid_days": 100,
-                    }
-                ),
+                self.metrics_text,
                 encoding="utf-8",
             )
+        elif self.passed and self.metrics is not None:
+            (workspace / "metrics.json").write_text(
+                json.dumps(self.metrics),
+                encoding="utf-8",
+            )
+        exit_code = -9 if self.timed_out else (0 if self.passed else 2)
         return SandboxExecutionResult(
             run_id=run_id,
             container_name=f"test-{run_id}",
             image_id="sha256:" + "d" * 64,
-            exit_code=0 if self.passed else 2,
-            timed_out=False,
+            exit_code=exit_code,
+            timed_out=self.timed_out,
             duration_ms=12.5,
             stdout="passed\n" if self.passed else "",
             stderr="" if self.passed else "failed\n",
@@ -127,6 +146,28 @@ def _request() -> SandboxResearchRequest:
         snapshot_manifest_hash=_snapshot_manifest().manifest_hash,
         llm_model="deepseek/deepseek-chat",
         max_iterations=2,
+    )
+
+
+def _single_proposal_runner(
+    policy,
+    docker,
+    *,
+    code: str,
+) -> SandboxResearchRunner:
+    return SandboxResearchRunner(
+        policy=policy,
+        worker=MockSandboxCodeWorkerClient(
+            (
+                WorkerCodeProposalResponse(
+                    proposal_id="proposal_single",
+                    code=code,
+                    rationale="单轮反馈测试",
+                    model="deepseek/deepseek-chat",
+                ),
+            )
+        ),
+        docker_runner=docker,
     )
 
 
@@ -185,10 +226,96 @@ def test_failed_attempt_is_preserved_and_fed_to_next_round(
 
     assert manifest.status == "failed"
     assert [item["error_code"] for item in manifest.attempts] == [
-        "EXECUTION_FAILED",
-        "EXECUTION_FAILED",
+        "MINING-139",
+        "MINING-139",
     ]
+    assert manifest.attempts[0]["feedback"]["category"] == "execution"
+    assert manifest.attempts[0]["feedback"]["repair_hint"]
     assert runner.worker.requests[1].previous_attempt["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("docker_kwargs", "code", "expected_code", "expected_category"),
+    [
+        (
+            {"passed": False},
+            "def broken(:\n    pass",
+            "MINING-138",
+            SandboxFailureCategory.COMPILE.value,
+        ),
+        (
+            {"metrics_text": "{broken"},
+            "print('bad metrics')",
+            "MINING-140",
+            SandboxFailureCategory.OUTPUT_FORMAT.value,
+        ),
+        (
+            {"metrics": {**_DEFAULT_METRICS, "coverage": "0.8"}},
+            "print('wrong metric type')",
+            "MINING-140",
+            SandboxFailureCategory.OUTPUT_FORMAT.value,
+        ),
+        (
+            {"metrics": {**_DEFAULT_METRICS, "valid_days": 0}},
+            "print('empty index')",
+            "MINING-141",
+            SandboxFailureCategory.INDEX.value,
+        ),
+        (
+            {"metrics": {**_DEFAULT_METRICS, "coverage": 1.2}},
+            "print('bad coverage')",
+            "MINING-142",
+            SandboxFailureCategory.COVERAGE.value,
+        ),
+        (
+            {"metrics": {**_DEFAULT_METRICS, "rank_ic": float("nan")}},
+            "print('bad number')",
+            "MINING-143",
+            SandboxFailureCategory.NUMERIC.value,
+        ),
+        (
+            {"timed_out": True},
+            "print('timeout')",
+            "MINING-145",
+            SandboxFailureCategory.RESOURCE.value,
+        ),
+    ],
+)
+def test_research_failures_have_structured_categories(
+    tmp_path: Path,
+    monkeypatch,
+    docker_kwargs,
+    code,
+    expected_code,
+    expected_category,
+):
+    monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
+    policy = replace(
+        load_sandbox_policy(),
+        enabled=True,
+        snapshot_root="snapshots",
+        workspace_root="work",
+        review_root="review",
+    )
+    runner = _single_proposal_runner(
+        policy,
+        FakeDockerRunner(**docker_kwargs),
+        code=code,
+    )
+    snapshot_dir = tmp_path / "snapshots" / "dev"
+    snapshot_dir.mkdir(parents=True)
+
+    manifest, _ = runner.run(
+        request=replace(_request(), max_iterations=1),
+        snapshot=_snapshot_manifest(),
+        snapshot_dir=snapshot_dir,
+    )
+
+    attempt = manifest.attempts[0]
+    assert attempt["status"] == "failed"
+    assert attempt["error_code"] == expected_code
+    assert attempt["feedback"]["error_code"] == expected_code
+    assert attempt["feedback"]["category"] == expected_category
 
 
 def test_manual_promotion_and_review_copy_never_create_formal_candidate(

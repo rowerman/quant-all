@@ -8,6 +8,16 @@ from mining_sandbox.errors import (
     SandboxRunnerError,
     SandboxSnapshotError,
 )
+from mining_sandbox.feedback import (
+    SANDBOX_FEEDBACK_SCHEMA_VERSION,
+    SandboxCodeFeedback,
+    SandboxFailureCategory,
+    SandboxFeedbackError,
+    SandboxFeedbackStage,
+    sandbox_error_code,
+    sandbox_feedback_stage,
+    sanitize_feedback_text,
+)
 from mining_sandbox.artifacts import (
     PromotionRequest,
     SandboxArtifactManifest,
@@ -40,12 +50,17 @@ __all__ = [
     "PromotionRequest",
     "QLIB_SNAPSHOT_SCHEMA_VERSION",
     "QlibSnapshotManifest",
+    "SANDBOX_FEEDBACK_SCHEMA_VERSION",
     "SANDBOX_SCHEMA_VERSION",
     "SandboxArtifactError",
     "SandboxArtifactManifest",
+    "SandboxCodeFeedback",
     "SandboxCodeWorkerClient",
     "SandboxError",
     "SandboxExecutionResult",
+    "SandboxFailureCategory",
+    "SandboxFeedbackError",
+    "SandboxFeedbackStage",
     "SandboxIsolationError",
     "SandboxPolicy",
     "SandboxPolicyError",
@@ -57,5 +72,8 @@ __all__ = [
     "copy_artifacts_for_review",
     "load_sandbox_policy",
     "record_manual_promotion",
+    "sandbox_error_code",
+    "sandbox_feedback_stage",
+    "sanitize_feedback_text",
     "verify_artifact_tree",
 ]

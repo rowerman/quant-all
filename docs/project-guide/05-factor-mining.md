@@ -93,6 +93,7 @@ SQL、路径或数据库连接。M5 只读取冻结开发期 Qlib 快照，并�
 | `evaluate_full_candidate()` | 在研究期已有产物上执行完整评估 |
 | `evaluate_holdout_candidate()` | 在隔离目录执行一次性模块测试段 |
 | `MiningPublicationService` | 资格预检、全量构建、提交、回滚和重启恢复 |
+| `SandboxCodeFeedback` | M5 代码研究的脱敏失败分类、修复提示和稳定反馈哈希 |
 
 ### 3.1 运行请求
 
@@ -688,8 +689,8 @@ V1 和 V2 共用一个活动发布批次约束。
 
 ### 10.1 错误码
 
-稳定错误码定义在 [errors.py](../../research/mining/errors.py)，HTTP 映射由监测站统一
-转换。
+通用稳定错误码定义在 [errors.py](../../research/mining/errors.py)，沙箱研究反馈码定义在
+[feedback.py](../../research/mining_sandbox/feedback.py)，HTTP 映射由监测站统一转换。
 
 | 错误码 | HTTP | 含义 |
 |---|---:|---|
@@ -731,6 +732,14 @@ V1 和 V2 共用一个活动发布批次约束。
 | `MINING-135` | 422 | Qlib 快照生成或校验失败 |
 | `MINING-136` | 403 | 沙箱路径、挂载或隔离边界破坏 |
 | `MINING-137` | 422 | 沙箱产物或人工提升记录非法 |
+| `MINING-138` | 内部 | 提案代码无法通过静态编译 |
+| `MINING-139` | 内部 | 沙箱进程非零退出 |
+| `MINING-140` | 内部 | 指标或输出格式不符合契约 |
+| `MINING-141` | 内部 | 交易日或股票索引没有有效观察 |
+| `MINING-142` | 内部 | 覆盖率越界 |
+| `MINING-143` | 内部 | 指标不是有限数值或 RankIC 越界 |
+| `MINING-144` | 内部 | 代码违反沙箱研究限制，供 P1-02 使用 |
+| `MINING-145` | 内部 | 沙箱资源限制或执行超时 |
 
 ### 10.2 日志
 
@@ -748,7 +757,12 @@ logs/research/mining/mining_evaluation_candidate/
 - API Key、Token、Authorization、密码和密钥类字段。
 - 完整研究假设。
 - 原始 Prompt、模型响应和完整表达式。
+- 沙箱原始代码、完整 stderr、宿主机绝对路径和反馈中的密钥。
 - 原始请求体。
+
+M5 沙箱失败反馈写入 `logs/research/mining_sandbox/mining_sandbox_research/`，仅记录
+运行 ID、轮次、代码哈希、`MINING-138`～`MINING-145` 错误码、分类、阶段、可重试性和
+反馈哈希。反馈内容通过 `mining_sandbox.feedback` 统一脱敏后进入研究产物。
 
 日志和事件是排障证据，不是状态事实来源。运行、候选、审批和发布状态仍以候选数据库
 为准。
@@ -821,7 +835,7 @@ PY
 | V2 契约、轨迹、恢复和尝试台账 | [test_mining_search_contracts.py](../../tests/test_mining_search_contracts.py)、[test_mining_v2_trace.py](../../tests/test_mining_v2_trace.py)、[test_mining_v2_trials.py](../../tests/test_mining_v2_trials.py) |
 | V2 选择诊断、稳定性和统计 | [test_mining_selection_diagnostics.py](../../tests/test_mining_selection_diagnostics.py)、[test_mining_search_stability.py](../../tests/test_mining_search_stability.py)、[test_mining_statistical_diagnostics.py](../../tests/test_mining_statistical_diagnostics.py) |
 | V2 受控分析工具 | [test_mining_analysis_tools.py](../../tests/test_mining_analysis_tools.py) |
-| M5 沙箱和代码研究 | [test_mining_sandbox.py](../../tests/test_mining_sandbox.py)、[test_mining_sandbox_research.py](../../tests/test_mining_sandbox_research.py) |
+| M5 沙箱和代码研究 | [test_mining_sandbox.py](../../tests/test_mining_sandbox.py)、[test_mining_sandbox_research.py](../../tests/test_mining_sandbox_research.py)、[test_mining_sandbox_feedback.py](../../tests/test_mining_sandbox_feedback.py) |
 
 2026-11-01 的文档状态以当前代码和 V135 审计为准：
 

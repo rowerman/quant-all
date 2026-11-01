@@ -23,6 +23,12 @@ from mining_sandbox.artifacts import (
     verify_artifact_tree,
 )
 from mining_sandbox.errors import SandboxRunnerError, SandboxSnapshotError
+from mining_sandbox.feedback import (
+    SandboxCodeFeedback,
+    SandboxFailureCategory,
+    SandboxFeedbackError,
+)
+from mining_sandbox.logging_conf import get_sandbox_logger, log_sandbox_feedback
 from mining_sandbox.policy import SandboxPolicy
 from mining_sandbox.qlib_snapshot import QlibSnapshotManifest
 from mining_sandbox.runtime import DockerSandboxRunner
@@ -34,6 +40,7 @@ from mining_worker.protocol_code import (
 
 SANDBOX_RESEARCH_SCHEMA_VERSION = "mining_sandbox_research_v1"
 _METRICS_FIELDS = {"rank_ic", "icir", "coverage", "valid_days"}
+_LOGGER = get_sandbox_logger("mining_sandbox.research")
 
 
 @dataclass(frozen=True)
@@ -114,26 +121,79 @@ def _read_metrics(path: Path) -> Mapping[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise SandboxRunnerError(f"沙箱指标不可读：{exc}") from exc
+        raise SandboxFeedbackError(
+            SandboxCodeFeedback.create(
+                SandboxFailureCategory.OUTPUT_FORMAT,
+                summary=f"沙箱指标不可读：{type(exc).__name__}",
+                repair_hint="重新写出合法的 metrics.json，字段固定为四个研究指标",
+            )
+        ) from exc
     if not isinstance(payload, Mapping) or set(payload) != _METRICS_FIELDS:
-        raise SandboxRunnerError("沙箱指标字段必须是 rank_ic、icir、coverage、valid_days")
+        raise SandboxFeedbackError(
+            SandboxCodeFeedback.create(
+                SandboxFailureCategory.OUTPUT_FORMAT,
+                summary="沙箱指标字段不符合契约",
+                repair_hint=(
+                    "metrics.json 必须且只能包含 rank_ic、icir、coverage、valid_days"
+                ),
+            )
+        )
     if isinstance(payload["valid_days"], bool) or not isinstance(
         payload["valid_days"],
         int,
-    ) or payload["valid_days"] <= 0:
-        raise SandboxRunnerError("valid_days 必须是正整数")
+    ):
+        raise SandboxFeedbackError(
+            SandboxCodeFeedback.create(
+                SandboxFailureCategory.OUTPUT_FORMAT,
+                summary="valid_days 类型不符合契约",
+                repair_hint="valid_days 必须写成大于零的整数",
+            )
+        )
+    if payload["valid_days"] <= 0:
+        raise SandboxFeedbackError(
+            SandboxCodeFeedback.create(
+                SandboxFailureCategory.INDEX,
+                summary="valid_days 没有形成有效交易日索引",
+                repair_hint="对齐冻结交易日和股票索引，并确认至少有一个有效观察日",
+            )
+        )
     for name in ("rank_ic", "icir", "coverage"):
         value = payload[name]
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
         ):
-            raise SandboxRunnerError(f"{name} 必须是有限数值")
+            raise SandboxFeedbackError(
+                SandboxCodeFeedback.create(
+                    SandboxFailureCategory.OUTPUT_FORMAT,
+                    summary=f"{name} 类型不符合契约",
+                    repair_hint=f"{name} 必须写成 JSON 数值",
+                )
+            )
+        if not math.isfinite(float(value)):
+            raise SandboxFeedbackError(
+                SandboxCodeFeedback.create(
+                    SandboxFailureCategory.NUMERIC,
+                    summary=f"{name} 不是有限数值",
+                    repair_hint=f"修正 {name} 的计算，过滤空值和不可计算的样本",
+                )
+            )
     if not -1 <= float(payload["rank_ic"]) <= 1:
-        raise SandboxRunnerError("rank_ic 必须在 -1～1")
+        raise SandboxFeedbackError(
+            SandboxCodeFeedback.create(
+                SandboxFailureCategory.NUMERIC,
+                summary="rank_ic 超出合法范围",
+                repair_hint="检查收益和因子方向，确保 rank_ic 落在 -1～1",
+            )
+        )
     if not 0 <= float(payload["coverage"]) <= 1:
-        raise SandboxRunnerError("coverage 必须在 0～1")
+        raise SandboxFeedbackError(
+            SandboxCodeFeedback.create(
+                SandboxFailureCategory.COVERAGE,
+                summary="coverage 超出合法范围",
+                repair_hint="按冻结股票和交易日重算覆盖率，确保结果落在 0～1",
+            )
+        )
     return {
         "rank_ic": float(payload["rank_ic"]),
         "icir": float(payload["icir"]),
@@ -144,6 +204,22 @@ def _read_metrics(path: Path) -> Mapping[str, Any]:
 
 def _code_hash(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+def _compile_feedback(code: str) -> SandboxCodeFeedback | None:
+    """静态检查提案语法，不执行提案代码。"""
+
+    try:
+        compile(code, "<proposal>", "exec")
+    except (SyntaxError, ValueError, RecursionError) as exc:
+        line = getattr(exc, "lineno", None)
+        location = f"第 {line} 行" if isinstance(line, int) and line > 0 else ""
+        return SandboxCodeFeedback.create(
+            SandboxFailureCategory.COMPILE,
+            summary=f"提案代码无法通过静态编译 {location}".strip(),
+            repair_hint="修复 Python 语法并保持脚本可独立运行",
+        )
+    return None
 
 
 class SandboxResearchRunner:
@@ -283,11 +359,14 @@ class SandboxResearchRunner:
                     "status": "proposed",
                     "metrics": None,
                     "error_code": None,
+                    "feedback": None,
                     "image_id": None,
                 }
                 attempts.append(proposal_meta)
                 _atomic_json(state_path, {**state, "attempts": attempts})
 
+            code = code_path.read_text(encoding="utf-8")
+            compile_feedback = _compile_feedback(code)
             result = self.docker_runner.run(
                 run_id=f"{request.sandbox_run_id}-{iteration:03d}",
                 snapshot_dir=snapshot_dir,
@@ -304,21 +383,31 @@ class SandboxResearchRunner:
                 encoding="utf-8",
             )
             metrics = None
-            error_code = None
+            feedback = None
             if result.timed_out:
-                error_code = "TIMEOUT"
+                feedback = SandboxCodeFeedback.create(
+                    SandboxFailureCategory.RESOURCE,
+                    summary="沙箱执行超过资源时限",
+                    repair_hint="减少计算量或数据读取范围，避免无限循环",
+                )
             elif result.exit_code != 0:
-                error_code = "EXECUTION_FAILED"
+                feedback = compile_feedback or SandboxCodeFeedback.create(
+                    SandboxFailureCategory.EXECUTION,
+                    summary=f"沙箱执行以非零状态退出：{result.exit_code}",
+                    repair_hint="检查运行时异常并修复脚本中的执行路径",
+                )
             else:
                 try:
                     metrics = dict(_read_metrics(iteration_dir / "metrics.json"))
-                except SandboxRunnerError:
-                    error_code = "METRIC_INVALID"
+                except SandboxFeedbackError as exc:
+                    feedback = exc.feedback
+            error_code = feedback.error_code if feedback is not None else None
             attempt = {
                 **proposal_meta,
                 "status": "passed" if error_code is None else "failed",
                 "metrics": metrics,
                 "error_code": error_code,
+                "feedback": feedback.to_dict() if feedback is not None else None,
                 "image_id": result.image_id,
                 "container_name": result.container_name,
                 "exit_code": result.exit_code,
@@ -346,6 +435,14 @@ class SandboxResearchRunner:
             attempts.sort(key=lambda item: int(item["iteration"]))
             latest_attempt = attempt
             _atomic_json(state_path, {**state, "attempts": attempts})
+            if feedback is not None:
+                log_sandbox_feedback(
+                    _LOGGER,
+                    run_id=request.sandbox_run_id,
+                    iteration=iteration,
+                    code_hash=str(attempt["code_hash"]),
+                    feedback=feedback,
+                )
 
         if not image_id:
             raise SandboxRunnerError("沙箱研究没有产生容器执行记录")

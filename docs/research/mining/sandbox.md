@@ -68,6 +68,31 @@ Worker v4 使用 `mining_worker_code_v1`，由固定 RD-Agent 模型生成 Qlib 
 代码模型不直接运行在 Worker 容器。沙箱只挂载冻结快照和工作区，不能访问主数据库、正式
 候选、正式因子、Token 或 Docker socket。沙箱指标只用于产生研究提案，不是正式质量结论。
 
+## 结构化反馈
+
+每个失败尝试除原 `error_code` 外，还保存 `mining_sandbox_feedback_v1` 反馈对象：
+
+```json
+{
+  "schema_version": "mining_sandbox_feedback_v1",
+  "error_code": "MINING-140",
+  "category": "output_format",
+  "stage": "output",
+  "summary": "沙箱指标字段不符合契约",
+  "repair_hint": "metrics.json 必须且只能包含四个研究指标",
+  "retryable": true
+}
+```
+
+分类固定为 `compile`、`execution`、`output_format`、`index`、`coverage`、`numeric`、
+`code_policy` 和 `resource`。反馈摘要和修复提示最多 500 字符，不写原始代码、完整异常、
+Prompt 或研究假设，并遮蔽 API Key、Bearer Token、已知密钥和宿主机绝对路径。
+
+业务日志位于 `logs/research/mining_sandbox/mining_sandbox_research/`，只记录运行 ID、
+轮次、代码哈希、错误码、分类、阶段、`retryable` 和反馈哈希。原始 `stdout.log` 与
+`stderr.log` 仍属于受访问控制的沙箱研究产物，不是业务事件日志；反馈对象本身不复制这些
+文件内容。
+
 ## 产物与人工提升
 
 每次研究把所有代码提案、运行状态、stdout/stderr、指标和错误写入
@@ -89,3 +114,11 @@ DSL/算子引用，并明确标记 `formal_candidate_created=false`。它不调�
 | `MINING-135` | Qlib 快照生成或校验失败 |
 | `MINING-136` | 路径、挂载或隔离边界破坏 |
 | `MINING-137` | 沙箱产物或人工提升记录非法 |
+| `MINING-138` | 提案代码无法通过静态编译 |
+| `MINING-139` | 沙箱进程非零退出 |
+| `MINING-140` | 指标或输出格式不符合契约 |
+| `MINING-141` | 交易日或股票索引没有有效观察 |
+| `MINING-142` | 覆盖率越界 |
+| `MINING-143` | 指标不是有限数值或 RankIC 越界 |
+| `MINING-144` | 代码违反沙箱研究限制，供 P1-02 使用 |
+| `MINING-145` | 沙箱资源限制或执行超时 |

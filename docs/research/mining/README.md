@@ -141,6 +141,8 @@ docker compose --env-file .env -f compose.mining.yaml down
 
 沙箱研究（M5，默认关闭）
   -> mining_sandbox.research       有限代码提案和恢复循环
+  -> mining_sandbox.feedback        结构化失败分类、稳定错误码和脱敏
+  -> mining_sandbox.logging_conf    安全反馈事件日志
   -> mining_worker /v4/jobs        RD-Agent 模型生成未信任代码提案
   -> DockerSandboxRunner           断网、非 root、只读根和资源受限执行
 ```
@@ -165,7 +167,8 @@ V2 搜索候选进入现有审批和发布链路的字段边界见
 评估报告     data/factor_mining/runs/<run_id>/<candidate_id>/evaluations/
 沙箱工作区   data/mining_sandbox/work/<sandbox_run_id>/
 沙箱快照     data/mining_sandbox/snapshots/<snapshot_id>/
-模块日志     logs/research/mining/<module>/
+挖掘模块日志 logs/research/mining/<module>/
+沙箱模块日志 logs/research/mining_sandbox/<module>/
 
 正式 mined（仅 S8 临时验收或用户确认发布时写）
 data/factors/mined -> .mined-versions/<batch_id>
@@ -337,6 +340,11 @@ progress = orchestrator.progress(run["run_id"])
 
 候选评估执行错误使用 `MINING-106`。门禁不通过是正常业务结论，通过
 `TechnicalGate.passed=false` 和逐项 `checks` 表达，不伪装成系统异常。
+
+M5 沙箱研究循环另外使用内部反馈错误码：`MINING-138` 编译、`MINING-139` 运行、
+`MINING-140` 输出格式、`MINING-141` 索引、`MINING-142` 覆盖率、`MINING-143` 数值、
+`MINING-144` 代码限制、`MINING-145` 资源或超时。它们记录在脱敏研究反馈和
+`logs/research/mining_sandbox/` 业务日志中，不直接改变现有 Web 错误映射。
 
 ## 修改注意
 
