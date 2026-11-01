@@ -29,6 +29,7 @@ cd /home/hanwen/quant
 | Python | 3.12.3 |
 | NumPy / Pandas | 2.2.6 / 2.3.3 |
 | DuckDB | 1.5.5 |
+| pypdf | 6.21.2 |
 | VectorBT / Numba | 0.28.5 / 0.61.2 |
 | CMake / Ninja | 4.4.4 / 1.13.2 |
 | pybind11 / scikit-build-core | 3.1.0 / 1.1.1 |

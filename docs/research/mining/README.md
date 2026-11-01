@@ -4,7 +4,7 @@
 幂等、中断恢复、受控 DSL、候选评估、RD-Agent Worker、Web 人工审核和批量正式发布；
 V2 证据驱动搜索、四段时序窗口、尝试台账、受控分析工具、组合价值和统计诊断；M5
 隔离代码研究沙箱及当前运行内的失败、成功和修复知识索引。V135 已复核路线图 34 项，
-当前 M1～M5 均已完成；P2-01 已冻结资料驱动的输入、文件指纹、来源、失败和脱敏契约。
+当前 M1～M5 均已完成；P2-02 已支持文本型 PDF 解析、金融研报分类和逐文件失败隔离。
 
 V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用，运行停在
 `review_ready` 后进入人工审核；候选批准、拒绝、整批正式发布和失败重试均已接入页面。
@@ -152,8 +152,8 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> mining_worker /v4/jobs        RD-Agent 模型生成未信任代码提案
   -> DockerSandboxRunner           断网、非 root、只读根和资源受限执行
 
-资料驱动（P2-01 契约）
-  -> mining.research_materials     资料清单、文件指纹、来源和解析失败
+资料驱动（P2-02 解析）
+  -> mining.research_materials     资料清单、PDF 页正文、分类、来源和解析失败
 ```
 
 `mining.orchestrator` 组合研究与测试阶段。S8 由独立
@@ -351,6 +351,7 @@ progress = orchestrator.progress(run["run_id"])
 | `MINING-149` | 资料文件缺失、不可读或无法计算指纹 | 422 |
 | `MINING-150` | 资料格式、正文或加密状态不允许解析 | 422 |
 | `MINING-151` | 资料解析器发生未预期失败 | 500 |
+| `MINING-152` | 资料文件、页数或正文字符超过解析限制 | 422 |
 
 候选评估执行错误使用 `MINING-106`。门禁不通过是正常业务结论，通过
 `TechnicalGate.passed=false` 和逐项 `checks` 表达，不伪装成系统异常。
@@ -360,8 +361,8 @@ M5 沙箱研究循环另外使用内部反馈错误码：`MINING-138` 编译、`
 `MINING-144` 代码限制、`MINING-145` 资源或超时。它们记录在脱敏研究反馈和
 `logs/research/mining_sandbox/` 业务日志中，不直接改变现有 Web 错误映射。
 `MINING-146` 表示当前运行的 `knowledge.json`、来源引用、任务哈希或知识版本非法。
-资料驱动的字段、哈希、来源引用和失败规则见
-[资料输入契约](research-materials.md)。
+资料驱动的输入、PDF 解析、分类、哈希、来源引用和失败规则见
+[资料输入与解析契约](research-materials.md)。
 
 ## 修改注意
 

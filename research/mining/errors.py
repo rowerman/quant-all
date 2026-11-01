@@ -285,3 +285,10 @@ class ResearchMaterialParserError(MiningError):
 
     code = "MINING-151"
     status = 500
+
+
+class ResearchMaterialResourceError(MiningError):
+    """资料文件或正文超过确定性解析上限。"""
+
+    code = "MINING-152"
+    status = 422

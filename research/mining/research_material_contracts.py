@@ -29,20 +29,24 @@ RESEARCH_MATERIAL_SCHEMA_VERSION = "mining_research_materials_v1"
 RESEARCH_DOCUMENT_STATUSES = ("parsed", "failed")
 RESEARCH_FAILURE_CATEGORIES = (
     "unreadable",
+    "input_changed",
     "unsupported_format",
     "corrupt_document",
     "encrypted_document",
     "no_extractable_text",
+    "resource_limit",
     "unsafe_input",
     "parser_error",
 )
 
 _FAILURE_CODE_BY_CATEGORY = {
     "unreadable": "MINING-149",
+    "input_changed": "MINING-149",
     "unsupported_format": "MINING-150",
     "corrupt_document": "MINING-150",
     "encrypted_document": "MINING-150",
     "no_extractable_text": "MINING-150",
+    "resource_limit": "MINING-152",
     "unsafe_input": "MINING-148",
     "parser_error": "MINING-151",
 }

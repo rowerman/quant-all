@@ -37,7 +37,8 @@
 截至 2026-11-01，S2～S9 和 M1～M5 已交付。V135 复核了路线图 34 项，M1～M5
 均保持完成。V1 继续作为默认生产链路；V2 需设置 `MINING_SEARCH_V2_ENABLED=true`，
 运行在 `review_ready` 后可从页面审批、整批发布和重试失败批次；M5 默认关闭，产物
-只能人工提升。后续 V2 下游联合验收、四项扩展和 V3 集成见
+只能人工提升。资料驱动已支持文本型 PDF 解析、金融研报分类和逐文件失败隔离；后续抽取、
+自由探索和 V3 集成见
 [根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
 
 当前冻结数据版本为 `tushare_fullA_20000104_20261015`。字段目录包含 95 个字段声明，
@@ -94,6 +95,8 @@ SQL、路径或数据库连接。M5 只读取冻结开发期 Qlib 快照，并�
 | `evaluate_holdout_candidate()` | 在隔离目录执行一次性模块测试段 |
 | `MiningPublicationService` | 资格预检、全量构建、提交、回滚和重启恢复 |
 | `SandboxCodeFeedback` | M5 代码研究的脱敏失败分类、修复提示和稳定反馈哈希 |
+| `ResearchMaterialParseResult` | 单份资料的页正文、分类、来源引用或隔离失败记录 |
+| `ResearchMaterialBatchResult` | 有序资料批次的目标研报、过滤项和逐文件失败 |
 
 ### 3.1 运行请求
 
@@ -747,6 +750,7 @@ V1 和 V2 共用一个活动发布批次约束。
 | `MINING-149` | 422 | 资料文件缺失、不可读或无法计算指纹 |
 | `MINING-150` | 422 | 资料格式、正文或加密状态不允许解析 |
 | `MINING-151` | 500 | 资料解析器发生未预期失败 |
+| `MINING-152` | 422 | 资料文件、页数或正文字符超过解析限制 |
 
 ### 10.2 日志
 
@@ -770,6 +774,10 @@ logs/research/mining/mining_evaluation_candidate/
 M5 沙箱失败反馈写入 `logs/research/mining_sandbox/mining_sandbox_research/`，仅记录
 运行 ID、轮次、代码哈希、`MINING-138`～`MINING-145` 错误码、分类、阶段、可重试性和
 反馈哈希。反馈内容通过 `mining_sandbox.feedback` 统一脱敏后进入研究产物。
+
+资料解析日志写入 `logs/research/mining/mining_research_materials/`，只记录资料 ID、
+解析器版本、状态、分类、错误码、页数、大小、计数和耗时，不记录 PDF 正文、元数据标题、
+相对路径或原始解析异常。
 
 日志和事件是排障证据，不是状态事实来源。运行、候选、审批和发布状态仍以候选数据库
 为准。

@@ -35,6 +35,15 @@ _LOG_FIELDS = {
     "page_count",
     "size_bytes",
     "retryable",
+    "classification",
+    "elapsed_ms",
+    "financial_research_count",
+    "filtered_count",
+    "failed_count",
+    "document_count",
+    "failure_type",
+    "operation",
+    "parser_version",
 }
 
 
