@@ -250,3 +250,38 @@ class AnalysisToolExecutionError(MiningError):
 
     code = "MINING-132"
     status = 500
+
+
+class ResearchMaterialContractError(MiningContractError):
+    """资料清单或解析记录不符合契约。"""
+
+    code = "MINING-147"
+    status = 400
+
+
+class ResearchMaterialSecurityError(MiningError):
+    """资料路径或输入越过允许的安全边界。"""
+
+    code = "MINING-148"
+    status = 403
+
+
+class ResearchMaterialReadError(MiningError):
+    """资料文件缺失、不可读或无法计算指纹。"""
+
+    code = "MINING-149"
+    status = 422
+
+
+class ResearchMaterialParseError(MiningError):
+    """资料格式、正文或加密状态不允许解析。"""
+
+    code = "MINING-150"
+    status = 422
+
+
+class ResearchMaterialParserError(MiningError):
+    """解析器自身发生未预期失败。"""
+
+    code = "MINING-151"
+    status = 500
