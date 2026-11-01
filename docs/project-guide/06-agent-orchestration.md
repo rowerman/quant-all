@@ -1,13 +1,14 @@
 # Agent 编排与 RD-Agent
 
-本章解释项目使用了 RD-Agent 的哪些能力，以及 `MiningOrchestrator` 如何把独立的
-LLM Worker、受控 DSL、确定性评估、候选存储和一次性测试段组织成一条自动因子研究
-流程。
+本章解释项目使用了 RD-Agent 的哪些能力，以及 V1 编排、V2 证据搜索和 M5 代码沙箱
+如何把 LLM Worker、受控 DSL、确定性评估、候选存储和一次性测试段组织成自动因子
+研究流程。
 
-先给出结论：当前系统不是 RD-Agent(Q) 的完整多智能体闭环，也没有运行 Qlib coder、
-workspace、候选代码生成或任意 Python/SQL。LLM 只负责提出受控表达式草稿；运行调度、
-协议校验、候选去重、评估排序、测试段领取和状态恢复都由本项目的确定性 Python 代码
-完成。人工审批和正式发布由挖掘主流程之后的模块负责，详见
+先给出结论：当前系统不是 RD-Agent(Q) 的完整多智能体闭环，也没有把上游 Qlib
+workspace 放入主服务或正式候选链路。V1 和 V2 的 LLM 只提出受控表达式或搜索建议；
+运行调度、协议校验、候选去重、评估排序、测试段领取和状态恢复都由本项目的确定性
+Python 代码完成。M5 通过自定义有限循环在断网沙箱中生成和执行研究代码，产物不能
+自动成为正式候选。人工审批和正式发布仍由挖掘主流程负责，详见
 [自动因子挖掘](05-factor-mining.md)。
 
 ## 1. 职责与位置
@@ -18,9 +19,11 @@ workspace、候选代码生成或任意 Python/SQL。LLM 只负责提出受控�
 
 - 启动独立 Worker，并确认版本、模型、Key、Token 和状态库可用。
 - 为一次运行冻结数据、时间窗口、字段目录、算子目录、正式因子清单和预算。
-- 按轮次调用 LLM，生成数量、深度和方向受约束的候选表达式。
+- 按轮次调用 LLM，生成受控候选，或为 V2 生成修正、换分支和停止建议。
 - 把 Worker 响应视为不可信输入，在主服务重新解析、校验、命名和去重。
-- 执行技术门禁、研究期快速筛选、前 K 完整评估和一次性模块测试段。
+- 执行 V1 评估，或 V2 的开发期、选择期、最终研究期和一次性模块测试段。
+- 通过主服务白名单工具向 V2 Worker 提供脱敏开发期证据。
+- 在默认关闭的断网沙箱中执行 M5 代码提案并封存全部尝试。
 - 保存运行、候选、事件和报表，让中断任务能够从原阶段显式恢复。
 - 在同一台主机上限制活动挖掘运行和活动 Worker 作业各为一个槽位。
 
@@ -35,21 +38,27 @@ workspace、候选代码生成或任意 Python/SQL。LLM 只负责提出受控�
 
 ```mermaid
 flowchart TD
-  UI[挖掘页面或 Python 调用方] --> ORCH[MiningOrchestrator]
-  ORCH --> STORE[(因子挖掘 DuckDB)]
-  ORCH --> CLIENT[HttpWorkerClient]
-  CLIENT --> HTTP[Flask Worker /v1/jobs]
+  UI[挖掘页面或 Python 调用方] --> V1[V1 MiningOrchestrator]
+  UI --> V2[V2 MiningSearchOrchestrator]
+  V1 --> STORE[(mining / mining_v2)]
+  V2 --> STORE
+  V1 --> CLIENT[HttpWorkerClient]
+  V2 --> V3CLIENT[V2/V3 Worker Client]
+  CLIENT --> HTTP[Flask Worker /v1 /v2 /v3 /v4]
+  V3CLIENT --> HTTP
   HTTP --> JOBS[(Worker jobs.sqlite)]
   HTTP --> PROC[独立 Python 子进程]
-  PROC --> RD[RD-Agent LiteLLM 后端]
+  PROC --> RD[RD-Agent LiteLLM / 固定模型]
   RD --> LLM[DeepSeek-compatible API]
   LLM --> PROC
-  PROC --> DRAFT[未信任候选 JSON]
+  PROC --> DRAFT[未信任候选、决策或代码 JSON]
   DRAFT --> CLIENT
   CLIENT --> VALIDATE[主服务 DSL 二次校验]
   VALIDATE --> STORE
-  STORE --> EVAL[技术门禁/快速/完整/测试段]
+  STORE --> EVAL[分层窗口评估/工具/测试段]
   EVAL --> REVIEW[review_ready]
+  DRAFT --> SANDBOX[断网 Docker 沙箱]
+  SANDBOX --> ARTIFACT[只读产物与人工提升]
 ```
 
 上游入口既可以来自监测站，也可以直接调用 Python 公共接口。监测站路由和 SSE 传输
@@ -57,7 +66,7 @@ flowchart TD
 
 ### 1.3 当前工作区快照
 
-以 2026-10-26 当前工作区为准：
+以 2026-11-01 当前工作区为准：
 
 | 项目 | 当前值 |
 |---|---|
@@ -66,9 +75,10 @@ flowchart TD
 | RD-Agent | 1.0.0 |
 | 默认模型 | `deepseek/deepseek-chat` |
 | Worker 镜像 | `quant-mining-worker:s4` |
-| Worker schema | `mining_worker_v1` |
+| Worker schema | `mining_worker_v1/v2/v3`、`mining_worker_code_v1` |
 | 编排配置 schema | `mining_orchestrator_v1` |
-| 挖掘领域 schema | `mining_v1` |
+| 挖掘领域 schema | V1 `mining_v1`、V2 `mining_v2` |
+| 沙箱镜像 | `quant-mining-sandbox:s5`，默认关闭 |
 | Worker 地址 | `http://127.0.0.1:8790` |
 | Worker 作业库 | `data/mining_worker/jobs.sqlite` |
 
@@ -105,13 +115,13 @@ https://github.com/microsoft/RD-Agent/blob/484776c211e4fbbeef03e0ec00d6bbee7362a
 `QlibFactorHypothesisGen`、`QlibFactorHypothesis2Experiment`、
 `QlibFactorCoSTEER`、`QlibFactorRunner` 和 `QlibFactorExperiment2Feedback`。
 
-本项目没有导入或运行这些 Qlib 循环。它们可以生成和修改实验代码、操作 workspace，
-这超出了当前生产研究的安全与审计边界。
+本项目没有导入或运行这些上游 Qlib 循环。它们可以生成和修改实验代码、操作
+workspace，超出了当前生产研究的安全与审计边界。M5 参考其“提案、执行、反馈、修正”
+思路，但使用项目自己的 Worker v4 协议、`SandboxResearchRunner` 和固定沙箱。
 
 ### 2.3 实际导入和调用
 
-[research/mining_worker/rdagent_generator.py](../../research/mining_worker/rdagent_generator.py)
-只使用：
+V1、V2、V3 搜索和 V4 代码提案适配器都只使用：
 
 ```python
 from rdagent.log import rdagent_logger
@@ -143,7 +153,11 @@ response = APIBackend().build_messages_and_create_chat_completion(
 `MINING-118`。错误文本会遮盖环境中的 API Key 和常见 `sk-*`、Bearer Token 形式，
 最多保留 500 个字符。
 
-### 2.4 为什么只保留 LLM 后端
+当前调用入口包括 `rdagent_generator.py`、`rdagent_search_generator.py`、
+`rdagent_search_generator_v3.py` 和 `rdagent_code_generator.py`。它们共享
+RD-Agent 模型后端，但分别执行 V1、V2、V3 和 V4 的严格 JSON 契约。
+
+### 2.4 为什么不直接运行上游 Qlib 循环
 
 完整 RD-Agent 研究循环追求开放式探索，而生产候选流程还需要：
 
@@ -154,7 +168,7 @@ response = APIBackend().build_messages_and_create_chat_completion(
 - 在超时、取消、重启和快照变化时保持可恢复、可审计。
 
 因此本项目保留 RD-Agent 的模型调用封装，把调度、校验、评估和发布留给确定性代码。
-这限制了探索自由度，但让失败原因和候选身份能够稳定定位。
+M5 只能在隔离沙箱中运行有限代码研究，不能直接创建正式候选。
 
 ## 3. 进程与模块边界
 
@@ -171,8 +185,13 @@ response = APIBackend().build_messages_and_create_chat_completion(
 | [storage_runs](../../research/mining/storage_runs.py) | 运行、上下文、状态迁移和恢复 |
 | [states](../../research/mining/states.py) | 运行及候选状态迁移唯一约束 |
 | [snapshot](../../research/mining/snapshot.py) | 数据、目录和正式因子快照核对 |
+| [search_orchestrator](../../research/mining/search_orchestrator.py) | V2 搜索、选择、最终评估、测试段和恢复 |
+| [search_control](../../research/mining/search_control.py) | 预算、失败、无改善和模型建议的确定性控制 |
+| [analysis_tool_gateway](../../research/mining/analysis_tool_gateway.py) | 7 个固定只读工具、超时、缓存和审计 |
+| [mining_sandbox.research](../../research/mining_sandbox/research.py) | M5 代码提案、沙箱执行、恢复和产物封存 |
 
-主服务保存候选、评估和正式数据，只通过 HTTP 把一轮有界生成请求发给 Worker。
+主服务保存候选、评估和正式数据，只通过 HTTP 把有界请求发给 Worker。V2 的工具结果、
+选择期诊断、最终评估和测试段都由主服务确定性执行，Worker 不能直接访问数据库。
 
 ### 3.2 Worker
 
@@ -183,6 +202,9 @@ response = APIBackend().build_messages_and_create_chat_completion(
 | [mining_worker.protocol](../../research/mining_worker/protocol.py) | 请求、响应、候选和作业视图 |
 | [mining_worker.generator](../../research/mining_worker/generator.py) | 子进程启动、超时和进程组终止 |
 | [mining_worker.rdagent_generator](../../research/mining_worker/rdagent_generator.py) | Prompt、RD-Agent 调用和 JSON 解析 |
+| [mining_worker.protocol_v2](../../research/mining_worker/protocol_v2.py) | V2 假设、证据、决策和候选谱系 |
+| [mining_worker.protocol_v3](../../research/mining_worker/protocol_v3.py) | V3 工具批次与 finalize 请求 |
+| [mining_worker.protocol_code](../../research/mining_worker/protocol_code.py) | V4 代码提案和严格响应 |
 | [mining_worker.worker_config](../../research/mining_worker/worker_config.py) | 固定版本、模型、超时和候选上限 |
 
 Flask 主线程接收请求后启动作业线程，再把 RD-Agent 调用放进独立 Python 子进程。子进程
@@ -219,6 +241,19 @@ Compose 只把端口绑定到宿主机 `127.0.0.1:8790`。容器内部监听
 | `progress(run_id)` | 运行 ID | 从事件、候选和测试段领取记录恢复预算进度 |
 | `close()` | 无 | 取消活动运行并等待本实例执行器退出 |
 
+V2 使用独立的 `MiningSearchOrchestrator`：
+
+| 方法 | 主要输入 | 行为 |
+|---|---|---|
+| `create_run(request, context, background=True)` | `SearchRunRequest`、`FrozenSearchContext` | 检查 Worker，创建 V2 运行并按需后台推进 |
+| `execute(run_id)` | V2 运行 ID | 从搜索推进到 `review_ready` 或明确终止态 |
+| `resume(run_id, background=True)` | 中断 V2 运行 ID | 回到中断前阶段，不扩充预算或窗口 |
+| `cancel(run_id)` | V2 运行 ID | 在 turn 边界取消并尽力取消 Worker 作业 |
+| `progress(run_id)` | V2 运行 ID | 返回当前 turn、分支、动作、尝试分类和预算 |
+
+V2 当前没有 `approve()` 或 `publish()`；这两项属于后续 P0，记录在
+[根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
+
 `MiningProgress` 包含：
 
 - `run_id`、`status`、`current_stage`。
@@ -235,11 +270,16 @@ Compose 只把端口绑定到宿主机 `127.0.0.1:8790`。容器内部监听
 |---|---|---|---|---|
 | `GET` | `/health` | 不需要 Bearer | 200，返回 ready 状态 | 503，Token 未配置或依赖未就绪 |
 | `POST` | `/v1/jobs` | 必须 | 202，返回作业视图 | 400、401、409、429 |
+| `POST` | `/v2/jobs` | 必须 | 202，启动 V2 证据搜索作业 | 400、401、409、429 |
+| `POST` | `/v3/jobs` | 必须 | 202，启动工具感知搜索作业 | 400、401、409、429 |
+| `POST` | `/v4/jobs` | 必须 | 202，启动 V4 代码提案作业 | 400、401、409、429 |
 | `GET` | `/v1/jobs/<job_id>` | 必须 | 200，返回作业视图 | 404 |
 | `POST` | `/v1/jobs/<job_id>/cancel` | 必须 | 非终态为 202；已终态返回 200 | 404 |
 
 `/health` 不校验 Bearer，但会先检查 Worker Token 是否至少 32 个字符。Compose
-健康检查不需要把 Token 写进命令；如果 Token 未配置，健康检查会收到 503。
+健康检查不需要把 Token 写进命令；如果 Token 未配置，健康检查会收到 503。健康响应
+的 `protocol_versions` 同时列出 `mining_worker_v1`、`mining_worker_v2`、
+`mining_worker_v3` 和 `mining_worker_code_v1`。
 
 业务接口要求：
 
@@ -256,8 +296,9 @@ Authorization: Bearer <mining_worker_token>
 }
 ```
 
-HTTP 请求体上限为 512 KiB。Worker 使用严格 JSON 字段解析，缺少字段、未知字段、类型
-错误和越界值都会在启动 LLM 前失败。
+HTTP 请求体按协议限制，最大不超过 512 KiB。Worker 使用严格 JSON 字段解析，缺少字段、
+未知字段、类型错误和越界值都会在启动 LLM 前失败。V3 工具响应单次不超过 64 KiB，
+V4 代码提案受 `max_code_bytes` 和最多 3 轮限制。
 
 ### 4.3 WorkerGenerateRequest
 
@@ -441,7 +482,7 @@ Worker SQLite 同时只允许一个 `queued` 或 `running` 作业：
 
 ### 6.2 运行状态
 
-运行状态：
+V1 运行状态：
 
 ```text
 queued
@@ -460,9 +501,25 @@ queued
 - `interrupted`：主服务重启，原阶段保留，等待显式恢复。
 
 `review_ready` 不是发布完成。人工批准后，候选才可能进入 `approved`、`building` 和
-`published`。编排器本身不写这些后续状态。
+`published`。V1 编排器本身不写这些后续状态。
 
-### 6.3 多轮生成
+V2 运行状态：
+
+```text
+queued
+  -> searching
+  -> selecting
+  -> evaluating
+  -> holding_out
+  -> review_ready
+```
+
+V2 在 `searching` 内按 turn 完成“假设或候选、开发期证据、确定性决策”；随后只对
+选择期执行相关性和稳定性诊断、Pareto 入围；最终研究期只评估入围候选；模块测试段
+最多领取一次。V2 目前也在 `review_ready` 结束，尚不能进入 `approved` 或
+`published`。
+
+### 6.3 V1 多轮生成
 
 每轮按以下顺序执行：
 
@@ -515,7 +572,7 @@ Worker 只把目录名称、说明和约束传给模型，不传数据库连接�
 
 候选被拒绝时记录脱敏后的序号、`MINING-114` 和原因，不把原始不可信内容直接写入日志。
 
-### 6.6 技术门禁和快速筛选
+### 6.6 V1 技术门禁和快速筛选
 
 候选进入 `screening` 前先执行技术门禁。当前门禁重点包括：
 
@@ -540,7 +597,7 @@ abs(rank_ic_mean) 降序
 如果候选质量检查数量达到冻结下限，且失败比例达到 `max_failure_rate`，编排以
 `MINING-106` 停止，不继续完整评估。没有任何候选通过快速筛选时同样失败。
 
-### 6.7 完整评估和测试段
+### 6.7 V1 完整评估和测试段
 
 前 K 个候选逐个执行完整评估，并通过 `evaluated` 状态。随后：
 
@@ -559,13 +616,17 @@ abs(rank_ic_mean) 降序
 
 ## 7. 并发、预算与停止
 
-### 7.1 两个单槽位
+### 7.1 单槽位与串行执行
 
 主服务侧：
 
 - 每个 `MiningOrchestrator` 使用 `ThreadPoolExecutor(max_workers=1)` 串行执行运行。
+- `MiningSearchOrchestrator` 使用独立线程池并同样限制 `max_workers=1`；V2 存储的
+  turn、尝试和预算写入仍在事务内校验。
 - 候选库状态迁移会在运行进入 `generating` 时用本机文件锁检查是否存在其他活动运行。
 - 因此同一候选数据库最多只有一个 `generating/screening/evaluating/holding_out` 运行。
+- V2 与 V1 使用同一候选数据库中的不同 schema，不能把 V2 的 `searching` 当作 V1 的
+  `generating`。
 - 同一编排器实例的后台提交可以在线程池中排队。
 - 当前没有跨进程的持久化调度队列；生产监测站应保持单 Web 进程。多个进程同时提交时，
   后进入活动阶段的尝试会得到 `MINING-102` 并保留 `queued` 状态，但另一个进程不会
@@ -675,8 +736,8 @@ Worker 启动时会把遗留的 `queued/running` 作业改成 `interrupted`，�
 | Worker 文件系统 | 根只读，仅状态和日志目录可写 |
 | 临时文件 | `/tmp` 使用 tmpfs |
 | 网络 | Worker 端口仅绑定宿主机回环地址 |
-| 模型输入 | 只包含冻结字段、算子、假设和安全反馈 |
-| 模型输出 | 只能作为 DSL 草稿，不能直接执行 |
+| 模型输入 | 只包含冻结字段、算子、开发期假设和安全反馈 |
+| 模型输出 | V1～V3 只能是受控 DSL 或决策；V4 代码只能进入断网沙箱 |
 | 聊天日志 | RD-Agent 聊天内容日志关闭，trace storage 丢弃 |
 
 Token 首次由 `ensure_worker_token()` 生成，值是 `secrets.token_urlsafe(48)`，文件权限为
@@ -690,6 +751,9 @@ Token 首次由 `ensure_worker_token()` 生成，值是 `secrets.token_urlsafe(4
 | Worker 客户端 | `logs/research/mining/mining_worker_client/` |
 | Worker 服务 | `logs/research/mining/mining_worker_service/` |
 | 候选存储 | `logs/research/mining/mining_storage/` |
+| V2 搜索 | `logs/research/mining/mining_search_orchestrator/` |
+| V2 工具与 Web | `logs/research/mining/mining_analysis_tool_gateway/`、`mining_search_web/` |
+| M5 沙箱 | `logs/research/mining/mining_sandbox/` |
 
 日志继续使用项目统一的分段时间戳文件，单段达到 128 MB 后轮转。Worker 事件只写
 作业 ID、轮次、候选数量、状态和错误码；假设、表达式、Prompt、模型响应和 Key 被排除
@@ -716,6 +780,10 @@ Token 首次由 `ensure_worker_token()` 生成，值是 `secrets.token_urlsafe(4
 | `MINING-119` | Token、Key、模型、版本或健康状态不可用 | Worker/客户端 |
 | `MINING-120` | 数据、目录或正式因子快照失效 | 编排器/审批 |
 | `MINING-124` | 候选批量边界或共享层物化失败 | 候选物化 |
+| `MINING-125` | 搜索窗口或角色可见性非法 | V2 搜索 |
+| `MINING-126` | V2 存储迁移失败 | V2 存储 |
+| `MINING-127`～`MINING-132` | 分析工具不存在、参数、越权、超时、结果或执行失败 | 工具网关 |
+| `MINING-133`～`MINING-137` | 沙箱政策、运行、快照、隔离或产物失败 | M5 沙箱 |
 
 主服务 HTTP 层根据 `MiningError.status` 映射 400、404、409、422、429、500、502、
 503 或 504。Worker 客户端还会把作业错误码映射回
@@ -810,9 +878,16 @@ orchestrator.close()
 | [orchestrator real](../../tests/test_mining_orchestrator_real.py) | 真实行情短区间从技术门禁走到测试段 |
 | [storage](../../tests/test_mining_storage.py) | 单运行槽、中断释放、原阶段恢复和事务语义 |
 | [mining API](../../apps/monitor/backend/tests/test_mining_api.py) | 无 Worker 时不静默 Mock、运行接口、恢复和 SSE 交接 |
+| [V2 contracts](../../tests/test_mining_search_contracts.py) | V2 严格字段、稳定哈希、预算和动作枚举 |
+| [V2 orchestrator](../../tests/test_mining_search_orchestrator.py) | 逐轮搜索、工具、恢复、取消和快照失效 |
+| [V2 diagnostics](../../tests/test_mining_selection_diagnostics.py) | 相关性、增量价值、稳定性和统计诊断 |
+| [V2 tools](../../tests/test_mining_analysis_tools.py) | 白名单、预算、超时、缓存和审计 |
+| [sandbox](../../tests/test_mining_sandbox.py) | 政策、路径、网络、资源和隔离边界 |
+| [sandbox research](../../tests/test_mining_sandbox_research.py) | 代码提案、执行、恢复、产物和人工提升 |
 
-2026-10-26 本轮阶段审计执行了前述前五个 Worker/编排测试文件，共 28 个用例全部通过。
-真实短区间、存储和 Web 用例作为联合验证入口记录，本轮没有重复运行长链路或付费模型。
+V135 对 M1～M5 的分批定向测试分别为 `102`、`124`、`85`、`83`、`36 passed`；
+V134 完成后的全量测试记录为 `1483 passed`。这些结果证明当前代码和证据链通过审计，
+不代表 V2 已具备审批和发布能力。
 
 常用定向命令：
 
@@ -830,7 +905,8 @@ orchestrator.close()
 - LLM 只扩展假设空间，不负责证明因子有效。确定性门禁和评估降低工程风险，不消除
   多重检验、数据窥探和模型偏差。
 - 预算限制能控制调用成本和搜索规模，但不能把大量候选搜索自动转化为统计显著性。
-- 快速筛选和完整评估都使用研究期数据；它们用于筛选研究候选，不是未知样本确认。
+- V1 快速筛选和完整评估使用研究期数据；V2 把开发、选择、最终研究和测试段隔离。
+  两者都只提供研究证据，不是收益证明。
 - 模块测试段只验证隔离执行、完整 stage 和最小有效样本，不要求收益显著，也不是全市场
   可执行回测。
 - 模块测试段是全局一次性领取，候选批次之外也可能与模型最终留出区间重叠；不能把它
@@ -853,6 +929,9 @@ orchestrator.close()
   取消处理，需要新运行或后续实现新的重试身份。
 - 当前没有隐藏思维链、原始 Prompt 或原始模型响应的本地留存，排障主要依赖状态和
   脱敏错误码。
+- V2 当前停在 `review_ready`，没有审批、正式发布或 V1 发布服务适配。
+- M5 是项目自定义的有限代码研究循环，不是直接运行上游 `FactorCoSTEER`；沙箱指标
+  不是正式质量结论，产物只能人工转写。
 
 ## 14. 修改检查清单
 
@@ -865,4 +944,6 @@ orchestrator.close()
 7. 反馈和日志不得包含测试段结果、原始 Prompt、完整假设或模型响应。
 8. 修改预算时同步 `MiningConstraints`、配置、页面限制和契约测试。
 9. 修改快照范围时说明是否能识别原地覆盖和数据库内部变化。
-10. 完成后运行 Worker、客户端、编排器定向测试，并检查只修改了目标文档和进度文件。
+10. 修改 V2 时同步 `SearchRunRequest`、窗口、预算、证据和 V1/V2 兼容边界。
+11. 修改 M5 时保持默认关闭、断网、非 root、只读根和人工提升边界。
+12. 完成后运行 Worker、客户端、编排器、V2 和沙箱定向测试，并检查只修改了目标文件。

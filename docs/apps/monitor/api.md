@@ -102,3 +102,12 @@ curl -N 'http://127.0.0.1:8800/api/compare/stream?factors=MOM_20,MOM_60&mode=ic'
 受理返回 `202`，后台完成 `mined` 全量构建、校验和原子提交。漏选已批准候选、并发批次
 或快照失效返回 `MINING-121`；全量校验失败返回 `MINING-122`；提交、回滚或恢复失败
 返回 `MINING-123`。页面轮询批次接口，不把断网当作取消发布。
+
+设置 `MINING_SEARCH_V2_ENABLED=true` 时，`POST /api/mining/runs` 仍使用同一路径，
+但请求体中的预算字段改为 V2 `budget`，运行 ID 以 `searchrun_` 开头。
+`GET /api/mining/options` 会增加 `search_v2`，列出四段窗口、搜索预算、控制策略和
+分析工具目录。V2 的创建、列表、详情、事件、SSE、取消和恢复复用上述运行接口。
+
+V2 当前没有独立的候选审批入口：`GET .../candidates/{candidate_id}` 和
+`POST .../decision` 会拒绝 V2 运行，`POST .../publication-batches` 也尚未适配。
+这些限制对应根目录进度记录中的 P0，不应把 `review_ready` 解释为可发布状态。

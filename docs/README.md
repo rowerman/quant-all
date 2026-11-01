@@ -7,6 +7,7 @@
 - [项目全链路深度导读](project-guide/README.md)
 - [数据与因子基础层](core/README.md)
 - [研究模块](research/README.md)
+- [自动因子挖掘后续进度](../FACTOR_MINING_PROGRESS.md)
 - [C++ 批量计算扩展](native/README.md)
 - [交易与回测](trading/backtest/README.md)
 - [监测应用](apps/monitor/README.md)

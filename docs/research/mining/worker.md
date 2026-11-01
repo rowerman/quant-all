@@ -2,9 +2,10 @@
 
 ## 职责与隔离
 
-Worker 固定使用 Python 3.11 和 RD-Agent 1.0.0，只通过 DeepSeek 兼容的 LiteLLM 后端
-生成受控候选 JSON。它不读取行情数据库、候选库或正式因子目录，也不运行 RD-Agent 的
-Qlib coder、workspace 或任何模型生成代码。
+Worker 固定使用 Python 3.11 和 RD-Agent 1.0.0，通过 DeepSeek 兼容的 LiteLLM 后端
+生成 V1 候选表达式、V2 搜索建议、V3 工具补充响应和 V4 未信任 Qlib 研究代码。
+它不读取行情数据库、候选库或正式因子目录，也不在 Worker 容器内执行模型生成代码。
+代码只由宿主侧沙箱在断网容器中运行。
 
 主服务客户端位于 `mining.worker_client`，共享协议与 Worker 服务位于独立
 `mining_worker` 包。Worker 返回的表达式全部重新经过 S3；主服务不信任 Worker 给出的
@@ -17,6 +18,8 @@ Qlib coder、workspace 或任何模型生成代码。
 | GET | `/health` | 返回 Worker 版本、模型与 Key 配置状态，不返回 Key |
 | POST | `/v1/jobs` | 提交一轮 V1 有界生成请求 |
 | POST | `/v2/jobs` | 提交一轮 V2 证据驱动搜索请求 |
+| POST | `/v3/jobs` | 提交一轮工具感知搜索请求，返回工具批次或最终决策 |
+| POST | `/v4/jobs` | 提交一轮隔离沙箱代码提案请求 |
 | GET | `/v1/jobs/<job_id>` | 查询作业状态 |
 | POST | `/v1/jobs/<job_id>/cancel` | 取消排队或运行中的作业 |
 
@@ -43,6 +46,21 @@ Worker 的创建、开始、完成、失败和取消事件写入
 请求和响应都拒绝未知字段、非法动作、超限内容以及选择期、最终研究期、测试段字段和
 日期。主服务收到草稿后重新解析、校验、规范化并计算候选名称、依赖、语义哈希和 ID。
 V2 与 V1 共用同一个单槽位作业库；Worker 同时只执行一个作业。
+
+## V3 工具协议
+
+`mining_worker_v3` 在 V2 请求外增加固定工具目录和工具结果。首轮只能返回最多 4 个
+工具调用；主服务在开发期内执行后，通过同一 turn 的 `finalize` 请求返回脱敏结果，
+Worker 随后必须给出最终 `refine/branch/stop/promote` 决策。工具失败会阻断当前 turn，
+不会转换成空结果或扩大查询范围。
+
+## V4 代码研究协议
+
+`mining_worker_code_v1` 接收开发期快照标识、上一轮代码哈希、状态、指标和错误码，
+返回最多 3 轮迭代中的一轮未信任 Python 代码提案。宿主服务把代码写入独立工作区，
+由 `DockerSandboxRunner` 执行并读取
+`rank_ic / icir / coverage / valid_days`。该流程是项目自定义的 CoSTEER 兼容循环，
+不是直接运行上游 `FactorCoSTEER`，代码产物不能直接进入候选、审批或发布。
 
 ## 启动
 
@@ -71,5 +89,6 @@ curl http://127.0.0.1:8790/health
 
 1. 修改请求字段、作业状态或响应结构时必须升级 Worker schema 并同步主服务测试。
 2. 不要把行情库、候选库、正式因子目录或 `.env` 挂载进 Worker 容器。
-3. 不得恢复 Mock 自动回退，也不得在 Worker 内执行候选 SQL 或 Python。
+3. 不得恢复 Mock 自动回退，也不得在 Worker 内执行候选 SQL；模型生成代码只能进入
+   隔离沙箱。
 4. 升级 RD-Agent、Python 或模型时必须同步固定配置、依赖锁、镜像和验收证据。

@@ -2,6 +2,7 @@
 
 - [自动因子挖掘需求与口径](mining/requirements.md)
 - [自动因子挖掘模块与存储](mining/README.md)
+- [自动因子挖掘后续进度](../../FACTOR_MINING_PROGRESS.md)
 - [挖掘契约与状态机](mining/contracts.md)
 - [模型层](modeling/alpha/README.md)
 - [模型定位](modeling/positioning.md)

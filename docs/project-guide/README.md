@@ -47,8 +47,8 @@ flowchart LR
 | [因子库](02-factor-library.md) | 因子如何定义、注册、构建、自检和读取 |
 | [因子评估](03-factor-evaluation.md) | 评估面板、指标注册、stage、轻量 IC 和前后端如何衔接 |
 | [因子评估指标](04-factor-evaluation-metrics.md) | 页面上的 13 个指标分别怎么算、怎么看、有哪些限制 |
-| [自动因子挖掘](05-factor-mining.md) | 契约、DSL、候选存储、门禁、审批和正式发布 |
-| [Agent 编排与 RD-Agent](06-agent-orchestration.md) | RD-Agent 基座是什么，项目如何二次开发并调度挖掘 |
+| [自动因子挖掘](05-factor-mining.md) | V1/V2 契约、DSL、候选存储、门禁、审核和发布边界 |
+| [Agent 编排与 RD-Agent](06-agent-orchestration.md) | Worker v1～v4、证据搜索、分析工具、代码沙箱和基座边界 |
 | [ML 模型层](07-ml-modeling.md) | 从数据选择到训练、指标、分析、监控和留出的全过程 |
 | [回测](08-backtest.md) | VectorBT 的关系、自定义账本和一次回测的完整数据流 |
 | [监测站](09-monitor-web.md) | FastAPI、SSE、调度器、API 和前端页面 |
@@ -132,10 +132,10 @@ Tushare 分片
 | `data/databases/factor_mining.duckdb` | 挖掘运行、候选、事件和审批状态 |
 | `data/databases/backtest.duckdb` | 策略版本、运行、日结果、成交和持仓 |
 | `logs/` | 按业务域和模块分目录的结构化日志 |
-| `AiRecord/` | 本地计划、变更、差异、进度和证据，不进入 Git |
+| `AiRecord/` | 计划、变更、差异、进度和证据；已纳入 Git 的记录随仓库提交 |
 
-`data/`、`logs/` 和 `AiRecord/` 都在 Git 忽略范围内，不能把其中的数据文件当成代码
-交付物。
+`data/` 和 `logs/` 在 Git 忽略范围内，不能把其中的数据文件当成代码交付物。
+`AiRecord/` 的文档和证据用于项目追溯；新增文件是否需要跟踪以当前 Git 状态为准。
 
 ## 核心模块调用链
 

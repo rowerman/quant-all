@@ -1,8 +1,9 @@
 # 自动因子挖掘
 
-自动因子挖掘把一段研究假设转换为受控因子表达式，再经过技术门禁、研究期快速筛选、
-完整评估、一次性模块测试段、人工审批和整批正式发布。它不让大模型直接执行 SQL 或
-Python，而是把模型输出限制在冻结字段、冻结算子和受控 DSL 内。
+自动因子挖掘把一段研究假设转换为受控因子表达式，再经过技术门禁、分层研究窗口、
+完整评估、一次性模块测试段、人工审批和整批正式发布。V1 是默认生产链路；V2 增加
+证据驱动搜索和组合价值诊断；M5 在断网沙箱中研究代码因子。主链路不让大模型直接
+执行 SQL 或 Python，模型输出只能进入冻结字段、冻结算子和受控 DSL。
 
 读完本章应能回答五个问题：
 
@@ -33,10 +34,10 @@ Python，而是把模型输出限制在冻结字段、冻结算子和受控 DSL 
 - 让 Worker 读取行情库、候选库或正式因子目录。
 - 用模块测试段结果再次提示 Worker、重排候选或训练第二个模型。
 
-截至 2026-10-26，本模块的 S2～S9 已交付，综合验收结论见
-[S9 验收记录](../research/mining/acceptance.md)。当前工作区没有活动候选库、候选运行
-目录或正式 `data/factors/mined` 链接，因此本章描述的是可执行代码和契约，不是某次
-正在进行的研究运行。
+截至 2026-11-01，S2～S9 和 M1～M5 已交付。V135 复核了路线图 34 项，M1～M5
+均保持完成。V1 继续作为默认生产链路；V2 需设置 `MINING_SEARCH_V2_ENABLED=true`，
+当前停在 `review_ready`；M5 默认关闭，产物只能人工提升。后续 V2 生产闭环、四项
+扩展和 V3 集成见[根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
 
 当前冻结数据版本为 `tushare_fullA_20000104_20261015`。字段目录包含 95 个字段声明，
 其中 84 个允许进入表达式；另有 34 个冻结算子。目录 schema 为 `mining_catalog_v1`，
@@ -66,6 +67,12 @@ flowchart TD
 语义哈希、内容哈希和候选 ID 都由主服务的受控目录重新计算，Worker 返回的名称不是
 权威值。
 
+V2 把研究时间拆成开发期、选择期、最终研究期和一次性模块测试段。Worker 只能看到
+开发期；选择期只供确定性控制器和稳定性/相关性诊断使用；最终评估器和测试段执行器
+各自只能访问对应窗口。V2 的 7 个只读分析工具也由主服务在开发期执行，Worker 不获得
+SQL、路径或数据库连接。M5 只读取冻结开发期 Qlib 快照，并把代码和指标封存为人工
+审核材料。
+
 ## 3. 公开入口与契约
 
 公共 Python 入口由 [mining/__init__.py](../../research/mining/__init__.py) 导出。常用
@@ -79,6 +86,8 @@ flowchart TD
 | `validate_expression()` | 解析、校验、编译并生成稳定候选身份 |
 | `MiningStore` | 运行、候选、证据、审批和发布元数据存储 |
 | `MiningOrchestrator` | 后台执行、取消、恢复和预算进度 |
+| `MiningSearchOrchestrator` | V2 逐轮搜索、选择期诊断、最终研究和一次性测试段 |
+| `MiningV2Store` | V2 轨迹、假设、候选谱系、证据、尝试和分析工具审计 |
 | `evaluate_candidate()` | 物化候选并执行技术门禁、快速筛选和可选完整评估 |
 | `evaluate_full_candidate()` | 在研究期已有产物上执行完整评估 |
 | `evaluate_holdout_candidate()` | 在隔离目录执行一次性模块测试段 |
@@ -471,8 +480,9 @@ failed -> rolled_back
 
 ### 7.2 数据库与文件
 
-候选元数据库为 `data/databases/factor_mining.duckdb`，schema 为 `mining_v1`。未知
-schema 版本直接拒绝启动，不做静默迁移。
+候选元数据库为 `data/databases/factor_mining.duckdb`。V1 使用 `mining` schema，
+版本为 `mining_v1`；V2 使用独立的 `mining_v2` schema。未知 schema 版本直接拒绝
+启动，普通初始化不会把 V1 静默迁移为 V2。
 
 主要表：
 
@@ -489,6 +499,12 @@ schema 版本直接拒绝启动，不做静默迁移。
 | `mining.publication` | 批次内逐候选发布关联 |
 | `mining.event` | 运行内连续编号的不可变事件 |
 
+V2 在独立 `mining_v2` schema 中保存 `context`、`run`、`run_control`、
+`hypothesis`、`experiment_batch`、`candidate_trace`、`candidate_lineage`、
+`turn`、`evidence_packet`、`evaluation_evidence`、`search_decision`、
+`trial_record`、`trial_counter`、`event`、`trace_entry` 以及分析工具缓存和审计表。
+V1 `mining` schema 不会被普通 V2 初始化静默改写。
+
 事实来源是数据库。文件系统保存可重建的大产物：
 
 | 内容 | 路径 |
@@ -499,6 +515,9 @@ schema 版本直接拒绝启动，不做静默迁移。
 | 测试段因子 | `<候选根目录>/holdout/factor/year=YYYY/part.parquet` |
 | 快速和完整评估 | `<候选根目录>/evaluations/quick.json`、`full.json` |
 | 测试段评估 | `<候选根目录>/evaluations/holdout.json` |
+| V2 搜索证据 | `mining_v2.evaluation_evidence` 的脱敏指标、状态和哈希 |
+| 沙箱工作区 | `data/mining_sandbox/work/<sandbox_run_id>/` |
+| 沙箱快照 | `data/mining_sandbox/snapshots/<snapshot_id>/` |
 | 发布暂存 | `data/factor_mining/publications/<run_id>/attempt-N/` |
 | 正式发布版本 | `data/factors/.mined-versions/<batch_id>/` |
 | 正式链接 | `data/factors/mined -> .mined-versions/<batch_id>` |
@@ -692,6 +711,19 @@ schema 版本直接拒绝启动，不做静默迁移。
 | `MINING-122` | 422 | 正式因子全量校验失败 |
 | `MINING-123` | 503 | 发布提交、回滚或启动恢复失败 |
 | `MINING-124` | 422 | 候选批量边界或共享层物化失败 |
+| `MINING-125` | 400 | 搜索窗口或角色可见性非法 |
+| `MINING-126` | 503 | V2 存储迁移失败或源快照不可迁移 |
+| `MINING-127` | 400 | 分析工具不存在 |
+| `MINING-128` | 400 | 分析工具参数非法 |
+| `MINING-129` | 403 | 分析工具越权 |
+| `MINING-130` | 504 | 分析工具超时或取消 |
+| `MINING-131` | 422 | 分析工具结果过大或无法计算 |
+| `MINING-132` | 500 | 分析工具执行失败 |
+| `MINING-133` | 400 | 沙箱政策非法 |
+| `MINING-134` | 500 | 沙箱容器或研究循环失败 |
+| `MINING-135` | 422 | Qlib 快照生成或校验失败 |
+| `MINING-136` | 403 | 沙箱路径、挂载或隔离边界破坏 |
+| `MINING-137` | 422 | 沙箱产物或人工提升记录非法 |
 
 ### 10.2 日志
 
@@ -779,18 +811,19 @@ PY
 | 真实短区间端到端 | [test_mining_orchestrator_real.py](../../tests/test_mining_orchestrator_real.py) |
 | Worker 协议与主服务二次校验 | [test_mining_worker_protocol.py](../../tests/test_mining_worker_protocol.py)、[test_mining_worker_client.py](../../tests/test_mining_worker_client.py) |
 | 日志脱敏 | [test_mining_logging.py](../../tests/test_mining_logging.py)、[test_mining_worker_logging.py](../../tests/test_mining_worker_logging.py) |
+| V2 契约、轨迹、恢复和尝试台账 | [test_mining_search_contracts.py](../../tests/test_mining_search_contracts.py)、[test_mining_v2_trace.py](../../tests/test_mining_v2_trace.py)、[test_mining_v2_trials.py](../../tests/test_mining_v2_trials.py) |
+| V2 选择诊断、稳定性和统计 | [test_mining_selection_diagnostics.py](../../tests/test_mining_selection_diagnostics.py)、[test_mining_search_stability.py](../../tests/test_mining_search_stability.py)、[test_mining_statistical_diagnostics.py](../../tests/test_mining_statistical_diagnostics.py) |
+| V2 受控分析工具 | [test_mining_analysis_tools.py](../../tests/test_mining_analysis_tools.py) |
+| M5 沙箱和代码研究 | [test_mining_sandbox.py](../../tests/test_mining_sandbox.py)、[test_mining_sandbox_research.py](../../tests/test_mining_sandbox_research.py) |
 
-2026-10-26 的文档复核基线：
+2026-11-01 的文档状态以当前代码和 V135 审计为准：
 
-- 除评估一致性测试和真实短区间测试外，选择的 13 个挖掘测试文件共收集 184 个用例，
-  结果为 `183 passed, 1 failed`，耗时约 105.58 秒。
-- 唯一失败是
-  `test_published_mined_factor_is_atomic_and_readable`，追加发布的正式键集校验返回
-  `MINING-122`，报告与 `md.daily_hfq` 相差 2 行。
-- 该用例单独重跑通过，耗时约 96.32 秒。由于失败不能稳定复现，本轮把它记录为顺序相关
-  或偶发问题，不修改业务代码，也不把整套定向测试表述为全部通过。
-- 评估一致性、真实短区间编排和挖掘错误码 HTTP 映射合计 15 个用例全部通过，耗时约
-  167.18 秒。
+- V135 对 M1～M5 的分批定向测试分别为 `102`、`124`、`85`、`83`、`36 passed`。
+- V134 完成 M1～M5 后的全量测试记录为 `1483 passed`。
+- V2 的搜索、评分卡、选择诊断、稳定性、组合选择、统计诊断和工具审计测试入口列在
+  [V2 搜索轨迹与闭环](../research/mining/search-v2.md)。
+- M5 的安全、快照、代码研究和产物清单测试入口列在
+  [隔离代码研究沙箱](../research/mining/sandbox.md)。
 
 ### 13.2 修改检查清单
 

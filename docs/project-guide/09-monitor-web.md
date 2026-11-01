@@ -23,7 +23,7 @@
 | 层级 | 监测站负责 | 监测站不负责 |
 |---|---|---|
 | 因子评估 | 参数校验、容量预留、SSE 适配、指标展示 | 因子 SQL、面板构造和指标公式 |
-| 自动挖掘 | 表单、运行视图、事件回放、审批和发布入口 | DSL、门禁、Worker 和状态机 |
+| 自动挖掘 | V1 表单、审批和发布；V2 搜索视图和防过拟合证据 | DSL、门禁、Worker、沙箱和状态机 |
 | 回测 | 策略/运行接口、调度、进度和结果页面 | 信号、成交规则、账本和绩效公式 |
 | 前端 | hash 路由、表单、状态回收和图表 | 重新计算 IC、收益、成本或统计检验 |
 
@@ -40,6 +40,7 @@ flowchart LR
   BT --> BTSVC[backend.backtest_service]
   BTSVC --> BSCHED[回测调度器]
   ORCH[mining.orchestrator] --> MINSVC[MiningWebService]
+  SEARCH[mining.search_orchestrator] --> MINSVC
   MINSVC --> MROUTE[mining_routes]
   FSCHED --> APP[FastAPI app]
   BSCHED --> APP
@@ -224,6 +225,12 @@ HTTP 路由位于 [mining_routes.py](../../apps/monitor/backend/mining_routes.py
 创建运行必须带 `hypothesis` 和页面生成的 `idempotency_key`。`constraints` 可只覆盖
 部分默认预算，服务端合并、校验并冻结。相同幂等键和相同请求返回原运行，内容不同返回
 `MINING-105`。股票池、标签和价格通道由冻结上下文决定，页面不能临时修改。
+
+设置 `MINING_SEARCH_V2_ENABLED=true` 后，运行创建、列表、详情、事件、SSE、取消和
+恢复仍使用同一组路径，但新运行 ID 使用 `searchrun_`，创建请求使用 V2 `budget`，
+`GET /api/mining/options` 增加 `search_v2` 窗口、预算和工具目录。V2 候选审批、
+正式发布和候选专用详情尚未接入现有 V1 链路；页面只在 `review_ready` 展示研究证据。
+后续接口收口见[根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
 
 审批请求必须同时提交当前 `candidate_content_hash` 和 `evidence_hash`。任一哈希变化返回
 `MINING-108`；数据、目录或正式因子快照变化返回 `MINING-120`。批准只写入候选库，

@@ -4,8 +4,9 @@
 因子质量评估、RD-Agent 自动因子挖掘、ML 模型训练与监控、日频组合回测，以及统一的
 Web 监测和人工审核界面。
 
-所有代码、配置、测试和文档位于单一 Git 仓库。行情数据库、因子值、模型产物、日志和
-`AiRecord/` 只保留在本地，不进入远程仓库。
+所有代码、配置、测试和文档位于单一 Git 仓库。行情数据库、因子值、模型产物和日志
+只保留在本地；`AiRecord/` 保存计划、变更、差异、进度和证据，已纳入 Git 的记录
+随仓库提交。
 
 ## 全链路
 
@@ -44,7 +45,7 @@ flowchart LR
 | 辅助数据 | 60 个指数、31 个申万一级行业、历史成分权重、财务三表、财务指标、停牌、涨跌停、公司行动 |
 | 因子 | 11 个族、47 个已实现因子、139 个规划因子；构建、自检、公式文档和手工复现 SQL |
 | 因子评估 | IC/RankIC、分位收益、净值、多空、换手、多周期衰减、风格暴露、增量 IC、相关性 |
-| 自动挖掘 | 受控 DSL、RD-Agent Worker、技术门禁、快速/完整评估、模块测试段、Web 审批和正式发布 |
+| 自动挖掘 | V1 受控 DSL、RD-Agent Worker、门禁、完整评估、人工审批和正式发布；V2 证据驱动搜索；M5 隔离代码研究沙箱 |
 | 模型 | Ridge/ElasticNet、LightGBM、直方图 GBDT；周频数据集、purged walk-forward、评估、账本、监控和生命周期 |
 | 回测 | 因子 Top-N、目标权重提供者、原始价账本、公司行动、A 股交易规则、成本、分块回测和运行对比 |
 | 应用 | 因子监测、自动挖掘审核、策略创建、回测详情和运行对比，统一由本地 FastAPI 服务提供 |
@@ -71,7 +72,7 @@ flowchart LR
 | `docs/` | 按业务域组织的模块文档 |
 | `data/` | 本地运行数据，不进入 Git |
 | `logs/` | 本地运行日志，不进入 Git |
-| `AiRecord/` | 本地计划、变更、差异和版本记录，不进入 Git |
+| `AiRecord/` | 计划、变更、差异、版本、进度和验收证据 |
 
 四个原独立模块的提交历史已经并入当前单仓库，不再作为嵌套仓库或 Git submodule 使用。
 
@@ -366,6 +367,11 @@ bash tools/monitor/serve.sh
 
 打开 http://127.0.0.1:8800/#/mining，提交研究假设并等待候选进入人工审核。
 
+默认使用 V1 生产编排。需要启用在开发期、选择期、最终研究期和模块测试段之间隔离的
+证据驱动搜索时，可设置 `MINING_SEARCH_V2_ENABLED=true`。V2 当前停在
+`review_ready`，尚不能从 V2 页面审批或正式发布；M5 代码研究沙箱默认关闭，只产生
+人工审核材料。
+
 运行流程：
 
 ```text
@@ -383,7 +389,8 @@ bash tools/monitor/serve.sh
 与已有因子高度相关、完整评估失败或测试段失败。
 
 详细启动、排错和停止步骤见
-[自动因子挖掘模块](docs/research/mining/README.md)。
+[自动因子挖掘模块](docs/research/mining/README.md)。后续四项扩展和 V3 最终闭环见
+[因子挖掘进度记录](FACTOR_MINING_PROGRESS.md)。
 
 ## ML 模型
 
@@ -556,8 +563,8 @@ bash tools/monitor/serve.sh
 | [因子库](docs/project-guide/02-factor-library.md) | 因子定义、算子、构建、自检和目录 |
 | [因子评估](docs/project-guide/03-factor-evaluation.md) | 评估面板、指标注册、stage 和前后端链路 |
 | [因子评估指标](docs/project-guide/04-factor-evaluation-metrics.md) | 页面 13 个指标的计算方式、意义和边界 |
-| [自动因子挖掘](docs/project-guide/05-factor-mining.md) | DSL、状态机、门禁、审批和发布 |
-| [Agent 编排与 RD-Agent](docs/project-guide/06-agent-orchestration.md) | 基座项目、二次开发和 Agent 调度 |
+| [自动因子挖掘](docs/project-guide/05-factor-mining.md) | V1/V2 状态机、DSL、门禁、审核和发布边界 |
+| [Agent 编排与 RD-Agent](docs/project-guide/06-agent-orchestration.md) | Worker v1～v4、证据搜索、分析工具和代码沙箱 |
 | [ML 模型层](docs/project-guide/07-ml-modeling.md) | 数据、训练、指标、分析、监控和留出 |
 | [回测](docs/project-guide/08-backtest.md) | VectorBT 边界、自定义账本和完整数据流 |
 | [监测站](docs/project-guide/09-monitor-web.md) | FastAPI、SSE、调度器和前端 |
@@ -585,7 +592,8 @@ https://github.com/rowerman/quant-all.git
 | [数据库](docs/core/data/database.md) | 表结构、字段和读取接口 |
 | [因子库](docs/core/factors/README.md) | 构建、读取和新增因子 |
 | [因子评估](research/evaluation/calculate/README.md) | 评估参数、指标和扩展方式 |
-| [自动挖掘](docs/research/mining/README.md) | Worker、编排、Web 审核和发布 |
+| [自动挖掘](docs/research/mining/README.md) | V1 生产链路、V2 实验搜索和 M5 沙箱 |
+| [挖掘后续进度](FACTOR_MINING_PROGRESS.md) | 四项后续任务的优先级、拆解和验收入口 |
 | [模型层](docs/research/modeling/alpha/README.md) | 数据集、训练、评估、监控和留出 |
 | [回测](docs/trading/backtest/README.md) | 执行、账本、成本、结果和已知边界 |
 | [监测站](docs/apps/monitor/README.md) | 启动、页面、性能和验收 |

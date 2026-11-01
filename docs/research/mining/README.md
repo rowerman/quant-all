@@ -1,9 +1,13 @@
 # 自动因子挖掘模块
 
-当前实现覆盖 S2～S9：领域契约、运行与候选状态机、独立候选存储、幂等、并发锁、
-中断恢复、日志、错误码、字段算子目录、受控 DSL、候选评估、独立 RD-Agent Worker、
-挖掘编排、Web 人工审核和批量正式发布。S9 已由用户确认交付，当前结果见
-[综合验收记录](acceptance.md)。
+当前实现覆盖 S2～S9 和 M1～M5：V1 领域契约、运行与候选状态机、独立候选存储、
+幂等、中断恢复、受控 DSL、候选评估、RD-Agent Worker、Web 人工审核和批量正式发布；
+V2 证据驱动搜索、四段时序窗口、尝试台账、受控分析工具、组合价值和统计诊断；M5
+隔离代码研究沙箱。V135 已复核路线图 34 项，当前 M1～M5 均已完成。
+
+V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用，当前停在
+`review_ready`，尚不能从 V2 页面审批或发布。M5 默认关闭，只产生人工审核材料。
+后续任务见[根目录进度记录](../../../FACTOR_MINING_PROGRESS.md)。
 
 ## 启动与停止
 
@@ -124,6 +128,16 @@ docker compose --env-file .env -f compose.mining.yaml down
        -> storage_publications 发布批次、逐候选关联与状态收口
        -> storage_events    不可变事件与临时目录清理
        -> storage_schema    DuckDB schema 与版本
+
+监测站 Web（V2 实验）
+  -> backend.mining_search_service 搜索视图、分析工具和审核证据
+  -> mining.search_orchestrator    逐轮搜索、选择、最终评估和测试段
+  -> mining.storage_v2             mining_v2 轨迹、尝试、证据和工具审计
+
+沙箱研究（M5，默认关闭）
+  -> mining_sandbox.research       有限代码提案和恢复循环
+  -> mining_worker /v4/jobs        RD-Agent 模型生成未信任代码提案
+  -> DockerSandboxRunner           断网、非 root、只读根和资源受限执行
 ```
 
 `mining.orchestrator` 组合研究与测试阶段。S8 由独立
@@ -142,6 +156,8 @@ docker compose --env-file .env -f compose.mining.yaml down
 候选缓存     data/factor_mining/cache/
 候选因子值   data/factor_mining/runs/<run_id>/<candidate_id>/factor/year=YYYY/part.parquet
 评估报告     data/factor_mining/runs/<run_id>/<candidate_id>/evaluations/
+沙箱工作区   data/mining_sandbox/work/<sandbox_run_id>/
+沙箱快照     data/mining_sandbox/snapshots/<snapshot_id>/
 模块日志     logs/research/mining/<module>/
 
 正式 mined（仅 S8 临时验收或用户确认发布时写）
@@ -151,7 +167,9 @@ data/databases/factors.duckdb
 data/databases/quant.duckdb
 ```
 
-候选库的 schema 版本为 `mining_v1`。发现未知版本时直接拒绝启动，不做静默迁移。
+候选库包含 V1 `mining` schema 和 V2 `mining_v2` schema。V1 使用 `mining_v1`，
+V2 使用 `mining_v2`；两者相互隔离。发现未知 schema 版本时直接拒绝启动，普通初始化
+不会把 V1 静默迁移成 V2。
 
 ## 基本用法
 
@@ -224,8 +242,12 @@ Worker 用法与部署命令见 [独立 RD-Agent Worker](worker.md)。主服务�
 未信任表达式草稿，稳定名称、依赖、回看窗口、语义哈希和候选 ID 均由 S3 重新计算。
 
 V2 搜索契约、分层窗口和角色可见性见
-[V2 搜索轨迹基础](search-v2.md)。M1 只提供冻结、防泄漏和持久化基础，现有 V1 编排
-在 M2 完成逐轮闭环和状态机切换前保持不变。
+[V2 搜索轨迹基础](search-v2.md)。M1～M4 已覆盖轨迹、逐轮闭环、组合价值、统计诊断
+和受控分析工具。V2 仍不接管 V1 默认编排，也不提供审批和正式发布。
+
+M5 的 Qlib 快照、代码提案循环、产物清单和人工提升流程见
+[隔离代码研究沙箱](sandbox.md)。该能力不等同于直接运行上游 `FactorCoSTEER`，
+产物不能自动成为正式候选。
 
 已有候选库升级到 `mining_v2` 时必须停止服务并显式执行
 `python -m mining.migrate_v1_to_v2 --db data/databases/factor_mining.duckdb`；
@@ -291,6 +313,19 @@ progress = orchestrator.progress(run["run_id"])
 | `MINING-122` | 正式因子全量校验失败 | 422 |
 | `MINING-123` | 发布提交、回滚或恢复失败 | 503 |
 | `MINING-124` | 候选批量边界或共享层物化失败 | 422 |
+| `MINING-125` | 搜索窗口或角色可见性非法 | 400 |
+| `MINING-126` | V2 存储迁移失败或源快照不可迁移 | 503 |
+| `MINING-127` | 分析工具不存在 | 400 |
+| `MINING-128` | 分析工具参数非法 | 400 |
+| `MINING-129` | 分析工具越权 | 403 |
+| `MINING-130` | 分析工具超时或取消 | 504 |
+| `MINING-131` | 分析工具结果过大 | 422 |
+| `MINING-132` | 分析工具执行失败 | 500 |
+| `MINING-133` | 沙箱政策非法 | 400 |
+| `MINING-134` | 沙箱容器或研究循环失败 | 500 |
+| `MINING-135` | Qlib 快照生成或校验失败 | 422 |
+| `MINING-136` | 沙箱路径、挂载或隔离边界破坏 | 403 |
+| `MINING-137` | 沙箱产物或人工提升记录非法 | 422 |
 
 候选评估执行错误使用 `MINING-106`。门禁不通过是正常业务结论，通过
 `TechnicalGate.passed=false` 和逐项 `checks` 表达，不伪装成系统异常。

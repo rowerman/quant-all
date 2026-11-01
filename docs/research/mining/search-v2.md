@@ -1,8 +1,13 @@
 # V2 搜索轨迹与闭环
 
-`mining_v2` 为证据驱动搜索提供独立契约和存储。M1～M3 已覆盖轨迹、闭环、组合价值、
-稳定性和统计诊断，V1 生产编排仍保持默认。V2 窗口、预算和角色配置位于
-`configs/mining/search.json`。
+`mining_v2` 为证据驱动搜索提供独立契约和存储。M1～M4 已覆盖轨迹、逐轮闭环、
+组合价值、稳定性、统计诊断和受控分析工具；M5 代码沙箱独立于 V2 搜索。
+V1 生产编排仍保持默认，V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用。
+V2 窗口、预算和角色配置位于 `configs/mining/search.json`。
+
+当前 V2 运行在一次性测试段后进入 `review_ready`。它尚未接入人工审批和正式发布，
+后续 V2 链路补齐及 V3 最终闭环见
+[根目录进度记录](../../../FACTOR_MINING_PROGRESS.md)。
 
 ## 分层窗口
 

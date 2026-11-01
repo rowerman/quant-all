@@ -10,6 +10,10 @@ S7 在监测站内提供挖掘运行创建、状态查看、事件流、取消�
 V1。已有 `searchrun_` 运行仍可按 ID 查询、取消和恢复，V1 运行不会因开关变化改变
 行为。
 
+V2 页面展示假设树、轮次决策、尝试台账、选择诊断、稳定性、研究质量和分析工具审计，
+但当前没有审批或正式发布入口。V2 运行在 `review_ready` 结束，后续接入现有发布链和
+V3 最终闭环的优先级见[根目录进度记录](../../../FACTOR_MINING_PROGRESS.md)。
+
 ```text
 浏览器 #/mining
   -> backend.mining_routes       REST、SSE、HTTP 错误
