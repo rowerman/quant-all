@@ -192,6 +192,7 @@ M5 只能在隔离沙箱中运行有限代码研究，不能直接创建正式�
 | [mining_sandbox.evaluator](../../research/mining_sandbox/evaluator.py) | M5 代码限制、因子输出、冻结索引和覆盖率确定性评估 |
 | [mining_sandbox.code_policy](../../research/mining_sandbox/code_policy.py) | M5 提案导入、调用和固定路径静态限制 |
 | [mining_sandbox.metrics](../../research/mining_sandbox/metrics.py) | M5 汇总指标严格读取、类型和范围校验 |
+| [mining_sandbox.knowledge](../../research/mining_sandbox/knowledge.py) | M5 当前运行的失败轨迹、成功实现和修复摘要 |
 
 主服务保存候选、评估和正式数据，只通过 HTTP 把有界请求发给 Worker。V2 的工具结果、
 选择期诊断、最终评估和测试段都由主服务确定性执行，Worker 不能直接访问数据库。
@@ -790,7 +791,7 @@ Token 首次由 `ensure_worker_token()` 生成，值是 `secrets.token_urlsafe(4
 | `MINING-126` | V2 存储迁移失败 | V2 存储 |
 | `MINING-127`～`MINING-132` | 分析工具不存在、参数、越权、超时、结果或执行失败 | 工具网关 |
 | `MINING-133`～`MINING-137` | 沙箱政策、运行、快照、隔离或产物失败 | M5 沙箱 |
-| `MINING-138`～`MINING-145` | 沙箱编译、运行、输出、索引、覆盖率、数值、代码限制或资源反馈 | M5 研究循环 |
+| `MINING-138`～`MINING-146` | 沙箱编译、运行、输出、索引、覆盖率、数值、代码限制、资源反馈或运行内知识 | M5 研究循环 |
 
 主服务 HTTP 层根据 `MiningError.status` 映射 400、404、409、422、429、500、502、
 503 或 504。Worker 客户端还会把作业错误码映射回

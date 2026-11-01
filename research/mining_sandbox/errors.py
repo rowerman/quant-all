@@ -44,3 +44,10 @@ class SandboxArtifactError(SandboxError):
 
     code = "MINING-137"
     status = 422
+
+
+class SandboxKnowledgeError(SandboxError):
+    """运行内知识索引、来源或任务绑定非法。"""
+
+    code = "MINING-146"
+    status = 422

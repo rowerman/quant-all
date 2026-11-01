@@ -32,6 +32,10 @@ from mining_sandbox.feedback import (
     SandboxFailureCategory,
     SandboxFeedbackError,
 )
+from mining_sandbox.knowledge import (
+    build_sandbox_knowledge,
+    write_sandbox_knowledge,
+)
 from mining_sandbox.logging_conf import get_sandbox_logger, log_sandbox_feedback
 from mining_sandbox.policy import SandboxPolicy
 from mining_sandbox.qlib_snapshot import QlibSnapshotManifest
@@ -113,6 +117,14 @@ class SandboxResearchRequest:
     def request_hash(self) -> str:
         return sha256_json(self.material())
 
+    @property
+    def task_hash(self) -> str:
+        """返回不含运行 ID 的稳定研究任务哈希。"""
+
+        material = self.material()
+        material.pop("sandbox_run_id")
+        return sha256_json(material)
+
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -181,6 +193,11 @@ class SandboxResearchRunner:
                 "attempts": attempts,
             }
             _atomic_json(state_path, state)
+        if any(
+            item.get("status") in {"passed", "failed"}
+            for item in attempts
+        ):
+            _write_knowledge(artifact_dir, request, attempts)
 
         completed = {
             int(item["iteration"]): item
@@ -299,6 +316,7 @@ class SandboxResearchRunner:
                 attempts.sort(key=lambda item: int(item["iteration"]))
                 latest_attempt = attempt
                 _atomic_json(state_path, {**state, "attempts": attempts})
+                _write_knowledge(artifact_dir, request, attempts)
                 log_sandbox_feedback(
                     _LOGGER,
                     run_id=request.sandbox_run_id,
@@ -412,6 +430,7 @@ class SandboxResearchRunner:
             attempts.sort(key=lambda item: int(item["iteration"]))
             latest_attempt = attempt
             _atomic_json(state_path, {**state, "attempts": attempts})
+            _write_knowledge(artifact_dir, request, attempts)
             if feedback is not None:
                 log_sandbox_feedback(
                     _LOGGER,
@@ -435,6 +454,7 @@ class SandboxResearchRunner:
                 "attempts": attempts,
             },
         )
+        _write_knowledge(artifact_dir, request, attempts)
         files = {
             path.relative_to(artifact_dir).as_posix(): {
                 "sha256": _file_sha(path),
@@ -488,6 +508,19 @@ def _file_sha(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _write_knowledge(
+    artifact_dir: Path,
+    request: SandboxResearchRequest,
+    attempts: list[dict[str, Any]],
+) -> None:
+    knowledge = build_sandbox_knowledge(
+        artifact_dir,
+        request,
+        attempts=attempts,
+    )
+    write_sandbox_knowledge(knowledge, artifact_dir)
 
 
 __all__ = [

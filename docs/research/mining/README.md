@@ -3,7 +3,8 @@
 当前实现覆盖 S2～S9 和 M1～M5：V1 领域契约、运行与候选状态机、独立候选存储、
 幂等、中断恢复、受控 DSL、候选评估、RD-Agent Worker、Web 人工审核和批量正式发布；
 V2 证据驱动搜索、四段时序窗口、尝试台账、受控分析工具、组合价值和统计诊断；M5
-隔离代码研究沙箱。V135 已复核路线图 34 项，当前 M1～M5 均已完成。
+隔离代码研究沙箱及当前运行内的失败、成功和修复知识索引。V135 已复核路线图 34 项，
+当前 M1～M5 均已完成。
 
 V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用，运行停在
 `review_ready` 后进入人工审核；候选批准、拒绝、整批正式发布和失败重试均已接入页面。
@@ -143,6 +144,7 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> mining_sandbox.research       有限代码提案和恢复循环
   -> mining_sandbox.evaluator      代码限制、因子明细和索引确定性评估
   -> mining_sandbox.feedback        结构化失败分类、稳定错误码和脱敏
+  -> mining_sandbox.knowledge       当前运行的失败轨迹、成功实现和修复摘要
   -> mining_sandbox.logging_conf    安全反馈事件日志
   -> mining_worker /v4/jobs        RD-Agent 模型生成未信任代码提案
   -> DockerSandboxRunner           断网、非 root、只读根和资源受限执行
@@ -346,6 +348,7 @@ M5 沙箱研究循环另外使用内部反馈错误码：`MINING-138` 编译、`
 `MINING-140` 输出格式、`MINING-141` 索引、`MINING-142` 覆盖率、`MINING-143` 数值、
 `MINING-144` 代码限制、`MINING-145` 资源或超时。它们记录在脱敏研究反馈和
 `logs/research/mining_sandbox/` 业务日志中，不直接改变现有 Web 错误映射。
+`MINING-146` 表示当前运行的 `knowledge.json`、来源引用、任务哈希或知识版本非法。
 
 ## 修改注意
 

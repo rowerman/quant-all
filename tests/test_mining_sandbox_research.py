@@ -22,6 +22,7 @@ from mining_sandbox.artifacts import (
 )
 from mining_sandbox.errors import SandboxArtifactError
 from mining_sandbox.feedback import SandboxFailureCategory
+from mining_sandbox.knowledge import load_sandbox_knowledge
 from mining_sandbox.policy import load_sandbox_policy
 from mining_sandbox.qlib_snapshot import QlibSnapshotManifest, build_qlib_snapshot
 from mining_sandbox.research import SandboxResearchRequest, SandboxResearchRunner
@@ -271,6 +272,10 @@ def test_research_loop_archives_all_attempts_and_reuses_sealed_run(
     artifact_dir = policy.workspace_root_path / request.sandbox_run_id
     assert verify_artifact_tree(artifact_dir).manifest_hash == manifest.manifest_hash
     assert (artifact_dir / "iterations/001/proposal.py").stat().st_mode & 0o222 == 0
+    assert "knowledge.json" in manifest.files
+    knowledge = load_sandbox_knowledge(artifact_dir)
+    assert len(knowledge.successes(request.task_hash)) == 2
+    assert knowledge.repair_summaries(request.task_hash) == ()
 
     second, second_reused = runner.run(
         request=request,
@@ -281,6 +286,71 @@ def test_research_loop_archives_all_attempts_and_reuses_sealed_run(
     assert second.manifest_hash == manifest.manifest_hash
 
 
+def test_next_iteration_can_read_knowledge_before_run_is_sealed(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
+    policy = replace(
+        load_sandbox_policy(),
+        enabled=True,
+        snapshot_root="snapshots",
+        workspace_root="work",
+        review_root="review",
+    )
+    snapshot_dir = tmp_path / "snapshots" / "dev"
+    snapshot = _prepare_snapshot(snapshot_dir)
+    request = _request(snapshot)
+    artifact_dir = policy.workspace_root_path / request.sandbox_run_id
+
+    class KnowledgeCheckingWorker(MockSandboxCodeWorkerClient):
+        def __init__(self) -> None:
+            super().__init__(
+                (
+                    WorkerCodeProposalResponse(
+                        proposal_id="proposal_incremental_1",
+                        code="print('first')",
+                        rationale="第一轮",
+                        model="deepseek/deepseek-chat",
+                    ),
+                    WorkerCodeProposalResponse(
+                        proposal_id="proposal_incremental_2",
+                        code="print('second')",
+                        rationale="读取第一轮知识",
+                        model="deepseek/deepseek-chat",
+                    ),
+                )
+            )
+            self.knowledge_before_second: list[object] = []
+
+        def propose(self, proposal_request, *, should_cancel=None):
+            if self.requests:
+                self.knowledge_before_second.append(
+                    load_sandbox_knowledge(artifact_dir)
+                )
+            return super().propose(
+                proposal_request,
+                should_cancel=should_cancel,
+            )
+
+    worker = KnowledgeCheckingWorker()
+    manifest, reused = SandboxResearchRunner(
+        policy=policy,
+        worker=worker,
+        docker_runner=FakeDockerRunner(),
+    ).run(
+        request=request,
+        snapshot=snapshot,
+        snapshot_dir=snapshot_dir,
+    )
+
+    assert reused is False
+    assert manifest.status == "completed"
+    assert len(worker.knowledge_before_second) == 1
+    knowledge = worker.knowledge_before_second[0]
+    assert len(knowledge.successes(request.task_hash)) == 1
+
+
 def test_failed_attempt_is_preserved_and_fed_to_next_round(
     tmp_path: Path,
     monkeypatch,
@@ -289,9 +359,10 @@ def test_failed_attempt_is_preserved_and_fed_to_next_round(
     runner, _ = _runner(tmp_path, FakeDockerRunner(passed=False))
     snapshot_dir = tmp_path / "snapshots" / "dev"
     snapshot = _prepare_snapshot(snapshot_dir)
+    request = _request(snapshot)
 
     manifest, _ = runner.run(
-        request=_request(snapshot),
+        request=request,
         snapshot=snapshot,
         snapshot_dir=snapshot_dir,
     )
@@ -304,6 +375,10 @@ def test_failed_attempt_is_preserved_and_fed_to_next_round(
     assert manifest.attempts[0]["feedback"]["category"] == "execution"
     assert manifest.attempts[0]["feedback"]["repair_hint"]
     assert runner.worker.requests[1].previous_attempt["status"] == "failed"
+    knowledge = load_sandbox_knowledge(
+        tmp_path / "work" / request.sandbox_run_id
+    )
+    assert len(knowledge.failures(request.task_hash)) == 2
 
 
 @pytest.mark.parametrize(

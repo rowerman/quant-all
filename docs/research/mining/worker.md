@@ -64,6 +64,10 @@ Worker 随后必须给出最终 `refine/branch/stop/promote` 决策。工具失�
 自定义的 CoSTEER 兼容循环，不是直接运行上游 `FactorCoSTEER`，代码产物不能直接进入
 候选、审批或发布。
 
+当前 `mining_sandbox.knowledge` 会把同一运行内的失败、成功和修复摘要写入运行产物，
+但尚未加入 V4 请求提示或协议。下一项 P1-04 才负责把经过校验的检索结果注入下一轮
+代码提案，并继续限制预算、取消、恢复和产物边界。
+
 ## 启动
 
 主服务首次需要 Token 时会在 `data/mining_worker/token` 生成 384 位随机值并设置

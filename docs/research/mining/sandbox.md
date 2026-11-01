@@ -112,12 +112,32 @@ Prompt 或研究假设，并遮蔽 API Key、Bearer Token、已知密钥和宿�
 `stderr.log` 仍属于受访问控制的沙箱研究产物，不是业务事件日志；反馈对象本身不复制这些
 文件内容。
 
+## 运行内知识库
+
+`mining_sandbox.knowledge` 只读取当前 `sandbox_run_id` 的尝试和产物，生成
+`knowledge.json`。知识条目分为三类：
+
+- `failure`：按轮次记录错误码、分类、脱敏摘要、修复提示、代码哈希和来源产物。
+- `success`：记录成功代码、指标、评估哈希及代码/因子来源。
+- `repair`：失败后首次成功时关联失败轮次与成功轮次，给出最近错误和成功代码哈希。
+
+索引绑定 `sandbox_run_id`、完整 `request_hash` 和不含运行 ID 的 `task_hash`。只有
+`task_hash` 相同的研究任务可以检索当前运行的知识，不读取全局数据库或其他运行。
+条目、来源和索引分别保存版本、稳定哈希和文件 SHA-256；来源路径必须是当前运行内的
+相对路径。知识文件只保存脱敏摘要和来源引用，不复制原始代码或完整异常。
+
+研究循环每完成一个尝试就原子刷新 `knowledge.json`，因此下一轮可以在运行封存前读取
+已完成历史。恢复时从 `run-state.json` 重建索引，最终知识文件进入 `manifest.json`
+并随产物目录封存。旧运行没有知识文件时，可用原研究请求只读派生，不会修改已封存
+产物。P1-03 只建立运行内知识；把知识注入 Worker v4 请求属于 P1-04。
+
 ## 产物与人工提升
 
 每次研究把所有代码提案、运行状态、stdout/stderr、因子明细、评估结果、指标和错误写入
-`data/mining_sandbox/work/<sandbox_run_id>/`。`manifest.json` 记录全部尝试、代码哈希、
-镜像 ID、Python/Qlib 版本、依赖锁哈希、模型和提示版本，以及每个产物的 SHA-256。完成后
-目录封存为只读；`verify_artifact_tree()` 可检测文件缺失、大小变化和哈希篡改。
+`data/mining_sandbox/work/<sandbox_run_id>/`，并写入 `knowledge.json`。`manifest.json`
+记录全部尝试、代码哈希、镜像 ID、Python/Qlib 版本、依赖锁哈希、模型和提示版本，以及
+每个产物的 SHA-256。完成后目录封存为只读；`verify_artifact_tree()` 可检测文件缺失、
+大小变化和哈希篡改。
 
 `record_manual_promotion()` 只记录审核人、原因、来源沙箱运行、产物清单哈希和目标
 DSL/算子引用，并明确标记 `formal_candidate_created=false`。它不调用候选存储、审批或
@@ -141,3 +161,4 @@ DSL/算子引用，并明确标记 `formal_candidate_created=false`。它不调�
 | `MINING-143` | 指标不是有限数值或 RankIC 越界 |
 | `MINING-144` | 代码违反沙箱研究限制 |
 | `MINING-145` | 沙箱资源限制或执行超时 |
+| `MINING-146` | 运行内知识索引、来源或任务绑定非法 |

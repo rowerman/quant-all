@@ -690,7 +690,8 @@ V1 和 V2 共用一个活动发布批次约束。
 ### 10.1 错误码
 
 通用稳定错误码定义在 [errors.py](../../research/mining/errors.py)，沙箱研究反馈码定义在
-[feedback.py](../../research/mining_sandbox/feedback.py)，HTTP 映射由监测站统一转换。
+[feedback.py](../../research/mining_sandbox/feedback.py)，运行内知识错误定义在
+[knowledge.py](../../research/mining_sandbox/knowledge.py)，HTTP 映射由监测站统一转换。
 
 | 错误码 | HTTP | 含义 |
 |---|---:|---|
@@ -740,6 +741,7 @@ V1 和 V2 共用一个活动发布批次约束。
 | `MINING-143` | 内部 | 指标不是有限数值或 RankIC 越界 |
 | `MINING-144` | 内部 | 代码违反沙箱研究限制 |
 | `MINING-145` | 内部 | 沙箱资源限制或执行超时 |
+| `MINING-146` | 内部 | 运行内知识索引、来源或任务绑定非法 |
 
 ### 10.2 日志
 
@@ -835,7 +837,7 @@ PY
 | V2 契约、轨迹、恢复和尝试台账 | [test_mining_search_contracts.py](../../tests/test_mining_search_contracts.py)、[test_mining_v2_trace.py](../../tests/test_mining_v2_trace.py)、[test_mining_v2_trials.py](../../tests/test_mining_v2_trials.py) |
 | V2 选择诊断、稳定性和统计 | [test_mining_selection_diagnostics.py](../../tests/test_mining_selection_diagnostics.py)、[test_mining_search_stability.py](../../tests/test_mining_search_stability.py)、[test_mining_statistical_diagnostics.py](../../tests/test_mining_statistical_diagnostics.py) |
 | V2 受控分析工具 | [test_mining_analysis_tools.py](../../tests/test_mining_analysis_tools.py) |
-| M5 沙箱和代码研究 | [test_mining_sandbox.py](../../tests/test_mining_sandbox.py)、[test_mining_sandbox_research.py](../../tests/test_mining_sandbox_research.py)、[test_mining_sandbox_feedback.py](../../tests/test_mining_sandbox_feedback.py)、[test_mining_sandbox_evaluator.py](../../tests/test_mining_sandbox_evaluator.py) |
+| M5 沙箱和代码研究 | [test_mining_sandbox.py](../../tests/test_mining_sandbox.py)、[test_mining_sandbox_research.py](../../tests/test_mining_sandbox_research.py)、[test_mining_sandbox_feedback.py](../../tests/test_mining_sandbox_feedback.py)、[test_mining_sandbox_evaluator.py](../../tests/test_mining_sandbox_evaluator.py)、[test_mining_sandbox_knowledge.py](../../tests/test_mining_sandbox_knowledge.py) |
 
 2026-11-01 的文档状态以当前代码和 V135 审计为准：
 
