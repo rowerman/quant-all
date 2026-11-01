@@ -108,7 +108,11 @@ curl -N 'http://127.0.0.1:8800/api/compare/stream?factors=MOM_20,MOM_60&mode=ic'
 `GET /api/mining/options` 会增加 `search_v2`，列出四段窗口、搜索预算、控制策略和
 分析工具目录。V2 的创建、列表、详情、事件、SSE、取消和恢复复用上述运行接口。
 
-V2 当前没有独立的候选审批入口：`GET .../candidates/{candidate_id}` 和
-`POST .../decision` 会拒绝 V2 运行，`POST .../publication-batches` 也尚未适配。
-候选审批、证据哈希和最终状态已由 `MiningV2Store` 提供，但上述 Web 入口要到 P0-04
-才接入。因此不应把 `review_ready` 解释为可发布状态。
+V2 运行复用候选详情、审批和发布批次接口。`GET .../candidates/{candidate_id}` 返回
+五阶段证据、评分卡、审批资格、阻塞原因和最近批次；`POST .../decision` 使用与 V1
+相同的决定、审核人、备注和两个证据哈希字段；`POST .../publication-batches` 仍要求
+提交本运行全部 `approved/build_failed` 候选和 V2 顶层 `context_hash`。
+
+`review_ready` 只表示候选已具备人工审核条件，不表示已经批准或发布。批准后候选进入
+`approved/rejected`；整批发布成功后进入 `published`，失败进入 `build_failed`，
+可由页面重试。

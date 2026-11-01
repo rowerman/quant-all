@@ -127,6 +127,11 @@ export function renderSearchRun(app, detail, mutateRun) {
       评分阶段: item.decision_stage || '证据不足',
       缺失项: item.missing_fields.length ? item.missing_fields.join(', ') : '—',
     })));
+    app.querySelectorAll('#search-candidates tbody tr').forEach((row, index) => {
+      const item = detail.candidates[index];
+      const cell = row.querySelector('td');
+      cell.innerHTML = `<a href="#/mining/${encodeURIComponent(run.run_id)}/candidate/${encodeURIComponent(item.candidate_id)}">${esc(item.name)}</a><div class="mini muted">${esc(item.candidate_id)}</div>`;
+    });
     table(app.querySelector('#search-overfit-evidence'), detail.candidates.map(item => {
       const evidence = candidateEvidence(item);
       return {

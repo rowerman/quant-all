@@ -251,9 +251,9 @@ V2 使用独立的 `MiningSearchOrchestrator`：
 | `cancel(run_id)` | V2 运行 ID | 在 turn 边界取消并尽力取消 Worker 作业 |
 | `progress(run_id)` | V2 运行 ID | 返回当前 turn、分支、动作、尝试分类和预算 |
 
-V2 当前没有 Web 层的 `approve()` 或正式 `publish()`。`MiningV2Store` 已提供
-`record_search_approval()`、审批资格和证据哈希读取；审批 API、页面和发布服务适配仍属于
-后续 P0，记录在[根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
+V2 Web 层复用现有候选详情、审批和发布批次接口。`MiningV2Store` 负责审批资格、证据
+哈希和最终决定，`MiningPublicationService` 负责整批构建与原子发布；页面提供批准、
+拒绝、失败重试和批次状态轮询。
 
 `MiningProgress` 包含：
 
@@ -517,8 +517,8 @@ queued
 
 V2 在 `searching` 内按 turn 完成“假设或候选、开发期证据、确定性决策”；随后只对
 选择期执行相关性和稳定性诊断、Pareto 入围；最终研究期只评估入围候选；模块测试段
-最多领取一次。V2 运行目前也在 `review_ready` 结束。候选可通过存储层最终审批进入
-`approved` 或 `rejected`，但尚不能进入正式 `published`。
+最多领取一次。V2 运行进入 `review_ready` 后由人工审批进入 `approved` 或 `rejected`；
+已批准候选可按整批约束进入 `building`，最终成为 `published` 或可重试的 `build_failed`。
 
 ### 6.3 V1 多轮生成
 
@@ -888,7 +888,7 @@ orchestrator.close()
 
 V135 对 M1～M5 的分批定向测试分别为 `102`、`124`、`85`、`83`、`36 passed`；
 V134 完成后的全量测试记录为 `1483 passed`。这些结果证明当前代码和证据链通过审计，
-不代表 V2 已具备审批和发布能力。
+不代表 V2 发布因子已经完成模型特征和回测下游联合验收。
 
 常用定向命令：
 
@@ -930,8 +930,8 @@ V134 完成后的全量测试记录为 `1483 passed`。这些结果证明当前�
   取消处理，需要新运行或后续实现新的重试身份。
 - 当前没有隐藏思维链、原始 Prompt 或原始模型响应的本地留存，排障主要依赖状态和
   脱敏错误码。
-- V2 当前运行停在 `review_ready`；候选审批已在存储层实现，但还没有审批 API、页面、
-  正式发布或 V1 发布服务适配。
+- V2 已具备 Web 审批和正式发布入口，但发布因子的读取、评估、模型特征和回测联合验收
+  仍属于 P0-05。
 - M5 是项目自定义的有限代码研究循环，不是直接运行上游 `FactorCoSTEER`；沙箱指标
   不是正式质量结论，产物只能人工转写。
 

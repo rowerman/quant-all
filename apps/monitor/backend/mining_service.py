@@ -318,7 +318,10 @@ class MiningWebService:
         """返回候选定义、四阶段证据和当前审批资格。"""
 
         if self._is_search_run(run_id):
-            raise MiningContractError("V2 实验候选暂不提供审批页面")
+            return self._search_service().candidate_detail(
+                run_id,
+                candidate_id,
+            )
         run = self.store.get_run(run_id)
         candidate = self.store.get_candidate(run_id, candidate_id)
         context = context_from_run(run)
@@ -365,6 +368,11 @@ class MiningWebService:
     ) -> dict[str, Any]:
         """整批构建并发布当前运行的全部已批准候选。"""
 
+        if self._is_search_run(run_id):
+            return self._search_service().start_publication_batch(
+                run_id,
+                payload,
+            )
         body = self._body(payload, {"candidate_ids", "expected_context_hash"})
         candidate_ids = body.get("candidate_ids")
         expected_context_hash = body.get("expected_context_hash")
@@ -378,11 +386,15 @@ class MiningWebService:
     def publication_batch(self, run_id: str, batch_id: str) -> dict[str, Any]:
         """读取发布批次进度。"""
 
+        if self._is_search_run(run_id):
+            return self._search_service().publication_batch(run_id, batch_id)
         return self.publication_service.get_batch(run_id, batch_id)
 
     def publication_batches(self, run_id: str) -> list[dict[str, Any]]:
         """列出运行的全部发布批次。"""
 
+        if self._is_search_run(run_id):
+            return self._search_service().publication_batches(run_id)
         self.store.get_run(run_id)
         return self.publication_service.list_batches(run_id)
 
@@ -422,6 +434,12 @@ class MiningWebService:
     ) -> dict[str, Any]:
         """记录人工批准或拒绝；不触发正式发布。"""
 
+        if self._is_search_run(run_id):
+            return self._search_service().decide(
+                run_id,
+                candidate_id,
+                payload,
+            )
         body = self._body(payload, _DECISION_FIELDS)
         run = self.store.get_run(run_id)
         context = context_from_run(run)
@@ -481,7 +499,9 @@ class MiningWebService:
             self.search_service = MiningSearchWebService(
                 db_file=self.db_file,
                 factor_dir=self.factor_dir,
+                catalog_file=self.catalog_file,
                 manifest_file=self.manifest_file,
+                snapshot_check=self._snapshot_check,
             )
             if self._initialized:
                 self.search_service.initialize()

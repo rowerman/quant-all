@@ -348,7 +348,7 @@ async function candidatePage(app, runId, candidateId, current) {
         `/api/mining/runs/${encodeURIComponent(runId)}/publication-batches`,
         {
           candidate_ids: candidateIds,
-          expected_context_hash: detail.run.context.context_hash,
+          expected_context_hash: detail.run.context_hash || detail.run.context.context_hash,
         },
       );
       if (current()) await candidatePage(app, runId, candidateId, current);

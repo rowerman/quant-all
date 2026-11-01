@@ -37,4 +37,6 @@
 完整评估、模块测试段和审批表；批准按钮必须同时呈现候选哈希与关键质量结论。
 `tools/monitor/mining_check.py` 使用临时夹具检查桌面、390px 移动端、批准、拒绝和失败
 候选禁用状态，并在两个候选批准后完成整批发布、状态轮询和发布截图，不需要 Worker Key。
-S8 截图输出到 `AiRecord/evidence/mining_s8/`。
+S8 截图输出到 `AiRecord/evidence/mining_s8/`。`tools/monitor/mining_search_check.py`
+使用独立 V2 夹具验证五阶段证据、批准、拒绝、首次发布失败、重试发布和移动端，截图
+输出到 `AiRecord/evidence/mining_v2_web/`。

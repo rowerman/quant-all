@@ -5,14 +5,22 @@ from __future__ import annotations
 from dataclasses import replace
 import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
+from backend.mining_search_review import MiningSearchReviewAdapter
 from calculate.correlation import available_factors
-from common.paths import MINING_DB_FILE, MINING_DATA_DIR, DB_FILE, FACTOR_DIR
+from common.paths import (
+    DB_FILE,
+    FACTOR_DB_FILE,
+    FACTOR_DIR,
+    MINING_DB_FILE,
+    MINING_DATA_DIR,
+)
 from mining.analysis_tool_gateway import AnalysisToolGateway
 from mining.catalog import load_catalog
 from mining.errors import MiningContractError
 from mining.logging_conf import format_event, get_mining_logger
+from mining.publication_service import MiningPublicationService
 from mining.search_budget import SearchBudget
 from mining.search_context import FrozenSearchContext, load_search_config
 from mining.search_cards import HypothesisCard
@@ -21,7 +29,10 @@ from mining.search_run import SearchRunRequest
 from mining.search_research_quality import evaluate_research_quality
 from mining.search_scorecard import build_run_scorecards
 from mining.search_statistical_diagnostics import MULTIPLE_TESTING_STAGE
-from mining.snapshot import DEFAULT_DATA_MANIFEST, data_snapshot_fingerprint
+from mining.snapshot import (
+    DEFAULT_DATA_MANIFEST,
+    data_snapshot_fingerprint,
+)
 from mining.storage_v2 import MiningV2Store
 from mining_worker.worker_config import load_worker_config
 
@@ -43,9 +54,12 @@ class MiningSearchWebService:
         *,
         store: MiningV2Store | None = None,
         orchestrator: MiningSearchOrchestrator | None = None,
+        publication_service: MiningPublicationService | None = None,
         db_file: Path | str = DB_FILE,
         factor_dir: Path | str = FACTOR_DIR,
+        catalog_file: Path | str = FACTOR_DB_FILE,
         manifest_file: Path | str = DEFAULT_DATA_MANIFEST,
+        snapshot_check: Callable[..., None] | None = None,
     ) -> None:
         self.store = store or MiningV2Store(MINING_DB_FILE, MINING_DATA_DIR)
         tools_enabled = os.environ.get(
@@ -65,7 +79,18 @@ class MiningSearchWebService:
         )
         self.db_file = Path(db_file)
         self.factor_dir = Path(factor_dir)
+        self.catalog_file = Path(catalog_file)
         self.manifest_file = Path(manifest_file)
+        self.review = MiningSearchReviewAdapter(
+            store=self.store,
+            publication_service=publication_service,
+            db_file=self.db_file,
+            factor_dir=self.factor_dir,
+            catalog_file=self.catalog_file,
+            manifest_file=self.manifest_file,
+            snapshot_check=snapshot_check,
+        )
+        self.publication_service = self.review.publication_service
         self._initialized = False
 
     def initialize(self) -> None:
@@ -74,6 +99,7 @@ class MiningSearchWebService:
         if self._initialized:
             return
         interrupted = self.store.interrupt_active_search_runs()
+        self.publication_service.initialize()
         self._initialized = True
         _LOGGER.info(
             format_event(
@@ -87,6 +113,7 @@ class MiningSearchWebService:
     def close(self) -> None:
         """关闭 V2 后台执行器。"""
 
+        self.publication_service.close()
         self.orchestrator.close()
 
     def options(self) -> dict[str, Any]:
@@ -430,6 +457,52 @@ class MiningSearchWebService:
         self.orchestrator.resume(run_id, background=True)
         return self.run_detail(run_id)
 
+    def candidate_detail(
+        self,
+        run_id: str,
+        candidate_id: str,
+    ) -> dict[str, Any]:
+        """返回 V2 候选、分阶段证据、审批资格和发布状态。"""
+
+        run = self.store.get_run(run_id)
+        return {
+            "run": self._run_view(run),
+            **self.review.candidate_detail(run, candidate_id),
+        }
+
+    def decide(
+        self,
+        run_id: str,
+        candidate_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """记录 V2 候选最终审批，不触发正式发布。"""
+
+        return self.review.decide(run_id, candidate_id, payload)
+
+    def start_publication_batch(
+        self,
+        run_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """整批构建并发布 V2 运行内全部可发布候选。"""
+
+        return self.review.start_publication_batch(run_id, payload)
+
+    def publication_batch(
+        self,
+        run_id: str,
+        batch_id: str,
+    ) -> dict[str, Any]:
+        """读取 V2 发布批次进度。"""
+
+        return self.review.publication_batch(run_id, batch_id)
+
+    def publication_batches(self, run_id: str) -> list[dict[str, Any]]:
+        """列出 V2 运行的全部发布批次。"""
+
+        return self.review.publication_batches(run_id)
+
     @staticmethod
     def _run_view(run: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -443,6 +516,8 @@ class MiningSearchWebService:
             "context": run["context"],
             "context_hash": run["context_hash"],
         }
+
+
 def _feedback_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
     metrics = packet.get("metrics") or {}
     return {

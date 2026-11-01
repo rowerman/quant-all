@@ -3,6 +3,8 @@ import {formatTime, statusLabel} from './mining_api.js';
 
 const stageLabels = {
   technical: '技术门禁',
+  development: '开发期评估',
+  selection: '选择期评估',
   quick: '研究期快速筛选',
   full: '完整评估',
   holdout: '模块测试段',
@@ -73,6 +75,8 @@ function decisionForm(detail) {
     </section>`;
   }
   const quick = latestReport(detail.evaluations, 'quick');
+  const development = latestReport(detail.evaluations, 'development');
+  const primary = development || quick;
   const holdout = latestReport(detail.evaluations, 'holdout');
   return `<section class="card decision-card" id="decision-card">
     <h2>人工审批</h2>
@@ -83,8 +87,8 @@ function decisionForm(detail) {
     </div>
     <div class="quality-summary">
       <span>技术门禁：${detail.technical_gate?.passed ? '通过' : '未通过'}</span>
-      <span>研究期 RankIC：${esc(fmt(quick?.metrics?.rank_ic_mean))}</span>
-      <span>RankICIR：${esc(fmt(quick?.metrics?.rank_ic_ir))}</span>
+      <span>${development ? '开发期' : '研究期'} RankIC：${esc(fmt(primary?.metrics?.rank_ic_mean))}</span>
+      <span>RankICIR：${esc(fmt(primary?.metrics?.rank_ic_ir))}</span>
       <span>测试段：${esc(statusLabel(holdout?.status))}</span>
     </div>
     <form id="decision-form" class="decision-form">
@@ -137,6 +141,30 @@ function publicationSection(detail) {
   </section>`;
 }
 
+function scorecardSection(detail) {
+  if (!detail.scorecard) return '';
+  const card = detail.scorecard;
+  const evidence = Object.entries(card.evidence_status_by_stage || {})
+    .map(([stage, status]) => `${stageLabels[stage] || stage}：${statusLabel(status)}`)
+    .join('；');
+  const decisionStage = card.decision_stage
+    ? stageLabels[card.decision_stage] || statusLabel(card.decision_stage)
+    : '证据不足';
+  return `<section class="card">
+    <h2>V2 评分卡</h2>
+    <div class="quality-summary">
+      <span>决策阶段：${esc(decisionStage)}</span>
+      <span>技术门禁：${card.gate_passed === true ? '通过' : card.gate_passed === false ? '未通过' : '缺失'}</span>
+      <span>缺失指标：${esc(card.missing_fields?.join('、') || '无')}</span>
+    </div>
+    <p class="mini muted">${esc(evidence || '尚无分阶段状态')}</p>
+    <div class="hash-grid">
+      <div><span>评分卡哈希</span><code>${esc(card.scorecard_hash)}</code></div>
+      <div><span>候选尝试</span><span>提出 ${esc(card.candidate_trial_counts?.proposed || 0)} · 完整评估 ${esc(card.candidate_trial_counts?.full_evaluated || 0)}</span></div>
+    </div>
+  </section>`;
+}
+
 export function renderCandidate(
   app,
   detail,
@@ -147,19 +175,37 @@ export function renderCandidate(
 ) {
   const candidate = detail.candidate;
   const definition = candidate.definition;
+  const isV2 = detail.run.engine === 'v2';
   const technical = latestReport(detail.evaluations, 'technical');
   const quick = latestReport(detail.evaluations, 'quick');
+  const development = latestReport(detail.evaluations, 'development');
+  const selection = latestReport(detail.evaluations, 'selection');
+  const primary = development || quick;
   const full = latestReport(detail.evaluations, 'full');
   const holdout = latestReport(detail.evaluations, 'holdout');
-  const stageRows = [
-    reportRow('技术门禁', technical),
-    reportRow('快速筛选', quick),
-    reportRow('完整评估', full),
-    reportRow('模块测试段', holdout),
-  ];
+  const latestBatchStatus = detail.publication?.latest_batch?.status;
+  const displayStatus = candidate.status === 'building' && latestBatchStatus === 'published'
+    ? 'published'
+    : candidate.status === 'building' && latestBatchStatus === 'failed'
+      ? 'build_failed'
+      : candidate.status;
+  const stageRows = isV2
+    ? [
+        reportRow('技术门禁', technical),
+        reportRow('开发期评估', development),
+        reportRow('选择期评估', selection),
+        reportRow('完整评估', full),
+        reportRow('模块测试段', holdout),
+      ]
+    : [
+        reportRow('技术门禁', technical),
+        reportRow('快速筛选', quick),
+        reportRow('完整评估', full),
+        reportRow('模块测试段', holdout),
+      ];
   app.innerHTML = `<div class="page-heading">
     <div><h1>${esc(candidate.name)}</h1>
-      <p class="intro muted">${esc(definition.description)} · ${esc(definition.mechanism)} · ${candidate.status === 'review_ready' ? '待审核' : esc(statusLabel(candidate.status))}</p>
+      <p class="intro muted">${esc(definition.description)} · ${esc(definition.mechanism)} · ${displayStatus === 'review_ready' ? '待审核' : esc(statusLabel(displayStatus))}</p>
     </div>
     <a class="button-link secondary-link" href="#/mining/${encodeURIComponent(candidate.run_id)}">返回运行</a>
   </div>
@@ -185,9 +231,13 @@ export function renderCandidate(
     <div id="technical-gate"></div>
   </section>
   <section class="card">
-    <h2>研究期快速筛选</h2>
+    <h2>${isV2 ? '开发期证据' : '研究期快速筛选'}</h2>
     <div id="quick-evaluation"></div>
   </section>
+  ${isV2 ? `<section class="card">
+    <h2>选择期证据</h2>
+    <div id="selection-evaluation"></div>
+  </section>` : ''}
   <section class="card">
     <h2>完整评估图表</h2>
     <div id="full-evaluation" class="candidate-stages"></div>
@@ -200,6 +250,7 @@ export function renderCandidate(
       <div><span>本批候选数</span><span>${detail.review.holdout_candidates.length}</span></div>
     </div>
   </section>
+  ${scorecardSection(detail)}
   ${publicationSection(detail)}
   ${decisionForm(detail)}
   <p class="note">数据快照：${detail.review.snapshot_current ? '当前有效' : esc(detail.review.snapshot_error?.message || '已失效')} · 内容哈希 ${esc(detail.review.candidate_content_hash)}</p>`;
@@ -213,15 +264,34 @@ export function renderCandidate(
     gateNode.innerHTML = '<p class="muted">尚无技术门禁记录。</p>';
   }
   const quickNode = app.querySelector('#quick-evaluation');
-  if (quick) {
-    table(quickNode, [quick.metrics || {}]);
-    if (quick.warnings?.length) {
-      quickNode.insertAdjacentHTML('beforeend', `<p class="warning-text">${quick.warnings.map(esc).join('；')}</p>`);
+  if (primary) {
+    if (isV2) generic(quickNode, primary.metrics || {});
+    else table(quickNode, [primary.metrics || {}]);
+    if (primary.warnings?.length) {
+      quickNode.insertAdjacentHTML('beforeend', `<p class="warning-text">${primary.warnings.map(esc).join('；')}</p>`);
     }
   } else {
-    quickNode.innerHTML = '<p class="muted">候选未进入快速筛选。</p>';
+    quickNode.innerHTML = `<p class="muted">${isV2 ? '尚无开发期评估。' : '候选未进入快速筛选。'}</p>`;
   }
-  renderStageSections(app.querySelector('#full-evaluation'), full?.metrics?.events || {});
+  const selectionNode = app.querySelector('#selection-evaluation');
+  if (selectionNode) {
+    if (selection) {
+      generic(selectionNode, selection.metrics || {});
+      if (selection.warnings?.length) {
+        selectionNode.insertAdjacentHTML('beforeend', `<p class="warning-text">${selection.warnings.map(esc).join('；')}</p>`);
+      }
+    } else {
+      selectionNode.innerHTML = '<p class="muted">尚无选择期评估。</p>';
+    }
+  }
+  const fullNode = app.querySelector('#full-evaluation');
+  if (full?.metrics?.events) {
+    renderStageSections(fullNode, full.metrics.events);
+  } else if (full) {
+    generic(fullNode, full.metrics || {});
+  } else {
+    fullNode.innerHTML = '<p class="muted">尚未进入完整评估。</p>';
+  }
   const holdoutNode = app.querySelector('#holdout-evaluation');
   if (holdout) {
     table(holdoutNode, [{
@@ -270,7 +340,10 @@ export function renderCandidate(
   }
 
   const latest = detail.publication?.latest_batch;
-  if (latest && ['staging', 'validating'].includes(latest.status)) {
+  const activePublication = latest && ['staging', 'validating'].includes(latest.status);
+  const completedButCandidatePending = latest && candidate.status === 'building'
+    && ['published', 'failed', 'rolled_back'].includes(latest.status);
+  if (activePublication || completedButCandidatePending) {
     setTimeout(() => onRefresh?.(), 1000);
   }
   const publish = app.querySelector('#publish-batch');

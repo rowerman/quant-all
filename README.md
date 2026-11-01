@@ -368,9 +368,9 @@ bash tools/monitor/serve.sh
 打开 http://127.0.0.1:8800/#/mining，提交研究假设并等待候选进入人工审核。
 
 默认使用 V1 生产编排。需要启用在开发期、选择期、最终研究期和模块测试段之间隔离的
-证据驱动搜索时，可设置 `MINING_SEARCH_V2_ENABLED=true`。V2 当前停在
-`review_ready`，尚不能从 V2 页面审批或正式发布；M5 代码研究沙箱默认关闭，只产生
-人工审核材料。
+证据驱动搜索时，可设置 `MINING_SEARCH_V2_ENABLED=true`。V2 在 `review_ready` 后
+可从页面审批、整批正式发布和重试失败批次；M5 代码研究沙箱默认关闭，只产生人工
+审核材料。
 
 运行流程：
 
