@@ -154,7 +154,7 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> mining_worker /v4/jobs        RD-Agent 模型生成未信任代码提案
   -> DockerSandboxRunner           断网、非 root、只读根和资源受限执行
 
-资料驱动（P2-02 解析、P2-03 字段抽取、P2-04 筛选转换）
+资料驱动（P2-02 解析、P2-03 字段抽取、P2-04 筛选转换、P2-05 运行闭环）
   -> mining.research_materials     资料清单、PDF 页正文、分类、来源和解析失败
   -> mining.research_material_extractor
                                      页窗口、字段草稿、原文引用和证据状态
@@ -162,6 +162,10 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> mining.research_factor_screening
                                      六字段筛查、变量映射和受控 DSL 二次校验
   -> mining_worker /v6/jobs        RD-Agent 研报草案到 DSL 的批量映射建议
+  -> mining.research_run_pipeline  预算内稳定准入和来源哈希绑定
+  -> mining.search_orchestrator_research
+                                     V2 种子、开发评估、选择、最终研究和测试段
+  -> mining_v2.research_*          运行摘要、解析失败和候选页码证据
 ```
 
 `mining.orchestrator` 组合研究与测试阶段。S8 由独立
@@ -366,6 +370,8 @@ progress = orchestrator.progress(run["run_id"])
 | `MINING-156` | 研报筛选、转换请求或结果不符合契约 | 400 |
 | `MINING-157` | 研报变量映射、DSL 或来源证据无法通过校验 | 422 |
 | `MINING-158` | 研报转换批次超过固定资源上限 | 422 |
+| `MINING-159` | 资料运行输入、来源或摘要不符合契约 | 400 |
+| `MINING-160` | 资料运行没有产生可进入 V2 验证的候选 | 422 |
 
 候选评估执行错误使用 `MINING-106`。门禁不通过是正常业务结论，通过
 `TechnicalGate.passed=false` 和逐项 `checks` 表达，不伪装成系统异常。

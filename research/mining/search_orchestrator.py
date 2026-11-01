@@ -21,6 +21,7 @@ from mining.search_evaluation_adapter import (
     evaluate_selection,
 )
 from mining.search_orchestrator_pipeline import SearchPipelineMixin
+from mining.search_orchestrator_research import SearchResearchMixin
 from mining.search_portfolio import (
     PortfolioSelectionResult,
     select_portfolio_finalists,
@@ -42,6 +43,7 @@ _LOGGER = get_mining_logger("mining.search.orchestrator")
 
 class MiningSearchOrchestrator(
     SearchTurnMixin,
+    SearchResearchMixin,
     SearchEvidenceMixin,
     SearchPipelineMixin,
 ):
@@ -62,6 +64,10 @@ class MiningSearchOrchestrator(
             select_portfolio_finalists
         ),
         snapshot_check: Callable[..., None] = assert_context_snapshot,
+        research_material_root: Path | str | None = None,
+        research_extractor: Any | None = None,
+        research_converter: Any | None = None,
+        research_preparer: Callable[..., Any] | None = None,
         db_file: Path | str = DB_FILE,
         factor_dir: Path | str = FACTOR_DIR,
         manifest_file: Path | str = DEFAULT_DATA_MANIFEST,
@@ -76,6 +82,14 @@ class MiningSearchOrchestrator(
         self._holdout_evaluator = holdout_evaluator
         self._portfolio_selector = portfolio_selector
         self._snapshot_check = snapshot_check
+        self.research_material_root = (
+            None
+            if research_material_root is None
+            else Path(research_material_root)
+        )
+        self._research_extractor_value = research_extractor
+        self._research_converter_value = research_converter
+        self._research_preparer = research_preparer
         self.db_file = Path(db_file)
         self.factor_dir = Path(factor_dir)
         self.manifest_file = Path(manifest_file)
@@ -92,6 +106,7 @@ class MiningSearchOrchestrator(
         context: FrozenSearchContext,
         *,
         background: bool = True,
+        research_input: Any | None = None,
     ) -> dict[str, Any]:
         """创建 V2 运行并按需后台执行。"""
 
@@ -99,7 +114,13 @@ class MiningSearchOrchestrator(
         health = worker.health()
         if health.get("status") != "ready":
             raise MiningStateError("Worker v2 尚未就绪")
-        run = self.store.create_run(request, context)
+        if research_input is not None and self.research_material_root is None:
+            raise MiningStateError("未配置资料根目录")
+        run = self.store.create_run(
+            request,
+            context,
+            research_input=research_input,
+        )
         if background and run["status"] == "queued":
             self._schedule(run["run_id"])
         return run
@@ -134,6 +155,8 @@ class MiningSearchOrchestrator(
                             stop_reason="用户取消",
                         )
                         return self.store.get_run(run_id)
+                    if self._research_seed_if_needed(run, context):
+                        continue
                     self._search(run, context)
                 elif status == "selecting":
                     self._select(run, context)
@@ -269,4 +292,37 @@ class MiningSearchOrchestrator(
             db_file=self.db_file,
             factor_dir=self.factor_dir,
             manifest_file=self.manifest_file,
+        )
+
+    def _prepare_research_run(self, research_input: Any, context: Any) -> Any:
+        """调用可注入资料流水线，默认使用 Worker v5/v6 客户端。"""
+
+        if self._research_preparer is not None:
+            return self._research_preparer(
+                research_input,
+                material_root=self.research_material_root,
+                context=context,
+                admission_limit=context.budget.max_candidates_per_run,
+            )
+        from mining.research_factor_conversion_client import (
+            HttpResearchFactorConverter,
+        )
+        from mining.research_material_extractor import HttpResearchFactorExtractor
+        from mining.research_run_pipeline import prepare_research_run
+
+        if self._research_extractor_value is None:
+            self._research_extractor_value = (
+                HttpResearchFactorExtractor.from_environment()
+            )
+        if self._research_converter_value is None:
+            self._research_converter_value = (
+                HttpResearchFactorConverter.from_environment()
+            )
+        return prepare_research_run(
+            research_input,
+            material_root=self.research_material_root,
+            context=context,
+            extractor=self._research_extractor_value,
+            converter=self._research_converter_value,
+            admission_limit=context.budget.max_candidates_per_run,
         )

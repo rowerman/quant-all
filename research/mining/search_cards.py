@@ -204,7 +204,12 @@ class ExperimentBatch:
                 self.candidate_ids,
                 "candidate_ids",
                 minimum=0,
-                maximum=4,
+                maximum=(
+                    24
+                    if isinstance(self.parameters, Mapping)
+                    and self.parameters.get("source_kind") == "research_report"
+                    else 4
+                ),
             ),
         )
         object.__setattr__(

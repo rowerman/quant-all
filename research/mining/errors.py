@@ -334,3 +334,17 @@ class ResearchScreeningResourceError(MiningError):
 
     code = "MINING-158"
     status = 422
+
+
+class ResearchRunContractError(MiningContractError):
+    """资料驱动运行输入、来源或摘要不符合契约。"""
+
+    code = "MINING-159"
+    status = 400
+
+
+class ResearchRunFailure(MiningEvaluationError):
+    """资料驱动运行没有产生可进入 V2 验证的候选。"""
+
+    code = "MINING-160"
+    status = 422

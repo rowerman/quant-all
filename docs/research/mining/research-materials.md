@@ -5,11 +5,11 @@
 P2-01 固定资料清单、文件指纹、来源引用、解析失败和脱敏契约；P2-02 实现文本型 PDF
 的单文件与目录解析、金融研报分类和逐文件失败隔离；P2-03 通过 Worker v5 从页正文
 抽取因子名称、经济机制、公式、变量、预期方向和可证伪条件；P2-04 对六字段完整的
-草稿执行研报一致性筛查、变量映射、受控 DSL 转换和语义去重。
+草稿执行研报一致性筛查、变量映射、受控 DSL 转换和语义去重；P2-05 增加服务端资料
+运行入口，把预算内准入候选接入 V2 门禁、测试段、审批、发布和来源展示。
 
-当前不支持扫描件 OCR、Word/HTML 解析、数据库表（`mining.research_material*`）或
-运行入口。P2-04 只返回未落库的 `HypothesisCard`、`CandidateDefinition` 和尝试记录；
-候选物化、审批和发布由后续运行入口接入。
+资料运行只接受固定根目录 `data/source/reports` 下的相对文件或目录。当前仍不支持
+浏览器上传、扫描件 OCR、Word/HTML 或远程 URL。
 
 数据流：
 
@@ -37,6 +37,12 @@ P2-01 固定资料清单、文件指纹、来源引用、解析失败和脱敏�
        -> 受控 DSL、变量映射和方向二次校验
   -> ResearchConversionResult
        -> HypothesisCard、CandidateDefinition、筛选结论和 TrialRecord
+  -> mining.research_run_pipeline
+       -> 预算内稳定准入和来源哈希绑定
+  -> mining.search_orchestrator_research
+       -> V2 种子批次、开发期、选择期、完整评估和一次性测试段
+  -> 人工审批和共享 MiningPublicationService
+       -> 原子正式发布和下游读取
 ```
 
 ## 输入与文件发现
@@ -251,6 +257,41 @@ result = convert_research_factor_drafts(
 | `invalid` | `invalid` | Worker 拒绝或 DSL、字段映射非法 |
 | `duplicate` | `duplicate` | 与已保留候选语义相同 |
 
-P2-04 不写入 V2 台账、数据库、审批或发布；P2-05 负责运行入口、持久化、来源展示和
-端到端接入。Worker 协议为 `mining_worker_research_conversion_v1`，提示版本为
+P2-04 本身只返回未落库结果。Worker 协议为
+`mining_worker_research_conversion_v1`，提示版本为
 `mining_research_dsl_conversion_prompt_v1`，新增错误码 `MINING-156`～`MINING-158`。
+
+## 资料驱动运行入口
+
+`POST /api/mining/research-runs` 接受：
+
+```json
+{
+  "idempotency_key": "web-research-0001",
+  "material_path": "2026-10",
+  "budget": {},
+  "llm_profile": "default"
+}
+```
+
+服务端在创建运行时发现 PDF、计算指纹并冻结资料清单。后台依次解析、调用 Worker v5、
+调用 Worker v6，并把通过候选按 `(document_id, draft_id)` 稳定排序后自动准入到
+`max_candidates_per_run`，默认最多 24 个。超出候选预算的通过项保留为
+`admission_budget_exhausted` 尝试，不静默丢弃。
+
+资料候选使用一个聚合研究假设作为 V2 种子批次，每个候选自己的假设卡、六字段、页码、
+偏移、短引用、变量映射和模型版本保存在 `mining_v2.research_candidate`。
+`mining_v2.research_run` 保存运行级资料清单、解析失败和全部筛选结论。来源哈希同时写入
+候选参数，因此进入候选内容哈希；候选详情、审批和发布加载发现来源篡改时直接拒绝。
+
+资料首轮不调用搜索生成 Worker，直接进入现有开发期评估。之后如需修正或分支仍走原来的
+V2 Worker。选择期、最终研究期和测试段不进入抽取、转换或搜索请求。没有可准入候选时
+运行以 `MINING-160` 失败；资料运行契约错误使用 `MINING-159`。
+
+页面新建入口可选择“手工研究假设”或“资料驱动”。运行页展示资料解析、抽取、筛选和准入
+数量；候选页展示相对资料路径、文档 ID、页码、偏移和短引用，不展示完整 PDF 正文。
+
+使用固定假 Worker 和临时生成的真实 PDF 的端到端测试覆盖
+`tests/test_mining_research_run.py`。浏览器验收脚本为
+`tools/monitor/mining_research_check.py`，截图写入
+`AiRecord/evidence/mining_research_web/`。

@@ -38,7 +38,7 @@ async function listPage(app, current) {
   if (!current()) return;
   app.innerHTML = `<div class="page-heading">
     <div><h1>自动因子挖掘</h1><p class="intro muted">提交研究假设后，系统调用受控 Worker 生成候选，完成技术门禁、快速筛选、完整评估和一次性模块测试段，再由人工审核。</p></div>
-    <a class="button-link" href="#/mining/new">提交研究假设</a>
+    <a class="button-link" href="#/mining/new">新建挖掘运行</a>
   </div>
   <section class="card">
     <h2>运行记录</h2>
@@ -62,6 +62,7 @@ async function newPage(app, current) {
   const v2 = Boolean(opts.search_v2?.enabled);
   const defaults = v2 ? opts.search_v2.defaults : opts.defaults;
   const v2Options = opts.search_v2 || {};
+  const research = opts.search_v2?.research || {};
   const budgetFields = v2
     ? searchBudgetFields(v2Options.defaults, v2Options.limits)
     : `
@@ -80,13 +81,20 @@ async function newPage(app, current) {
     ? `开发期 ${esc(v2Options.windows.development_start)}～${esc(v2Options.windows.development_end)} · 选择期仅供控制器 · 最终研究期和模块测试段不进入 Worker`
     : `研究期 ${esc(opts.windows.research_start)}～${esc(opts.windows.research_end)} · 完整评估 ${esc(opts.windows.full_eval_start)}～${esc(opts.windows.full_eval_end)} · 测试段 ${esc(opts.windows.holdout_start)}～${esc(opts.windows.holdout_end)}`;
   app.innerHTML = `<div class="page-heading">
-    <div><h1>提交研究假设</h1><p class="intro muted">${v2 ? 'V2 实验链路会逐轮依据开发期证据修订假设；选择期和测试段不会反馈给 Worker。' : '假设会与预算、数据快照、字段目录和算子目录一起冻结。Worker 不可用时任务会明确失败，不会回退到 Mock。'}</p></div>
+    <div><h1>新建挖掘运行</h1><p class="intro muted">${v2 ? '可从手工假设或服务端研报资料启动。选择期、最终研究期和测试段不会反馈给 Worker。' : '假设会与预算、数据快照、字段目录和算子目录一起冻结。Worker 不可用时任务会明确失败，不会回退到 Mock。'}</p></div>
     <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
   </div>
   <form id="mining-form">
     <section class="card">
-      <h2>研究假设</h2>
-      <label>研究假设<textarea name="hypothesis" minlength="8" maxlength="4000" rows="7" required placeholder="例如：短期换手率下降可能预示未来五日超额收益。"></textarea></label>
+      <h2>研究输入</h2>
+      ${v2 ? `<label>输入模式<select name="source_mode" id="source-mode"><option value="hypothesis">手工研究假设</option><option value="research">资料驱动</option></select></label>` : ''}
+      <div data-mode-section="hypothesis">
+        <label>研究假设<textarea name="hypothesis" minlength="8" maxlength="4000" rows="7" required placeholder="例如：短期换手率下降可能预示未来五日超额收益。"></textarea></label>
+      </div>
+      ${v2 ? `<div data-mode-section="research" hidden>
+        <label>资料相对路径<input name="material_path" value="." maxlength="1000" placeholder="例如：2026-10 或 report.pdf"><span class="mini muted">只接受 ${esc(research.material_root || 'data/source/reports')} 下的 PDF 文件或目录；默认递归扫描。</span></label>
+        <p class="mini muted">系统先解析文本型 PDF，再由 Worker v5/v6 抽取和转换候选。扫描件 OCR 尚未支持。</p>
+      </div>` : ''}
       <p class="mini muted">固定口径：${esc(opts.fixed.universe)} · ${esc(opts.fixed.label)} · ${esc(opts.fixed.price_channel)}。研究与测试窗口在运行时冻结。</p>
     </section>
     <details class="card">
@@ -101,6 +109,19 @@ async function newPage(app, current) {
   </form>`;
   const form = app.querySelector('#mining-form');
   const status = app.querySelector('#mining-form-status');
+  const sourceMode = form.querySelector('#source-mode');
+  const syncMode = () => {
+    const mode = sourceMode?.value || (v2 ? 'hypothesis' : 'hypothesis');
+    form.querySelectorAll('[data-mode-section]').forEach(section => {
+      section.hidden = section.dataset.modeSection !== mode;
+    });
+    const hypothesis = form.querySelector('[name=hypothesis]');
+    const materialPath = form.querySelector('[name=material_path]');
+    if (hypothesis) hypothesis.required = mode === 'hypothesis';
+    if (materialPath) materialPath.required = mode === 'research';
+  };
+  sourceMode?.addEventListener('change', syncMode);
+  syncMode();
   let idempotencyKey = `web-${crypto.randomUUID()}`;
   form.addEventListener('submit', async event => {
     event.preventDefault();
@@ -124,10 +145,16 @@ async function newPage(app, current) {
     status.className = 'status-box';
     status.textContent = '正在冻结上下文并提交 Worker 任务…';
     try {
-      const body = {
-        hypothesis: data.get('hypothesis'),
-        idempotency_key: idempotencyKey,
-      };
+      const researchMode = sourceMode?.value === 'research';
+      const body = researchMode
+        ? {
+            material_path: data.get('material_path'),
+            idempotency_key: idempotencyKey,
+          }
+        : {
+            hypothesis: data.get('hypothesis'),
+            idempotency_key: idempotencyKey,
+          };
       if (v2) {
         body.budget = {
           ...v2Options.defaults,
@@ -141,7 +168,10 @@ async function newPage(app, current) {
       } else {
         body.constraints = constraints;
       }
-      const detail = await miningJSON('/api/mining/runs', body);
+      const detail = await miningJSON(
+        researchMode ? '/api/mining/research-runs' : '/api/mining/runs',
+        body,
+      );
       location.hash = `#/mining/${encodeURIComponent(detail.run.run_id)}`;
     } catch (error) {
       submit.disabled = false;

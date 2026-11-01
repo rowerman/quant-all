@@ -41,6 +41,28 @@ class V2TrialStoreMixin:
         result["reused"] = reused
         return result
 
+    def record_research_seed_trial(self, trial: TrialRecord) -> dict[str, Any]:
+        """记录资料种子尝试；只免除每轮上限，不绕过每运行预算。"""
+
+        try:
+            with database_state_lock(self.db_path):
+                with self._connection() as conn:
+                    with self._transaction(conn):
+                        _, reused = self._record_trial_conn(
+                            conn,
+                            trial,
+                            enforce_turn_budget=False,
+                        )
+            result = self.get_trial(trial.run_id, trial.trial_id)
+        except (MiningContractError, MiningDuplicateError, MiningNotFoundError):
+            raise
+        except duckdb.Error as error:
+            raise MiningStorageError(
+                f"写入资料种子尝试记录失败：{error}"
+            ) from error
+        result["reused"] = reused
+        return result
+
     def transition_candidate(
         self,
         run_id: str,
@@ -237,6 +259,8 @@ class V2TrialStoreMixin:
         self,
         conn: duckdb.DuckDBPyConnection,
         trial: TrialRecord,
+        *,
+        enforce_turn_budget: bool = True,
     ) -> tuple[dict[str, Any], bool]:
         existing = self._row(
             conn,
@@ -252,7 +276,11 @@ class V2TrialStoreMixin:
                 raise MiningDuplicateError("trial_key 已绑定不同尝试内容")
             return existing, True
         self._validate_trial_references_conn(conn, trial)
-        self._ensure_trial_budget_conn(conn, trial)
+        self._ensure_trial_budget_conn(
+            conn,
+            trial,
+            enforce_turn_budget=enforce_turn_budget,
+        )
         now = utc_now_iso()
         conn.execute(
             "INSERT INTO mining_v2.trial_record VALUES "
@@ -347,6 +375,8 @@ class V2TrialStoreMixin:
         self,
         conn: duckdb.DuckDBPyConnection,
         trial: TrialRecord,
+        *,
+        enforce_turn_budget: bool = True,
     ) -> None:
         budget = self._budget_for_run_conn(conn, trial.run_id)
         if trial.kind == "proposed":
@@ -366,7 +396,7 @@ class V2TrialStoreMixin:
             )
             if total >= budget.max_candidates_per_run:
                 raise MiningStateError("搜索预算已用尽：max_candidates_per_run")
-            if turn_total >= budget.max_candidates_per_turn:
+            if enforce_turn_budget and turn_total >= budget.max_candidates_per_turn:
                 raise MiningStateError("搜索预算已用尽：max_candidates_per_turn")
         if trial.kind == "full_evaluated":
             total = int(

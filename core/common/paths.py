@@ -36,6 +36,7 @@ MINING_ORCHESTRATOR_FILE = CONFIG_DIR / "mining" / "orchestrator.json"
 MINING_SEARCH_CONFIG_FILE = CONFIG_DIR / "mining" / "search.json"
 MINING_SANDBOX_CONFIG_FILE = CONFIG_DIR / "mining" / "sandbox.json"
 MINING_SANDBOX_DATA_DIR = DATA_DIR / "mining_sandbox"
+RESEARCH_MATERIALS_DIR = SOURCE_DIR / "reports"
 
 
 def log_root_for(module_name: str) -> Path:
@@ -77,6 +78,7 @@ def ensure_layout_dirs() -> None:
         MINING_DATA_DIR,
         MINING_CACHE_DIR,
         MINING_SANDBOX_DATA_DIR,
+        RESEARCH_MATERIALS_DIR,
         LOGS_DIR / "core" / "data",
         LOGS_DIR / "core" / "factors",
         LOGS_DIR / "research" / "modeling",

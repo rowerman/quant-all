@@ -46,6 +46,8 @@ export function renderSearchRun(app, detail, mutateRun) {
   const attempts = progress.attempts || {};
   const canCancel = ['queued', 'searching', 'selecting', 'evaluating', 'holding_out'].includes(run.status);
   const canResume = run.status === 'interrupted';
+  const research = detail.research;
+  const researchSummary = research?.summary;
   app.innerHTML = `<div class="page-heading">
     <div><h1>V2 搜索 ${esc(run.run_id)}</h1><p class="intro muted">${esc(run.hypothesis)}</p></div>
     <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
@@ -59,6 +61,17 @@ export function renderSearchRun(app, detail, mutateRun) {
     </div>
     <p class="mini muted">实验链路只读取开发期反馈；选择期、最终研究期和测试段不会进入 Worker。</p>
   </section>
+  ${research ? `<section class="card">
+    <h2>资料来源</h2>
+    ${researchSummary ? `<div class="quality-summary">
+      <span>资料 ${esc(researchSummary.materials.length)} 份</span>
+      <span>抽取因子草稿 ${esc(researchSummary.extracted_factor_count)}</span>
+      <span>转换通过 ${esc(researchSummary.accepted_count)}</span>
+      <span>预算准入 ${esc(researchSummary.admitted_count)}</span>
+    </div>
+    <div id="research-materials"></div>
+    <div id="research-decisions"></div>` : '<p class="muted">资料解析、抽取和转换正在后台执行。</p>'}
+  </section>` : ''}
   <section class="card">
     <h2>预算与尝试</h2>
     <div class="budget-progress">
@@ -105,6 +118,25 @@ export function renderSearchRun(app, detail, mutateRun) {
       分支: item.branch_id,
       假设: item.statement,
       父假设: item.parent_hypothesis_id || '—',
+    })));
+  }
+  if (researchSummary?.materials?.length) {
+    table(app.querySelector('#research-materials'), researchSummary.materials.map(item => ({
+      资料: item.relative_path,
+      '文档 ID': item.document_id,
+      状态: item.status === 'parsed' ? '已抽取' : item.status === 'filtered' ? '非目标资料' : '失败',
+      页码: item.page_count || '—',
+      错误: item.error_code || '—',
+    })));
+  }
+  if (researchSummary?.decisions?.length) {
+    table(app.querySelector('#research-decisions'), researchSummary.decisions.map(item => ({
+      文档: item.document_id,
+      草稿: item.draft_id,
+      筛选: statusLabel(item.status),
+      准入: item.admitted ? '是' : '否',
+      原因: item.reason_code || '—',
+      候选: item.candidate_id || '—',
     })));
   }
   if (detail.turns.length) {

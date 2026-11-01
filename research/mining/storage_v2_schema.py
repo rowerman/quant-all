@@ -69,6 +69,32 @@ V2_DDL = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS mining_v2.research_run (
+        run_id VARCHAR PRIMARY KEY REFERENCES mining_v2.run(run_id),
+        input_hash VARCHAR NOT NULL,
+        manifest_hash VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        input_json TEXT NOT NULL,
+        summary_json TEXT,
+        created_at VARCHAR NOT NULL,
+        updated_at VARCHAR NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mining_v2.research_candidate (
+        run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
+        candidate_id VARCHAR NOT NULL,
+        document_id VARCHAR NOT NULL,
+        extraction_id VARCHAR NOT NULL,
+        draft_id VARCHAR NOT NULL,
+        provenance_hash VARCHAR NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at VARCHAR NOT NULL,
+        PRIMARY KEY (run_id, candidate_id),
+        UNIQUE (run_id, provenance_hash)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS mining_v2.hypothesis (
         run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
         hypothesis_id VARCHAR NOT NULL,
@@ -374,6 +400,10 @@ V2_DDL = (
     """
     CREATE INDEX IF NOT EXISTS idx_mining_v2_run_status
     ON mining_v2.run(status)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_mining_v2_research_candidate_source
+    ON mining_v2.research_candidate(run_id, document_id, draft_id)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_mining_v2_hypothesis_turn

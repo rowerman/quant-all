@@ -73,6 +73,7 @@ class MiningSearchReviewAdapter:
 
         run_id = run["run_id"]
         record = self.store.get_candidate(run_id, candidate_id)
+        self._assert_research_source(record)
         definition = dict(record["payload"])
         eligibility = self.store.search_approval_eligibility(
             run_id,
@@ -169,6 +170,9 @@ class MiningSearchReviewAdapter:
 
         body = self._body(payload, _DECISION_FIELDS)
         run = self.store.get_run(run_id)
+        self._assert_research_source(
+            self.store.get_candidate(run_id, candidate_id)
+        )
         try:
             self._assert_snapshot(run)
         except SnapshotStaleError as error:
@@ -330,6 +334,18 @@ class MiningSearchReviewAdapter:
             db_file=self.db_file,
             factor_dir=self.factor_dir,
             manifest_file=self.manifest_file,
+        )
+
+    def _assert_research_source(self, candidate: Mapping[str, Any]) -> None:
+        """存在资料参数时，复核候选内容与来源记录绑定。"""
+
+        parameters = candidate.get("payload", {}).get("parameters", {})
+        if parameters.get("source_kind") != "research_report":
+            return
+        self.store.require_research_candidate(
+            candidate["run_id"],
+            candidate["candidate_id"],
+            candidate_content_hash=candidate["candidate_hash"],
         )
 
     def _mark_snapshot_stale(

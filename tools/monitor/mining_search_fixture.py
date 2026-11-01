@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+from dataclasses import replace
 import os
 from pathlib import Path
 import shutil
@@ -13,7 +14,34 @@ from backend.app import create_app
 from backend.mining_search_service import MiningSearchWebService
 from backend.mining_service import MiningWebService
 from mining.contract_requests import MiningConstraints
+from mining.contract_types import sha256_json, stable_id, utc_now_iso
 from mining.expression_validation import validate_expression
+from mining.catalog import load_catalog
+from mining.research_extraction_contracts import (
+    RESEARCH_EXTRACTION_PROMPT_VERSION,
+    RESEARCH_EXTRACTION_RULE_VERSION,
+    ResearchExtractionCitation,
+    ResearchFieldClaim,
+)
+from mining.research_factor_screening_contracts import (
+    RESEARCH_CONVERSION_PROMPT_VERSION,
+    ResearchConversionLimits,
+)
+from mining.research_material_contracts import (
+    ResearchMaterialInput,
+    ResearchMaterialManifest,
+)
+from mining.research_material_parse_contracts import (
+    RESEARCH_CLASSIFICATION_RULE_VERSION,
+    ResearchMaterialClassification,
+)
+from mining.research_run_contracts import (
+    ResearchCandidateProvenance,
+    ResearchMaterialView,
+    ResearchRunDecision,
+    ResearchRunInput,
+    ResearchRunSummary,
+)
 from mining.orchestration_support import progress_for_run
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.search_context import FrozenSearchContext
@@ -182,6 +210,241 @@ def _seed_review_ready(
     return run["run_id"], candidate_ids
 
 
+def _seed_research_review_ready(
+    store: MiningV2Store,
+    key: str,
+) -> tuple[str, str]:
+    """创建一条带研报来源的审核就绪运行，供页面夹具使用。"""
+
+    quote = "Equity research report stock valuation factor."
+    material_sha = "a" * 64
+    text_sha = "b" * 64
+    material = ResearchMaterialInput(
+        relative_path="2026-10/short-reversal.pdf",
+        media_type="application/pdf",
+        size_bytes=1024,
+        sha256=material_sha,
+        parser_version="pypdf-6.21.2.page-v1",
+    )
+    manifest = ResearchMaterialManifest(materials=(material,))
+    request = SearchRunRequest(
+        key,
+        "资料驱动研究：1 份研报资料",
+    )
+    context = FrozenSearchContext(data_fingerprint="a" * 64)
+    research_input = ResearchRunInput(
+        run_id=request.run_id,
+        idempotency_key=request.idempotency_key,
+        material_path="2026-10",
+        manifest=manifest,
+        limits=ResearchConversionLimits(),
+    )
+    run = store.create_run(
+        request,
+        context,
+        research_input=research_input,
+    )
+    hypothesis = HypothesisCard(
+        run_id=run["run_id"],
+        turn_index=1,
+        branch_id="branch-0001",
+        statement="短期反转因子在研报中具有正向预期",
+        mechanism="短期价格修复",
+        expected_direction="positive",
+        falsification_criteria=("开发期 RankIC 低于冻结门槛",),
+        metadata={
+            "source_kind": "research_report",
+            "manifest_hash": manifest.manifest_hash,
+        },
+    )
+    base_candidate = validate_expression("rank(close)", direction=1).to_candidate(
+        mechanism="短期反转",
+        description="收盘价的截面排名",
+        steps=("读取收盘价", "做截面排名"),
+        discovery_round=1,
+        discovery_index=1,
+    )
+    citation = ResearchExtractionCitation(
+        document_id=material.document_id,
+        page_number=1,
+        start_offset=0,
+        end_offset=len(quote),
+        quote=quote,
+    )
+    fields = tuple(
+        ResearchFieldClaim(
+            field_name=name,
+            values=values,
+            status="explicit",
+            citations=(citation,),
+        )
+        for name, values in (
+            ("factor_name", ("short reversal",)),
+            ("economic_mechanism", ("short-term price repair",)),
+            ("formula", ("rank(close)",)),
+            ("variables", ("close",)),
+            ("expected_direction", ("positive",)),
+            ("falsification_conditions", ("rank ic below threshold",)),
+        )
+    )
+    factor_hash = sha256_json({"draft": "research-browser-fixture"})
+    extraction_hash = sha256_json({"extraction": "research-browser-fixture"})
+    provenance_draft = ResearchCandidateProvenance(
+        run_id=run["run_id"],
+        candidate_id=base_candidate.candidate_id,
+        document_id=material.document_id,
+        extraction_id=stable_id(
+            "extraction",
+            {"extraction_hash": extraction_hash},
+        ),
+        extraction_hash=extraction_hash,
+        draft_id=stable_id("factordraft", {"factor_hash": factor_hash}),
+        factor_hash=factor_hash,
+        material=material,
+        classification=ResearchMaterialClassification(
+            document_id=material.document_id,
+            text_sha256=text_sha,
+            kind="financial_research",
+            rule_version=RESEARCH_CLASSIFICATION_RULE_VERSION,
+            report_signals=("equity research",),
+            finance_signals=("factor", "stock", "valuation"),
+            created_at=utc_now_iso(),
+        ),
+        fields=fields,
+        checks=(
+            "catalog_available",
+            "direction_consistent",
+            "document_bound",
+            "dsl_valid",
+            "evidence_complete",
+            "mapping_consistent",
+            "safe_evidence",
+            "supported_direction",
+        ),
+        field_mapping={"close": "close"},
+        catalog_hash=load_catalog().catalog_hash,
+        converter_model="deepseek/deepseek-chat",
+        conversion_prompt_version=RESEARCH_CONVERSION_PROMPT_VERSION,
+        extraction_model="deepseek/deepseek-chat",
+        extraction_prompt_version=RESEARCH_EXTRACTION_PROMPT_VERSION,
+        hypothesis=hypothesis,
+        candidate=base_candidate,
+    )
+    candidate = replace(
+        base_candidate,
+        parameters={
+            "source_kind": "research_report",
+            "research_provenance_hash": provenance_draft.provenance_hash,
+        },
+    )
+    provenance = replace(
+        provenance_draft,
+        candidate_id=candidate.candidate_id,
+        candidate=candidate,
+    )
+    summary = ResearchRunSummary(
+        input=research_input,
+        status="ready",
+        extraction_ids=(provenance.extraction_id,),
+        conversion_id=stable_id(
+            "researchconv",
+            {"conversion_hash": "c" * 64},
+        ),
+        conversion_hash="c" * 64,
+        model="deepseek/deepseek-chat",
+        catalog_hash=load_catalog().catalog_hash,
+        materials=(
+            ResearchMaterialView(
+                document_id=material.document_id,
+                relative_path=material.relative_path,
+                status="parsed",
+                classification="financial_research",
+                page_count=1,
+            ),
+        ),
+        decisions=(
+            ResearchRunDecision(
+                document_id=material.document_id,
+                draft_id=provenance.draft_id,
+                factor_hash=factor_hash,
+                status="accepted",
+                reason_code=None,
+                checks=provenance.checks,
+                candidate_id=candidate.candidate_id,
+                admitted=True,
+            ),
+        ),
+        extracted_factor_count=1,
+        accepted_count=1,
+        admitted_count=1,
+    )
+    store.save_research_summary(summary, (provenance,))
+    batch = ExperimentBatch(
+        run_id=run["run_id"],
+        hypothesis_id=hypothesis.hypothesis_id,
+        turn_index=1,
+        branch_id=hypothesis.branch_id,
+        candidate_ids=(candidate.candidate_id,),
+        parent_candidate_ids=(),
+        development_start="2012-01-01",
+        development_end="2019-12-31",
+        input_hash="d" * 64,
+        parameters={"source_kind": "research_report"},
+    )
+    store.begin_turn(run["run_id"], hypothesis, batch)
+    store.record_candidate(
+        run["run_id"],
+        candidate_id=candidate.candidate_id,
+        candidate_hash=candidate.content_hash,
+        semantic_hash=candidate.semantic_hash,
+        name=candidate.name,
+        status="proposed",
+        hypothesis_id=hypothesis.hypothesis_id,
+        batch_id=batch.batch_id,
+        payload=candidate_payload(candidate),
+    )
+    for target in (
+        "validating",
+        "screening",
+        "evaluating",
+        "evaluated",
+        "holdout_running",
+        "review_ready",
+    ):
+        store.transition_candidate(run["run_id"], candidate.candidate_id, target)
+    for stage_index, stage in enumerate(SEARCH_APPROVAL_REQUIRED_STAGES):
+        store.record_evaluation_evidence(
+            SearchEvaluationEvidence(
+                run_id=run["run_id"],
+                candidate_id=candidate.candidate_id,
+                stage=stage,
+                input_hash=f"{stage_index + 1:x}" * 64,
+                status="passed",
+                metrics={
+                    "rank_ic_mean": 0.03,
+                    "rank_ic_ir": 0.4,
+                    "year_sign_consistency": 0.75,
+                    "valid_days": 100,
+                    "values": {"coverage": 0.8, "rows": 10000},
+                },
+            )
+        )
+    for target in (
+        "searching",
+        "selecting",
+        "evaluating",
+        "holding_out",
+        "review_ready",
+    ):
+        store.transition_search_run(
+            run["run_id"],
+            target,
+            event_key=f"research_run_{target}",
+            stage=target,
+        )
+    return run["run_id"], candidate.candidate_id
+
+
 _configured_root = os.environ.get("MINING_SEARCH_FIXTURE_ROOT", "").strip()
 _TEMP_ROOT = (
     Path(_configured_root)
@@ -199,6 +462,10 @@ _V2_STORE = MiningV2Store(
 RUN_ID, CANDIDATE_IDS = _seed_review_ready(
     _V2_STORE,
     "v2-browser-review-0001",
+)
+RESEARCH_RUN_ID, RESEARCH_CANDIDATE_ID = _seed_research_review_ready(
+    _V2_STORE,
+    "v2-browser-research-0001",
 )
 _SEARCH_SERVICE = MiningSearchWebService(
     store=_V2_STORE,

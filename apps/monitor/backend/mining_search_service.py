@@ -15,15 +15,25 @@ from common.paths import (
     FACTOR_DIR,
     MINING_DB_FILE,
     MINING_DATA_DIR,
+    PROJECT_ROOT,
+    RESEARCH_MATERIALS_DIR,
 )
 from mining.analysis_tool_gateway import AnalysisToolGateway
 from mining.catalog import load_catalog
-from mining.errors import MiningContractError
+from mining.errors import MiningContractError, MiningNotFoundError
 from mining.logging_conf import format_event, get_mining_logger
 from mining.publication_service import MiningPublicationService
+from mining.research_material_io import (
+    build_research_material_manifest,
+    discover_research_material_paths,
+)
+from mining.research_material_parser import RESEARCH_PDF_PARSER_VERSION
+from mining.research_factor_screening_contracts import ResearchConversionLimits
+from mining.research_run_contracts import ResearchRunInput
 from mining.search_budget import SearchBudget
 from mining.search_context import FrozenSearchContext, load_search_config
 from mining.search_cards import HypothesisCard
+from mining.search_evidence import EvidencePacket
 from mining.search_orchestrator import MiningSearchOrchestrator
 from mining.search_run import SearchRunRequest
 from mining.search_research_quality import evaluate_research_quality
@@ -38,6 +48,12 @@ from mining_worker.worker_config import load_worker_config
 
 _LOGGER = get_mining_logger("mining.search.web")
 _CREATE_FIELDS = {"hypothesis", "idempotency_key", "llm_profile", "budget"}
+_RESEARCH_CREATE_FIELDS = {
+    "material_path",
+    "idempotency_key",
+    "llm_profile",
+    "budget",
+}
 _END_STATUSES = {
     "review_ready",
     "failed",
@@ -60,12 +76,16 @@ class MiningSearchWebService:
         catalog_file: Path | str = FACTOR_DB_FILE,
         manifest_file: Path | str = DEFAULT_DATA_MANIFEST,
         snapshot_check: Callable[..., None] | None = None,
+        material_root: Path | str | None = None,
     ) -> None:
         self.store = store or MiningV2Store(MINING_DB_FILE, MINING_DATA_DIR)
         tools_enabled = os.environ.get(
             "MINING_ANALYSIS_TOOLS_ENABLED",
             "1",
         ).strip().lower() not in {"0", "false", "no", "off"}
+        self.material_root = Path(
+            material_root or RESEARCH_MATERIALS_DIR
+        )
         self.orchestrator = orchestrator or MiningSearchOrchestrator(
             store=self.store,
             analysis_tool_gateway=(
@@ -76,6 +96,7 @@ class MiningSearchWebService:
             db_file=db_file,
             factor_dir=factor_dir,
             manifest_file=manifest_file,
+            research_material_root=self.material_root,
         )
         self.db_file = Path(db_file)
         self.factor_dir = Path(factor_dir)
@@ -150,6 +171,18 @@ class MiningSearchWebService:
                 is not None
                 else []
             ),
+            "research": {
+                "enabled": bool(
+                    os.environ.get("MINING_WORKER_URL", "").strip()
+                ),
+                "material_root": self._public_material_root(),
+                "max_documents": ResearchConversionLimits().max_documents,
+                "max_factors": ResearchConversionLimits().max_factors,
+                "prompt_versions": {
+                    "extraction": "mining_research_extraction_prompt_v1",
+                    "conversion": "mining_research_dsl_conversion_prompt_v1",
+                },
+            },
         }
 
     def create_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -180,6 +213,63 @@ class MiningSearchWebService:
             request,
             context,
             background=True,
+        )
+        return self.run_detail(run["run_id"])
+
+    def create_research_run(
+        self,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """冻结资料目录并创建后台资料驱动运行。"""
+
+        if not isinstance(payload, Mapping):
+            raise MiningContractError("请求体必须是 JSON 对象")
+        unknown = set(payload) - _RESEARCH_CREATE_FIELDS
+        if unknown:
+            raise MiningContractError(
+                f"未知资料运行请求字段：{sorted(unknown)}"
+            )
+        idempotency_key = payload.get("idempotency_key")
+        if not isinstance(idempotency_key, str):
+            raise MiningContractError("idempotency_key 必须由页面提供")
+        material_path = payload.get("material_path")
+        if not isinstance(material_path, str):
+            raise MiningContractError("material_path 必须是相对路径")
+        paths = discover_research_material_paths(
+            self.material_root,
+            material_path,
+            recursive=True,
+        )
+        manifest = build_research_material_manifest(
+            self.material_root,
+            paths,
+            parser_version=RESEARCH_PDF_PARSER_VERSION,
+        )
+        budget_payload = payload.get("budget")
+        budget = (
+            SearchBudget.from_dict(budget_payload)
+            if budget_payload is not None
+            else load_search_config().budget
+        )
+        request = SearchRunRequest(
+            idempotency_key=idempotency_key,
+            hypothesis=f"资料驱动研究：{len(paths)} 份研报资料",
+            budget=budget,
+            llm_profile=payload.get("llm_profile", "default"),
+        )
+        research_input = ResearchRunInput(
+            run_id=request.run_id,
+            idempotency_key=request.idempotency_key,
+            material_path=material_path,
+            manifest=manifest,
+            limits=ResearchConversionLimits(),
+        )
+        context = self._freeze_context(request)
+        run = self.orchestrator.create_run(
+            request,
+            context,
+            background=True,
+            research_input=research_input,
         )
         return self.run_detail(run["run_id"])
 
@@ -284,7 +374,9 @@ class MiningSearchWebService:
                         decision["reason"][:500] if decision else None
                     ),
                     "evidence_hash": (
-                        packet["evidence_hash"] if packet else None
+                        EvidencePacket.from_dict(packet).evidence_hash
+                        if packet
+                        else None
                     ),
                     "feedback": (
                         _feedback_summary(packet)
@@ -377,6 +469,8 @@ class MiningSearchWebService:
             if statistical_rows
             else None
         )
+        research_summary = self.store.load_research_summary(run_id)
+        research_state = self.store.research_run_state(run_id)
         return {
             "run": self._run_view(run),
             "progress": progress.to_dict(),
@@ -412,6 +506,18 @@ class MiningSearchWebService:
                     item["status"] == "failed" for item in tool_calls
                 ),
             },
+            "research": (
+                {
+                    **research_state,
+                    "summary": (
+                        None
+                        if research_summary is None
+                        else research_summary.to_dict()
+                    ),
+                }
+                if research_state is not None
+                else None
+            ),
         }
 
     def run_status(self, run_id: str) -> dict[str, Any]:
@@ -465,10 +571,21 @@ class MiningSearchWebService:
         """返回 V2 候选、分阶段证据、审批资格和发布状态。"""
 
         run = self.store.get_run(run_id)
-        return {
+        detail = {
             "run": self._run_view(run),
             **self.review.candidate_detail(run, candidate_id),
         }
+        try:
+            provenance = self.store.require_research_candidate(
+                run_id,
+                candidate_id,
+                candidate_content_hash=detail["candidate"]["content_hash"],
+            )
+        except MiningNotFoundError:
+            pass
+        else:
+            detail["research_source"] = provenance.to_dict()
+        return detail
 
     def decide(
         self,
@@ -516,6 +633,16 @@ class MiningSearchWebService:
             "context": run["context"],
             "context_hash": run["context_hash"],
         }
+
+    def _public_material_root(self) -> str:
+        """返回不暴露主机绝对路径的资料根目录标签。"""
+
+        try:
+            return self.material_root.resolve().relative_to(
+                PROJECT_ROOT.resolve()
+            ).as_posix()
+        except ValueError:
+            return self.material_root.name
 
 
 def _feedback_summary(packet: Mapping[str, Any]) -> dict[str, Any]:

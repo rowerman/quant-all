@@ -14,6 +14,11 @@ V2 页面展示假设树、轮次决策、尝试台账、选择诊断、稳定�
 并在 `review_ready` 后提供候选详情、批准、拒绝、整批正式发布和失败重试入口。
 V2 发布继续复用现有发布服务，不建立第二套正式因子目录。
 
+新建入口还支持资料驱动模式。接口为 `POST /api/mining/research-runs`，字段固定为
+`idempotency_key`、`material_path`、`budget` 和 `llm_profile`。`material_path`
+只能是 `data/source/reports` 下的相对文件或目录；绝对路径、`..` 和符号链接会被拒绝。
+服务端在创建运行时冻结资料指纹，后台执行 Worker v5 字段抽取和 Worker v6 DSL 转换。
+
 ```text
 浏览器 #/mining
   -> backend.mining_routes       REST、SSE、HTTP 错误
@@ -95,9 +100,9 @@ V2 候选详情使用相同的审批请求字段和错误码，但展示
 | 路由 | 内容 |
 |---|---|
 | `#/mining` | 运行列表和新建入口 |
-| `#/mining/new` | 研究假设、折叠预算和创建 |
-| `#/mining/{run_id}` | 状态、预算消耗、候选和事件轨迹 |
-| `#/mining/{run_id}/candidate/{candidate_id}` | 定义、V1 四阶段或 V2 五阶段证据、审批和整批发布 |
+| `#/mining/new` | 手工假设或资料相对路径、折叠预算和创建 |
+| `#/mining/{run_id}` | 状态、预算消耗、资料筛选摘要、候选和事件轨迹 |
+| `#/mining/{run_id}/candidate/{candidate_id}` | 定义、研报来源、V1 四阶段或 V2 五阶段证据、审批和整批发布 |
 
 页面支持桌面与 390px 移动端。Worker 不可用、数据过期、门禁失败、测试段失败、审批冲突
 和事件流中断均显示稳定错误码与请求编号。
@@ -106,8 +111,10 @@ V2 候选详情使用相同的审批请求字段和错误码，但展示
 
 ```bash
 .venv/bin/python -m pytest -q apps/monitor/backend/tests/test_mining_api.py
+.venv/bin/python -m pytest -q apps/monitor/backend/tests/test_mining_search_api.py
 .venv/bin/python tools/monitor/mining_check.py
 .venv/bin/python tools/monitor/mining_search_check.py
+.venv/bin/python tools/monitor/mining_research_check.py
 ```
 
 浏览器脚本启动临时候选库和确定性 Worker，不访问 DeepSeek，不打开生产模块测试段。
@@ -115,4 +122,5 @@ V2 候选详情使用相同的审批请求字段和错误码，但展示
 两个候选批准与整批发布。截图写入
 `AiRecord/evidence/mining_s7/`；S8 发布页截图写入
 `AiRecord/evidence/mining_s8/`。V2 验收脚本完成批准、拒绝、发布失败和重试，截图写入
-`AiRecord/evidence/mining_v2_web/`。
+`AiRecord/evidence/mining_v2_web/`。资料驱动验收脚本检查资料模式、运行筛选摘要、
+候选页码来源和 390px 布局，截图写入 `AiRecord/evidence/mining_research_web/`。

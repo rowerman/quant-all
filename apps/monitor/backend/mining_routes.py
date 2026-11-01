@@ -46,6 +46,17 @@ def build_mining_router(
             await asyncio.to_thread(current_service().create_run, payload)
         )
 
+    @router.post("/research-runs")
+    async def create_research_run(payload: dict):
+        """创建一次资料驱动运行。"""
+
+        return json_safe(
+            await asyncio.to_thread(
+                current_service().create_research_run,
+                payload,
+            )
+        )
+
     @router.get("/runs")
     async def list_runs(limit: int = 50):
         """列出近期挖掘运行。"""

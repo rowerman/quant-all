@@ -18,6 +18,8 @@ from mining.errors import (
     ResearchScreeningContractError,
     ResearchScreeningEvidenceError,
     ResearchScreeningResourceError,
+    ResearchRunContractError,
+    ResearchRunFailure,
     MiningStateError,
     MiningStorageError,
     MiningWorkerError,
@@ -62,6 +64,8 @@ def test_mining_errors_preserve_code_status_and_request_id():
         (ResearchScreeningContractError("a"), 400),
         (ResearchScreeningEvidenceError("a"), 422),
         (ResearchScreeningResourceError("a"), 422),
+        (ResearchRunContractError("a"), 400),
+        (ResearchRunFailure("a"), 422),
     ],
 )
 def test_all_mining_error_families_keep_http_mapping(error, expected):

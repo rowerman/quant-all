@@ -8,6 +8,8 @@ import time
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from backend.app import create_app
 from backend.mining_search_service import MiningSearchWebService
@@ -33,8 +35,19 @@ class StubSearchOrchestrator:
         self.store = store
         self.closed = False
 
-    def create_run(self, request, context, *, background=True):
-        return self.store.create_run(request, context)
+    def create_run(
+        self,
+        request,
+        context,
+        *,
+        background=True,
+        research_input=None,
+    ):
+        return self.store.create_run(
+            request,
+            context,
+            research_input=research_input,
+        )
 
     def progress(self, run_id):
         return progress_for_search(self.store, run_id)
@@ -55,7 +68,7 @@ class StubSearchOrchestrator:
         self.closed = True
 
 
-def _services(tmp_path: Path, *, snapshot_check=None):
+def _services(tmp_path: Path, *, snapshot_check=None, material_root=None):
     v1_store = MiningStore(
         tmp_path / "factor_mining_v1.duckdb",
         tmp_path / "v1",
@@ -68,6 +81,7 @@ def _services(tmp_path: Path, *, snapshot_check=None):
         store=v2_store,
         orchestrator=StubSearchOrchestrator(v2_store),
         snapshot_check=snapshot_check or (lambda *_args, **_kwargs: None),
+        material_root=material_root,
     )
     service = MiningWebService(
         store=v1_store,
@@ -76,6 +90,37 @@ def _services(tmp_path: Path, *, snapshot_check=None):
         search_service=search,
     )
     return service, v2_store
+
+
+def _write_research_pdf(path: Path) -> None:
+    """写入资料运行入口测试所需的最小文本 PDF。"""
+
+    writer = PdfWriter()
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_reference = writer._add_object(font)
+    page = writer.add_blank_page(width=612, height=792)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): font_reference}
+            )
+        }
+    )
+    stream = DecodedStreamObject()
+    stream.set_data(
+        b"BT /F1 12 Tf 72 720 Td "
+        b"(Equity research report stock valuation factor.) Tj ET"
+    )
+    page.replace_contents(stream)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        writer.write(handle)
 
 
 def _seed_v2_review_ready(
@@ -229,6 +274,42 @@ def test_v2_api_creates_lists_and_reads_safe_detail(tmp_path: Path):
             f"/api/mining/runs/{run_id}/candidates/unknown"
         )
         assert candidate.status_code == 404
+
+
+def test_research_run_api_freezes_relative_material_target(tmp_path: Path):
+    reports = tmp_path / "reports"
+    _write_research_pdf(reports / "report.pdf")
+    service, store = _services(tmp_path, material_root=reports)
+    app = create_app(mining_service=service)
+    with TestClient(app) as client:
+        options = client.get("/api/mining/options").json()
+        created = client.post(
+            "/api/mining/research-runs",
+            json={
+                "material_path": ".",
+                "idempotency_key": "web-research-run-0001",
+                "budget": options["search_v2"]["defaults"],
+            },
+        )
+        assert created.status_code == 200
+        detail = created.json()
+        run_id = detail["run"]["run_id"]
+        assert detail["run"]["engine"] == "v2"
+        assert detail["research"]["status"] == "processing"
+        assert detail["research"]["summary"] is None
+        research_input = store.load_research_input(run_id)
+        assert research_input is not None
+        assert research_input.material_path == "."
+        assert research_input.manifest.materials[0].relative_path == "report.pdf"
+
+        rejected = client.post(
+            "/api/mining/research-runs",
+            json={
+                "material_path": "../outside.pdf",
+                "idempotency_key": "web-research-run-0002",
+            },
+        )
+        assert rejected.status_code == 403
 
 
 def test_v2_detail_does_not_require_v1_run(tmp_path: Path):

@@ -104,6 +104,12 @@ def load_search_publication_inputs(
             raise MiningContractError(
                 f"候选 {candidate_id} 名称与冻结定义不一致"
             )
+        if definition.parameters.get("source_kind") == "research_report":
+            store.require_research_candidate(
+                run_id,
+                candidate_id,
+                candidate_content_hash=definition.content_hash,
+            )
         evidence = tuple(
             _evidence_reference(
                 row,

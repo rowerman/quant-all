@@ -220,6 +220,13 @@ class MiningWebService:
         run = self.orchestrator.create_run(request, background=True)
         return self.run_detail(run["run_id"])
 
+    def create_research_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """创建资料驱动运行；V2 未启用时明确拒绝。"""
+
+        if not self._search_enabled:
+            raise MiningStateError("资料驱动运行需要启用 V2 搜索")
+        return self._search_service().create_research_run(payload)
+
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         """返回近期运行的页面摘要。"""
 

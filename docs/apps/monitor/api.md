@@ -11,6 +11,7 @@
 | `/api/compare/stream` | 同参数顺序对比SSE，必传factors，以逗号分隔的2～4个不同名称 |
 | `/api/mining/options` | 挖掘默认预算、限制、冻结窗口、默认审核人和 Worker 配置状态 |
 | `/api/mining/runs` | `GET` 列表；`POST` 提交研究假设、幂等键和可选预算 |
+| `/api/mining/research-runs` | `POST` 从固定资料根目录下的相对 PDF 文件或目录创建 V2 运行 |
 | `/api/mining/runs/{run_id}` | 运行、预算进度和候选摘要 |
 | `/api/mining/runs/{run_id}/events` | 按 `after` 序号读取不可变事件 |
 | `/api/mining/runs/{run_id}/stream` | 从 `after` 回放并持续推送 SSE 事件 |
@@ -107,6 +108,22 @@ curl -N 'http://127.0.0.1:8800/api/compare/stream?factors=MOM_20,MOM_60&mode=ic'
 但请求体中的预算字段改为 V2 `budget`，运行 ID 以 `searchrun_` 开头。
 `GET /api/mining/options` 会增加 `search_v2`，列出四段窗口、搜索预算、控制策略和
 分析工具目录。V2 的创建、列表、详情、事件、SSE、取消和恢复复用上述运行接口。
+
+资料驱动请求体：
+
+```json
+{
+  "material_path": "2026-10",
+  "idempotency_key": "web-research-...",
+  "budget": {}
+}
+```
+
+`material_path` 只能是 `data/source/reports` 下的相对文件或目录，`.` 表示根目录。
+服务端在创建时冻结 PDF 指纹；后台解析、抽取、转换和自动准入后进入 V2 状态机。
+`GET /api/mining/options` 的 `search_v2.research` 返回资料根目录标签、文件/草稿上限和
+提示版本。运行详情的 `research.summary` 返回脱敏资料与筛选摘要；候选详情的
+`research_source` 返回页码、偏移和短引用，不返回完整报告正文。
 
 V2 运行复用候选详情、审批和发布批次接口。`GET .../candidates/{candidate_id}` 返回
 五阶段证据、评分卡、审批资格、阻塞原因和最近批次；`POST .../decision` 使用与 V1

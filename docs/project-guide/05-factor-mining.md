@@ -754,6 +754,11 @@ V1 和 V2 共用一个活动发布批次约束。
 | `MINING-153` | 400 | 研报字段抽取请求或结果不符合契约 |
 | `MINING-154` | 422 | 研报字段引用无法验证或输入越过安全边界 |
 | `MINING-155` | 422 | 研报正文或窗口数量超过抽取上限 |
+| `MINING-156` | 400 | 研报筛选、转换请求或结果不符合契约 |
+| `MINING-157` | 422 | 研报变量映射、DSL 或来源证据无法通过校验 |
+| `MINING-158` | 422 | 研报转换批次超过固定资源上限 |
+| `MINING-159` | 400 | 资料运行输入、来源或摘要不符合契约 |
+| `MINING-160` | 422 | 资料运行没有产生可进入 V2 验证的候选 |
 
 ### 10.2 日志
 
@@ -785,6 +790,10 @@ M5 沙箱失败反馈写入 `logs/research/mining_sandbox/mining_sandbox_researc
 研报字段抽取日志写入 `logs/research/mining/mining_research_extraction/`，只记录资料 ID、
 记录哈希、抽取 ID、提示版本、模型、窗口数、因子数、缺失字段数、状态和耗时。正文、
 因子名称、公式、引用原文、Prompt 和模型响应不会进入业务日志。
+
+资料运行日志写入 `logs/research/mining/mining_research_run/`，只记录清单哈希、资料
+数量、目标/过滤/失败数量、草稿数、转换 ID 和耗时。V2 事件只携带准入数量、转换哈希和
+候选 ID；资料相对路径和页码引用只在受控运行摘要与候选详情中展示。
 
 日志和事件是排障证据，不是状态事实来源。运行、候选、审批和发布状态仍以候选数据库
 为准。
@@ -857,6 +866,7 @@ PY
 | V2 契约、轨迹、恢复和尝试台账 | [test_mining_search_contracts.py](../../tests/test_mining_search_contracts.py)、[test_mining_v2_trace.py](../../tests/test_mining_v2_trace.py)、[test_mining_v2_trials.py](../../tests/test_mining_v2_trials.py) |
 | V2 选择诊断、稳定性和统计 | [test_mining_selection_diagnostics.py](../../tests/test_mining_selection_diagnostics.py)、[test_mining_search_stability.py](../../tests/test_mining_search_stability.py)、[test_mining_statistical_diagnostics.py](../../tests/test_mining_statistical_diagnostics.py) |
 | V2 受控分析工具 | [test_mining_analysis_tools.py](../../tests/test_mining_analysis_tools.py) |
+| 资料驱动运行入口、来源和 V2 闭环 | [test_mining_research_run.py](../../tests/test_mining_research_run.py)、[test_mining_research_materials.py](../../tests/test_mining_research_materials.py)、[test_mining_research_extraction.py](../../tests/test_mining_research_extraction.py)、[test_mining_research_screening.py](../../tests/test_mining_research_screening.py) |
 | M5 沙箱和代码研究 | [test_mining_sandbox.py](../../tests/test_mining_sandbox.py)、[test_mining_sandbox_research.py](../../tests/test_mining_sandbox_research.py)、[test_mining_sandbox_feedback.py](../../tests/test_mining_sandbox_feedback.py)、[test_mining_sandbox_evaluator.py](../../tests/test_mining_sandbox_evaluator.py)、[test_mining_sandbox_knowledge.py](../../tests/test_mining_sandbox_knowledge.py) |
 
 2026-11-01 的文档状态以当前代码和 V135 审计为准：

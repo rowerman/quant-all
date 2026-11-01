@@ -86,7 +86,10 @@ def check(url: str, output: Path) -> None:
 
         page.goto(url + "/#/mining")
         page.wait_for_selector("text=短期趋势可能带来开发期超额收益")
-        page.locator("#mining-runs a").first.click()
+        page.locator(
+            "#mining-runs a",
+            has_text="短期趋势可能带来开发期超额收益",
+        ).first.click()
         page.wait_for_selector("#search-candidates tbody tr")
         assert page.locator("#search-candidates tbody tr").count() == 3
         page.screenshot(

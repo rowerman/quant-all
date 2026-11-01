@@ -184,6 +184,7 @@ export function renderCandidate(
   const full = latestReport(detail.evaluations, 'full');
   const holdout = latestReport(detail.evaluations, 'holdout');
   const latestBatchStatus = detail.publication?.latest_batch?.status;
+  const researchSource = detail.research_source;
   const displayStatus = candidate.status === 'building' && latestBatchStatus === 'published'
     ? 'published'
     : candidate.status === 'building' && latestBatchStatus === 'failed'
@@ -221,6 +222,18 @@ export function renderCandidate(
       <div><span>发现轮次</span><span>第 ${esc(candidate.discovery_round)} 轮 · 第 ${esc(candidate.discovery_index)} 个</span></div>
     </div>
   </section>
+  ${researchSource ? `<section class="card">
+    <h2>研报来源依据</h2>
+    <p>${esc(researchSource.material.relative_path)} · ${esc(researchSource.document_id)} · ${esc(researchSource.classification.kind)}</p>
+    <div class="hash-grid">
+      <div><span>来源哈希</span><code>${esc(researchSource.provenance_hash)}</code></div>
+      <div><span>抽取结果</span><code>${esc(researchSource.extraction_id)}</code></div>
+      <div><span>转换模型</span><span>${esc(researchSource.converter_model)}</span></div>
+      <div><span>字段映射</span><span>${esc(JSON.stringify(researchSource.field_mapping))}</span></div>
+    </div>
+    <div id="research-source-evidence"></div>
+    <p class="mini muted">只展示与本候选有关的字段证据和短引用，不展示完整研报正文。</p>
+  </section>` : ''}
   <section class="card">
     <h2>阶段结论</h2>
     <div id="candidate-stage-summary"></div>
@@ -256,6 +269,22 @@ export function renderCandidate(
   <p class="note">数据快照：${detail.review.snapshot_current ? '当前有效' : esc(detail.review.snapshot_error?.message || '已失效')} · 内容哈希 ${esc(detail.review.candidate_content_hash)}</p>`;
 
   table(app.querySelector('#candidate-stage-summary'), stageRows);
+  if (researchSource) {
+    const rows = [];
+    for (const claim of researchSource.fields || []) {
+      for (const citation of claim.citations || []) {
+        rows.push({
+          字段: claim.field_name,
+          状态: claim.status,
+          内容: claim.values.join('；'),
+          页码: citation.page_number,
+          定位: `${citation.start_offset}-${citation.end_offset}`,
+          原文: citation.quote,
+        });
+      }
+    }
+    table(app.querySelector('#research-source-evidence'), rows);
+  }
   const gateNode = app.querySelector('#technical-gate');
   if (detail.technical_gate) {
     gateNode.insertAdjacentHTML('beforeend', `<p>规则版本 ${esc(detail.technical_gate.rule_version)} · ${detail.technical_gate.passed ? '通过' : '未通过'}</p>`);

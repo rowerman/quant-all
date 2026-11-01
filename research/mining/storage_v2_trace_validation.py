@@ -14,6 +14,10 @@ from mining.search_evidence import EvidencePacket, SearchDecision
 from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_review import search_approval_record_hash
 from mining.search_trials import TrialRecord
+from mining.research_run_contracts import (
+    ResearchCandidateProvenance,
+    ResearchRunSummary,
+)
 from mining.storage_v2_trace_states import ZERO_HASH
 
 
@@ -225,6 +229,35 @@ class V2TraceValidationMixin:
                     evidence_hash=row[8],
                     created_at=row[9],
                 )
+            )
+        if entry_type == "research_run":
+            row = conn.execute(
+                "SELECT summary_json FROM mining_v2.research_run "
+                "WHERE run_id=?",
+                [run_id],
+            ).fetchone()
+            if row is None or row[0] is None:
+                raise MiningStorageError("资料运行摘要不存在")
+            return ResearchRunSummary.from_dict(json.loads(row[0])).summary_hash
+        if entry_type == "research_candidate":
+            row = conn.execute(
+                "SELECT provenance_hash, payload_json "
+                "FROM mining_v2.research_candidate "
+                "WHERE run_id=? AND candidate_id=?",
+                [run_id, entry_id],
+            ).fetchone()
+            if row is None:
+                raise MiningStorageError(f"资料候选来源不存在：{entry_id}")
+            provenance = ResearchCandidateProvenance.from_dict(
+                json.loads(row[1])
+            )
+            if provenance.provenance_hash != row[0]:
+                raise MiningStorageError("资料候选来源存储哈希不一致")
+            return sha256_json(
+                {
+                    "provenance_hash": provenance.provenance_hash,
+                    "candidate_content_hash": provenance.candidate.content_hash,
+                }
             )
         return None
 

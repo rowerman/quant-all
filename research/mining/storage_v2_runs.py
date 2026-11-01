@@ -16,6 +16,7 @@ from mining.errors import (
 )
 from mining.search_budget import TrialCounts
 from mining.search_context import FrozenSearchContext
+from mining.research_run_contracts import ResearchRunInput
 from mining.search_run import SearchRunRequest
 from mining.storage_lock import database_state_lock
 
@@ -27,13 +28,22 @@ class V2RunStoreMixin:
         self,
         request: SearchRunRequest,
         context: FrozenSearchContext,
+        *,
+        research_input: ResearchRunInput | None = None,
     ) -> dict[str, Any]:
-        """幂等创建 V2 运行、上下文和计数器。"""
+        """幂等创建 V2 运行、上下文、计数器和可选资料输入。"""
 
         if request.budget != context.budget:
             raise MiningContractError("请求预算与 V2 冻结上下文预算不一致")
         if request.llm_profile != context.llm_profile:
             raise MiningContractError("请求模型配置与 V2 冻结上下文不一致")
+        if research_input is not None:
+            if not isinstance(research_input, ResearchRunInput):
+                raise MiningContractError(
+                    "research_input 必须是 ResearchRunInput"
+                )
+            if research_input.run_id != request.run_id:
+                raise MiningContractError("资料运行输入没有绑定当前运行")
         created = utc_now_iso()
         reused = False
         try:
@@ -55,6 +65,27 @@ class V2RunStoreMixin:
                             ):
                                 raise MiningDuplicateError(
                                     "幂等键已用于不同 V2 请求或冻结上下文"
+                                )
+                            stored_research = self._row(
+                                conn,
+                                "SELECT input_hash FROM mining_v2.research_run "
+                                "WHERE run_id=?",
+                                [request.run_id],
+                            )
+                            expected_hash = (
+                                None
+                                if research_input is None
+                                else research_input.input_hash
+                            )
+                            if (
+                                stored_research is None
+                                and expected_hash is not None
+                            ) or (
+                                stored_research is not None
+                                and stored_research["input_hash"] != expected_hash
+                            ):
+                                raise MiningDuplicateError(
+                                    "幂等键已用于不同的资料运行输入"
                                 )
                             reused = True
                         else:
@@ -131,6 +162,21 @@ class V2RunStoreMixin:
                                     created,
                                 ],
                             )
+                            if research_input is not None:
+                                conn.execute(
+                                    "INSERT INTO mining_v2.research_run VALUES "
+                                    "(?, ?, ?, ?, ?, ?, ?, ?)",
+                                    [
+                                        request.run_id,
+                                        research_input.input_hash,
+                                        research_input.manifest.manifest_hash,
+                                        "processing",
+                                        canonical_json(research_input.to_dict()),
+                                        None,
+                                        created,
+                                        created,
+                                    ],
+                                )
                             counts = TrialCounts().to_dict()
                             conn.execute(
                                 "INSERT INTO mining_v2.trial_counter VALUES "
