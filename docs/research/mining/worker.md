@@ -58,9 +58,11 @@ Worker 随后必须给出最终 `refine/branch/stop/promote` 决策。工具失�
 
 `mining_worker_code_v1` 接收开发期快照标识、上一轮代码哈希、状态、指标和错误码，
 返回最多 3 轮迭代中的一轮未信任 Python 代码提案。宿主服务把代码写入独立工作区，
-由 `DockerSandboxRunner` 执行并读取
-`rank_ic / icir / coverage / valid_days`。该流程是项目自定义的 CoSTEER 兼容循环，
-不是直接运行上游 `FactorCoSTEER`，代码产物不能直接进入候选、审批或发布。
+由 `DockerSandboxRunner` 执行。提示版本 `mining_qlib_code_prompt_v2` 要求脚本写出
+`factor.parquet` 和 `rank_ic / icir / coverage / valid_days`，宿主再用
+`mining_sandbox.evaluator` 校验冻结索引、覆盖率、非有限值和代码限制。该流程是项目
+自定义的 CoSTEER 兼容循环，不是直接运行上游 `FactorCoSTEER`，代码产物不能直接进入
+候选、审批或发布。
 
 ## 启动
 

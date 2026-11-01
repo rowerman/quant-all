@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -23,6 +22,11 @@ from mining_sandbox.artifacts import (
     verify_artifact_tree,
 )
 from mining_sandbox.errors import SandboxRunnerError, SandboxSnapshotError
+from mining_sandbox.evaluator import (
+    evaluate_factor_output,
+    read_research_metrics,
+    validate_proposal_code,
+)
 from mining_sandbox.feedback import (
     SandboxCodeFeedback,
     SandboxFailureCategory,
@@ -39,7 +43,6 @@ from mining_worker.protocol_code import (
 )
 
 SANDBOX_RESEARCH_SCHEMA_VERSION = "mining_sandbox_research_v1"
-_METRICS_FIELDS = {"rank_ic", "icir", "coverage", "valid_days"}
 _LOGGER = get_sandbox_logger("mining_sandbox.research")
 
 
@@ -117,109 +120,8 @@ def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _read_metrics(path: Path) -> Mapping[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SandboxFeedbackError(
-            SandboxCodeFeedback.create(
-                SandboxFailureCategory.OUTPUT_FORMAT,
-                summary=f"沙箱指标不可读：{type(exc).__name__}",
-                repair_hint="重新写出合法的 metrics.json，字段固定为四个研究指标",
-            )
-        ) from exc
-    if not isinstance(payload, Mapping) or set(payload) != _METRICS_FIELDS:
-        raise SandboxFeedbackError(
-            SandboxCodeFeedback.create(
-                SandboxFailureCategory.OUTPUT_FORMAT,
-                summary="沙箱指标字段不符合契约",
-                repair_hint=(
-                    "metrics.json 必须且只能包含 rank_ic、icir、coverage、valid_days"
-                ),
-            )
-        )
-    if isinstance(payload["valid_days"], bool) or not isinstance(
-        payload["valid_days"],
-        int,
-    ):
-        raise SandboxFeedbackError(
-            SandboxCodeFeedback.create(
-                SandboxFailureCategory.OUTPUT_FORMAT,
-                summary="valid_days 类型不符合契约",
-                repair_hint="valid_days 必须写成大于零的整数",
-            )
-        )
-    if payload["valid_days"] <= 0:
-        raise SandboxFeedbackError(
-            SandboxCodeFeedback.create(
-                SandboxFailureCategory.INDEX,
-                summary="valid_days 没有形成有效交易日索引",
-                repair_hint="对齐冻结交易日和股票索引，并确认至少有一个有效观察日",
-            )
-        )
-    for name in ("rank_ic", "icir", "coverage"):
-        value = payload[name]
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-        ):
-            raise SandboxFeedbackError(
-                SandboxCodeFeedback.create(
-                    SandboxFailureCategory.OUTPUT_FORMAT,
-                    summary=f"{name} 类型不符合契约",
-                    repair_hint=f"{name} 必须写成 JSON 数值",
-                )
-            )
-        if not math.isfinite(float(value)):
-            raise SandboxFeedbackError(
-                SandboxCodeFeedback.create(
-                    SandboxFailureCategory.NUMERIC,
-                    summary=f"{name} 不是有限数值",
-                    repair_hint=f"修正 {name} 的计算，过滤空值和不可计算的样本",
-                )
-            )
-    if not -1 <= float(payload["rank_ic"]) <= 1:
-        raise SandboxFeedbackError(
-            SandboxCodeFeedback.create(
-                SandboxFailureCategory.NUMERIC,
-                summary="rank_ic 超出合法范围",
-                repair_hint="检查收益和因子方向，确保 rank_ic 落在 -1～1",
-            )
-        )
-    if not 0 <= float(payload["coverage"]) <= 1:
-        raise SandboxFeedbackError(
-            SandboxCodeFeedback.create(
-                SandboxFailureCategory.COVERAGE,
-                summary="coverage 超出合法范围",
-                repair_hint="按冻结股票和交易日重算覆盖率，确保结果落在 0～1",
-            )
-        )
-    return {
-        "rank_ic": float(payload["rank_ic"]),
-        "icir": float(payload["icir"]),
-        "coverage": float(payload["coverage"]),
-        "valid_days": payload["valid_days"],
-    }
-
-
 def _code_hash(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
-
-
-def _compile_feedback(code: str) -> SandboxCodeFeedback | None:
-    """静态检查提案语法，不执行提案代码。"""
-
-    try:
-        compile(code, "<proposal>", "exec")
-    except (SyntaxError, ValueError, RecursionError) as exc:
-        line = getattr(exc, "lineno", None)
-        location = f"第 {line} 行" if isinstance(line, int) and line > 0 else ""
-        return SandboxCodeFeedback.create(
-            SandboxFailureCategory.COMPILE,
-            summary=f"提案代码无法通过静态编译 {location}".strip(),
-            repair_hint="修复 Python 语法并保持脚本可独立运行",
-        )
-    return None
 
 
 class SandboxResearchRunner:
@@ -293,7 +195,7 @@ class SandboxResearchRunner:
             ),
             None,
         )
-        image_id = ""
+        image_id = self._resolve_image_id()
         for iteration in range(1, request.max_iterations + 1):
             if should_cancel is not None and should_cancel():
                 raise SandboxRunnerError("沙箱研究已取消")
@@ -366,7 +268,46 @@ class SandboxResearchRunner:
                 _atomic_json(state_path, {**state, "attempts": attempts})
 
             code = code_path.read_text(encoding="utf-8")
-            compile_feedback = _compile_feedback(code)
+            try:
+                validate_proposal_code(code)
+            except SandboxFeedbackError as exc:
+                feedback = exc.feedback
+                attempt = {
+                    **proposal_meta,
+                    "status": "failed",
+                    "metrics": None,
+                    "error_code": feedback.error_code,
+                    "feedback": feedback.to_dict(),
+                    "image_id": image_id,
+                    "container_name": None,
+                    "exit_code": None,
+                    "timed_out": False,
+                    "duration_ms": 0.0,
+                    "stdout_file": None,
+                    "stderr_file": None,
+                    "metrics_file": None,
+                    "factor_file": None,
+                    "evaluation": None,
+                    "evaluation_file": None,
+                }
+                attempts = [
+                    item
+                    for item in attempts
+                    if int(item["iteration"]) != iteration
+                ]
+                attempts.append(attempt)
+                attempts.sort(key=lambda item: int(item["iteration"]))
+                latest_attempt = attempt
+                _atomic_json(state_path, {**state, "attempts": attempts})
+                log_sandbox_feedback(
+                    _LOGGER,
+                    run_id=request.sandbox_run_id,
+                    iteration=iteration,
+                    code_hash=str(attempt["code_hash"]),
+                    feedback=feedback,
+                )
+                continue
+
             result = self.docker_runner.run(
                 run_id=f"{request.sandbox_run_id}-{iteration:03d}",
                 snapshot_dir=snapshot_dir,
@@ -383,6 +324,8 @@ class SandboxResearchRunner:
                 encoding="utf-8",
             )
             metrics = None
+            evaluation = None
+            evaluation_file = None
             feedback = None
             if result.timed_out:
                 feedback = SandboxCodeFeedback.create(
@@ -390,15 +333,40 @@ class SandboxResearchRunner:
                     summary="沙箱执行超过资源时限",
                     repair_hint="减少计算量或数据读取范围，避免无限循环",
                 )
+            elif (
+                result.exit_code in {137, 143}
+                or result.stdout_truncated
+                or result.stderr_truncated
+            ):
+                feedback = SandboxCodeFeedback.create(
+                    SandboxFailureCategory.RESOURCE,
+                    summary="沙箱执行触发资源限制或输出上限",
+                    repair_hint="降低内存和输出规模，避免一次读取过多数据",
+                )
             elif result.exit_code != 0:
-                feedback = compile_feedback or SandboxCodeFeedback.create(
+                feedback = SandboxCodeFeedback.create(
                     SandboxFailureCategory.EXECUTION,
                     summary=f"沙箱执行以非零状态退出：{result.exit_code}",
                     repair_hint="检查运行时异常并修复脚本中的执行路径",
                 )
             else:
                 try:
-                    metrics = dict(_read_metrics(iteration_dir / "metrics.json"))
+                    loaded_metrics = read_research_metrics(
+                        iteration_dir / "metrics.json"
+                    )
+                    loaded_evaluation = evaluate_factor_output(
+                        factor_file=iteration_dir / "factor.parquet",
+                        snapshot_manifest=snapshot,
+                        snapshot_dir=snapshot_dir,
+                        metrics=loaded_metrics,
+                    )
+                    metrics = loaded_metrics
+                    evaluation = loaded_evaluation.to_dict()
+                    evaluation_path = iteration_dir / "evaluation.json"
+                    _atomic_json(evaluation_path, evaluation)
+                    evaluation_file = evaluation_path.relative_to(
+                        artifact_dir
+                    ).as_posix()
                 except SandboxFeedbackError as exc:
                     feedback = exc.feedback
             error_code = feedback.error_code if feedback is not None else None
@@ -408,6 +376,15 @@ class SandboxResearchRunner:
                 "metrics": metrics,
                 "error_code": error_code,
                 "feedback": feedback.to_dict() if feedback is not None else None,
+                "evaluation": evaluation,
+                "evaluation_file": evaluation_file,
+                "factor_file": (
+                    (iteration_dir / "factor.parquet")
+                    .relative_to(artifact_dir)
+                    .as_posix()
+                    if (iteration_dir / "factor.parquet").is_file()
+                    else None
+                ),
                 "image_id": result.image_id,
                 "container_name": result.container_name,
                 "exit_code": result.exit_code,
@@ -444,8 +421,6 @@ class SandboxResearchRunner:
                     feedback=feedback,
                 )
 
-        if not image_id:
-            raise SandboxRunnerError("沙箱研究没有产生容器执行记录")
         status = (
             "completed"
             if any(item["status"] == "passed" for item in attempts)
@@ -496,6 +471,15 @@ class SandboxResearchRunner:
         )
         seal_artifact_tree(artifact_dir, manifest)
         return manifest, False
+
+    def _resolve_image_id(self) -> str:
+        resolver = getattr(self.docker_runner, "resolve_image_id", None)
+        if not callable(resolver):
+            raise SandboxRunnerError("沙箱运行器不能解析容器镜像 ID")
+        image_id = resolver()
+        if not isinstance(image_id, str) or not image_id.startswith("sha256:"):
+            raise SandboxRunnerError("沙箱运行器返回了非法镜像 ID")
+        return image_id
 
 
 def _file_sha(path: Path) -> str:

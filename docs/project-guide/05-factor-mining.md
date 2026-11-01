@@ -738,7 +738,7 @@ V1 和 V2 共用一个活动发布批次约束。
 | `MINING-141` | 内部 | 交易日或股票索引没有有效观察 |
 | `MINING-142` | 内部 | 覆盖率越界 |
 | `MINING-143` | 内部 | 指标不是有限数值或 RankIC 越界 |
-| `MINING-144` | 内部 | 代码违反沙箱研究限制，供 P1-02 使用 |
+| `MINING-144` | 内部 | 代码违反沙箱研究限制 |
 | `MINING-145` | 内部 | 沙箱资源限制或执行超时 |
 
 ### 10.2 日志
@@ -835,7 +835,7 @@ PY
 | V2 契约、轨迹、恢复和尝试台账 | [test_mining_search_contracts.py](../../tests/test_mining_search_contracts.py)、[test_mining_v2_trace.py](../../tests/test_mining_v2_trace.py)、[test_mining_v2_trials.py](../../tests/test_mining_v2_trials.py) |
 | V2 选择诊断、稳定性和统计 | [test_mining_selection_diagnostics.py](../../tests/test_mining_selection_diagnostics.py)、[test_mining_search_stability.py](../../tests/test_mining_search_stability.py)、[test_mining_statistical_diagnostics.py](../../tests/test_mining_statistical_diagnostics.py) |
 | V2 受控分析工具 | [test_mining_analysis_tools.py](../../tests/test_mining_analysis_tools.py) |
-| M5 沙箱和代码研究 | [test_mining_sandbox.py](../../tests/test_mining_sandbox.py)、[test_mining_sandbox_research.py](../../tests/test_mining_sandbox_research.py)、[test_mining_sandbox_feedback.py](../../tests/test_mining_sandbox_feedback.py) |
+| M5 沙箱和代码研究 | [test_mining_sandbox.py](../../tests/test_mining_sandbox.py)、[test_mining_sandbox_research.py](../../tests/test_mining_sandbox_research.py)、[test_mining_sandbox_feedback.py](../../tests/test_mining_sandbox_feedback.py)、[test_mining_sandbox_evaluator.py](../../tests/test_mining_sandbox_evaluator.py) |
 
 2026-11-01 的文档状态以当前代码和 V135 审计为准：
 

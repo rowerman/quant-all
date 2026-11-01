@@ -9,6 +9,7 @@ import os
 import subprocess
 
 import duckdb
+import pandas as pd
 import pytest
 
 from mining.search_context import FrozenSearchContext
@@ -29,7 +30,31 @@ from mining_sandbox.worker_client import MockSandboxCodeWorkerClient
 from mining_worker.protocol_code import WorkerCodeProposalResponse
 
 
-def _snapshot_manifest() -> QlibSnapshotManifest:
+def _snapshot_manifest(
+    snapshot_dir: Path | None = None,
+) -> QlibSnapshotManifest:
+    files = {}
+    calendar_sha256 = "b" * 64
+    instruments_sha256 = "c" * 64
+    if snapshot_dir is not None:
+        calendar = snapshot_dir / "calendars" / "day.txt"
+        instruments = snapshot_dir / "instruments" / "all.txt"
+        calendar_sha256 = __import__("hashlib").sha256(
+            calendar.read_bytes()
+        ).hexdigest()
+        instruments_sha256 = __import__("hashlib").sha256(
+            instruments.read_bytes()
+        ).hexdigest()
+        files = {
+            "calendars/day.txt": {
+                "bytes": calendar.stat().st_size,
+                "sha256": calendar_sha256,
+            },
+            "instruments/all.txt": {
+                "bytes": instruments.stat().st_size,
+                "sha256": instruments_sha256,
+            },
+        }
     return QlibSnapshotManifest(
         context_hash="a" * 64,
         data_version="test_data_v1",
@@ -37,9 +62,9 @@ def _snapshot_manifest() -> QlibSnapshotManifest:
         start_date="2012-01-01",
         end_date="2019-12-31",
         fields=("close", "label"),
-        calendar_sha256="b" * 64,
-        instruments_sha256="c" * 64,
-        files={},
+        calendar_sha256=calendar_sha256,
+        instruments_sha256=instruments_sha256,
+        files=files,
         row_count=3,
         total_bytes=0,
     )
@@ -48,10 +73,34 @@ def _snapshot_manifest() -> QlibSnapshotManifest:
 _DEFAULT_METRICS = {
     "rank_ic": 0.03,
     "icir": 0.4,
-    "coverage": 0.8,
-    "valid_days": 100,
+    "coverage": 1.0,
+    "valid_days": 3,
 }
 _UNSET = object()
+
+_DEFAULT_FACTOR = pd.DataFrame(
+    {
+        "date": ["2019-12-27", "2019-12-30", "2019-12-31"],
+        "instrument": ["SH600000", "SH600000", "SH600000"],
+        "value": [0.1, 0.2, 0.3],
+    }
+)
+
+
+def _prepare_snapshot(snapshot_dir: Path) -> QlibSnapshotManifest:
+    calendar = snapshot_dir / "calendars" / "day.txt"
+    instruments = snapshot_dir / "instruments" / "all.txt"
+    calendar.parent.mkdir(parents=True)
+    instruments.parent.mkdir(parents=True)
+    calendar.write_text(
+        "2019-12-27\n2019-12-30\n2019-12-31\n",
+        encoding="utf-8",
+    )
+    instruments.write_text(
+        "SH600000\t2019-12-27\t2019-12-31\n",
+        encoding="utf-8",
+    )
+    return _snapshot_manifest(snapshot_dir)
 
 
 class FakeDockerRunner:
@@ -62,12 +111,21 @@ class FakeDockerRunner:
         timed_out: bool = False,
         metrics: object = _UNSET,
         metrics_text: str | None = None,
+        exit_code: int | None = None,
+        stdout_truncated: bool = False,
+        stderr_truncated: bool = False,
     ) -> None:
         self.passed = passed
         self.timed_out = timed_out
         self.metrics = _DEFAULT_METRICS if metrics is _UNSET else metrics
         self.metrics_text = metrics_text
+        self.exit_code = exit_code
+        self.stdout_truncated = stdout_truncated
+        self.stderr_truncated = stderr_truncated
         self.calls = 0
+
+    def resolve_image_id(self) -> str:
+        return "sha256:" + "d" * 64
 
     def run(
         self,
@@ -79,6 +137,11 @@ class FakeDockerRunner:
     ) -> SandboxExecutionResult:
         self.calls += 1
         workspace = Path(workspace_dir)
+        if self.passed:
+            _DEFAULT_FACTOR.to_parquet(
+                workspace / "factor.parquet",
+                index=False,
+            )
         if self.metrics_text is not None:
             (workspace / "metrics.json").write_text(
                 self.metrics_text,
@@ -89,7 +152,15 @@ class FakeDockerRunner:
                 json.dumps(self.metrics),
                 encoding="utf-8",
             )
-        exit_code = -9 if self.timed_out else (0 if self.passed else 2)
+        exit_code = (
+            -9
+            if self.timed_out
+            else (
+                self.exit_code
+                if self.exit_code is not None
+                else (0 if self.passed else 2)
+            )
+        )
         return SandboxExecutionResult(
             run_id=run_id,
             container_name=f"test-{run_id}",
@@ -99,8 +170,8 @@ class FakeDockerRunner:
             duration_ms=12.5,
             stdout="passed\n" if self.passed else "",
             stderr="" if self.passed else "failed\n",
-            stdout_truncated=False,
-            stderr_truncated=False,
+            stdout_truncated=self.stdout_truncated,
+            stderr_truncated=self.stderr_truncated,
         )
 
 
@@ -138,12 +209,12 @@ def _runner(tmp_path: Path, docker) -> tuple[SandboxResearchRunner, object]:
     )
 
 
-def _request() -> SandboxResearchRequest:
+def _request(snapshot: QlibSnapshotManifest) -> SandboxResearchRequest:
     return SandboxResearchRequest(
         sandbox_run_id="sandboxrun_research_0001",
         hypothesis="短期价格修复在开发期可能形成可检验因子",
         context_hash="a" * 64,
-        snapshot_manifest_hash=_snapshot_manifest().manifest_hash,
+        snapshot_manifest_hash=snapshot.manifest_hash,
         llm_model="deepseek/deepseek-chat",
         max_iterations=2,
     )
@@ -178,11 +249,12 @@ def test_research_loop_archives_all_attempts_and_reuses_sealed_run(
     monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
     runner, policy = _runner(tmp_path, FakeDockerRunner())
     snapshot_dir = tmp_path / "snapshots" / "dev"
-    snapshot_dir.mkdir(parents=True)
+    snapshot = _prepare_snapshot(snapshot_dir)
+    request = _request(snapshot)
 
     manifest, reused = runner.run(
-        request=_request(),
-        snapshot=_snapshot_manifest(),
+        request=request,
+        snapshot=snapshot,
         snapshot_dir=snapshot_dir,
     )
 
@@ -196,13 +268,13 @@ def test_research_loop_archives_all_attempts_and_reuses_sealed_run(
     assert runner.worker.requests[1].previous_attempt["code_hash"] == (
         manifest.attempts[0]["code_hash"]
     )
-    artifact_dir = policy.workspace_root_path / _request().sandbox_run_id
+    artifact_dir = policy.workspace_root_path / request.sandbox_run_id
     assert verify_artifact_tree(artifact_dir).manifest_hash == manifest.manifest_hash
     assert (artifact_dir / "iterations/001/proposal.py").stat().st_mode & 0o222 == 0
 
     second, second_reused = runner.run(
-        request=_request(),
-        snapshot=_snapshot_manifest(),
+        request=request,
+        snapshot=snapshot,
         snapshot_dir=snapshot_dir,
     )
     assert second_reused is True
@@ -216,11 +288,11 @@ def test_failed_attempt_is_preserved_and_fed_to_next_round(
     monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
     runner, _ = _runner(tmp_path, FakeDockerRunner(passed=False))
     snapshot_dir = tmp_path / "snapshots" / "dev"
-    snapshot_dir.mkdir(parents=True)
+    snapshot = _prepare_snapshot(snapshot_dir)
 
     manifest, _ = runner.run(
-        request=_request(),
-        snapshot=_snapshot_manifest(),
+        request=_request(snapshot),
+        snapshot=snapshot,
         snapshot_dir=snapshot_dir,
     )
 
@@ -279,6 +351,24 @@ def test_failed_attempt_is_preserved_and_fed_to_next_round(
             "MINING-145",
             SandboxFailureCategory.RESOURCE.value,
         ),
+        (
+            {"passed": False, "exit_code": 137},
+            "print('oom')",
+            "MINING-145",
+            SandboxFailureCategory.RESOURCE.value,
+        ),
+        (
+            {"stderr_truncated": True},
+            "print('too much output')",
+            "MINING-145",
+            SandboxFailureCategory.RESOURCE.value,
+        ),
+        (
+            {},
+            "import subprocess\nprint('blocked')",
+            "MINING-144",
+            SandboxFailureCategory.CODE_POLICY.value,
+        ),
     ],
 )
 def test_research_failures_have_structured_categories(
@@ -303,11 +393,11 @@ def test_research_failures_have_structured_categories(
         code=code,
     )
     snapshot_dir = tmp_path / "snapshots" / "dev"
-    snapshot_dir.mkdir(parents=True)
+    snapshot = _prepare_snapshot(snapshot_dir)
 
     manifest, _ = runner.run(
-        request=replace(_request(), max_iterations=1),
-        snapshot=_snapshot_manifest(),
+        request=replace(_request(snapshot), max_iterations=1),
+        snapshot=snapshot,
         snapshot_dir=snapshot_dir,
     )
 
@@ -318,6 +408,38 @@ def test_research_failures_have_structured_categories(
     assert attempt["feedback"]["category"] == expected_category
 
 
+def test_code_policy_rejection_skips_container_execution(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
+    policy = replace(
+        load_sandbox_policy(),
+        enabled=True,
+        snapshot_root="snapshots",
+        workspace_root="work",
+        review_root="review",
+    )
+    docker = FakeDockerRunner()
+    runner = _single_proposal_runner(
+        policy,
+        docker,
+        code="import socket\nprint('blocked')",
+    )
+    snapshot_dir = tmp_path / "snapshots" / "dev"
+    snapshot = _prepare_snapshot(snapshot_dir)
+
+    manifest, _ = runner.run(
+        request=replace(_request(snapshot), max_iterations=1),
+        snapshot=snapshot,
+        snapshot_dir=snapshot_dir,
+    )
+
+    assert docker.calls == 0
+    assert manifest.attempts[0]["container_name"] is None
+    assert manifest.attempts[0]["error_code"] == "MINING-144"
+
+
 def test_manual_promotion_and_review_copy_never_create_formal_candidate(
     tmp_path: Path,
     monkeypatch,
@@ -325,13 +447,14 @@ def test_manual_promotion_and_review_copy_never_create_formal_candidate(
     monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
     runner, policy = _runner(tmp_path, FakeDockerRunner())
     snapshot_dir = tmp_path / "snapshots" / "dev"
-    snapshot_dir.mkdir(parents=True)
+    snapshot = _prepare_snapshot(snapshot_dir)
+    request = _request(snapshot)
     manifest, _ = runner.run(
-        request=_request(),
-        snapshot=_snapshot_manifest(),
+        request=request,
+        snapshot=snapshot,
         snapshot_dir=snapshot_dir,
     )
-    artifact_dir = policy.workspace_root_path / _request().sandbox_run_id
+    artifact_dir = policy.workspace_root_path / request.sandbox_run_id
     promotion = PromotionRequest(
         sandbox_run_id=manifest.sandbox_run_id,
         artifact_manifest_hash=manifest.manifest_hash,
@@ -366,10 +489,10 @@ def test_artifact_tampering_is_detected(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
     runner, policy = _runner(tmp_path, FakeDockerRunner())
     snapshot_dir = tmp_path / "snapshots" / "dev"
-    snapshot_dir.mkdir(parents=True)
+    snapshot = _prepare_snapshot(snapshot_dir)
     manifest, _ = runner.run(
-        request=_request(),
-        snapshot=_snapshot_manifest(),
+        request=_request(snapshot),
+        snapshot=snapshot,
         snapshot_dir=snapshot_dir,
     )
     artifact_dir = policy.workspace_root_path / manifest.sandbox_run_id
@@ -389,8 +512,8 @@ def test_resume_reuses_persisted_code_without_new_model_call(
     monkeypatch.setattr(policy_module, "PROJECT_ROOT", tmp_path)
     runner, policy = _runner(tmp_path, FakeDockerRunner())
     snapshot_dir = tmp_path / "snapshots" / "dev"
-    snapshot_dir.mkdir(parents=True)
-    request = replace(_request(), max_iterations=1)
+    snapshot = _prepare_snapshot(snapshot_dir)
+    request = replace(_request(snapshot), max_iterations=1)
     artifact_dir = policy.workspace_root_path / request.sandbox_run_id
     iteration_dir = artifact_dir / "iterations" / "001"
     iteration_dir.mkdir(parents=True)
@@ -426,7 +549,7 @@ def test_resume_reuses_persisted_code_without_new_model_call(
     )
     manifest, reused = runner.run(
         request=request,
-        snapshot=_snapshot_manifest(),
+        snapshot=snapshot,
         snapshot_dir=snapshot_dir,
     )
 
@@ -514,6 +637,12 @@ init(provider_uri="/snapshot", region="cn", kernels=1)
 frame = D.features(["SH600000"], ["$close", "$label"])
 frame = frame.dropna()
 rank_ic = float(frame["$close"].corr(frame["$label"], method="spearman"))
+factor = frame[["$close"]].rename(columns={"$close": "value"}).reset_index()
+factor = factor.rename(columns={"datetime": "date"})
+factor[["date", "instrument", "value"]].to_parquet(
+    "/workspace/factor.parquet",
+    index=False,
+)
 Path("/workspace/metrics.json").write_text(
     json.dumps({
         "rank_ic": rank_ic,
@@ -556,6 +685,8 @@ Path("/workspace/metrics.json").write_text(
 
     assert manifest.status == "completed"
     assert manifest.attempts[0]["metrics"]["rank_ic"] == pytest.approx(1.0)
+    assert manifest.attempts[0]["evaluation"]["coverage"] == pytest.approx(1.0)
+    assert manifest.attempts[0]["factor_file"] == "iterations/001/factor.parquet"
     assert manifest.image_id.startswith("sha256:")
     audit = subprocess.run(
         [

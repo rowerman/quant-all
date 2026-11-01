@@ -12,7 +12,7 @@ from mining_worker.protocol import WorkerProtocolError
 from mining_worker.protocol_v2 import ensure_agent_payload
 
 WORKER_CODE_SCHEMA_VERSION = "mining_worker_code_v1"
-CODE_PROMPT_VERSION = "mining_qlib_code_prompt_v1"
+CODE_PROMPT_VERSION = "mining_qlib_code_prompt_v2"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 
 

@@ -189,6 +189,9 @@ M5 只能在隔离沙箱中运行有限代码研究，不能直接创建正式�
 | [search_control](../../research/mining/search_control.py) | 预算、失败、无改善和模型建议的确定性控制 |
 | [analysis_tool_gateway](../../research/mining/analysis_tool_gateway.py) | 7 个固定只读工具、超时、缓存和审计 |
 | [mining_sandbox.research](../../research/mining_sandbox/research.py) | M5 代码提案、沙箱执行、恢复和产物封存 |
+| [mining_sandbox.evaluator](../../research/mining_sandbox/evaluator.py) | M5 代码限制、因子输出、冻结索引和覆盖率确定性评估 |
+| [mining_sandbox.code_policy](../../research/mining_sandbox/code_policy.py) | M5 提案导入、调用和固定路径静态限制 |
+| [mining_sandbox.metrics](../../research/mining_sandbox/metrics.py) | M5 汇总指标严格读取、类型和范围校验 |
 
 主服务保存候选、评估和正式数据，只通过 HTTP 把有界请求发给 Worker。V2 的工具结果、
 选择期诊断、最终评估和测试段都由主服务确定性执行，Worker 不能直接访问数据库。
@@ -888,6 +891,7 @@ orchestrator.close()
 | [V2 tools](../../tests/test_mining_analysis_tools.py) | 白名单、预算、超时、缓存和审计 |
 | [sandbox](../../tests/test_mining_sandbox.py) | 政策、路径、网络、资源和隔离边界 |
 | [sandbox research](../../tests/test_mining_sandbox_research.py) | 代码提案、执行、恢复、产物和人工提升 |
+| [sandbox evaluator](../../tests/test_mining_sandbox_evaluator.py) | 代码限制、因子明细、索引、覆盖率和稳定反馈 |
 
 V135 对 M1～M5 的分批定向测试分别为 `102`、`124`、`85`、`83`、`36 passed`；
 V134 完成后的全量测试记录为 `1483 passed`。这些结果证明当前代码和证据链通过审计，

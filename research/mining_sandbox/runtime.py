@@ -171,6 +171,11 @@ class DockerSandboxRunner:
             raise SandboxRunnerError("沙箱镜像 ID 不合法")
         return image_id
 
+    def resolve_image_id(self) -> str:
+        """返回当前沙箱镜像的不可变 Docker ID。"""
+
+        return self._image_id()
+
     def run(
         self,
         *,

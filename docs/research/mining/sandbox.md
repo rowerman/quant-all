@@ -62,11 +62,30 @@ docker build -t quant-mining-sandbox:s5 \
 
 Worker v4 使用 `mining_worker_code_v1`，由固定 RD-Agent 模型生成 Qlib 研究脚本；脚本
 只作为未信任提案返回主服务。Host 研究循环最多执行 3 轮，每轮把代码写入独立工作区，
-由断网容器执行，再读取严格的 `rank_ic / icir / coverage / valid_days` 指标，并把上一轮
-失败或指标反馈给下一轮。
+先做静态编译和代码限制检查，再由断网容器执行。提示版本
+`mining_qlib_code_prompt_v2` 要求脚本同时写出 `factor.parquet` 和
+`rank_ic / icir / coverage / valid_days` 指标，并把上一轮失败或指标反馈给下一轮。
 
 代码模型不直接运行在 Worker 容器。沙箱只挂载冻结快照和工作区，不能访问主数据库、正式
 候选、正式因子、Token 或 Docker socket。沙箱指标只用于产生研究提案，不是正式质量结论。
+
+## 确定性评估
+
+`mining_sandbox.evaluator` 不执行提案代码，只按冻结输入验证输出；代码策略和指标契约
+分别由 `mining_sandbox.code_policy`、`mining_sandbox.metrics` 维护：
+
+- `factor.parquet` 必须且只能包含 `date`、`instrument`、`value`。
+- 日期必须在冻结交易日历内，股票代码必须在冻结索引内，且日期位于该股票有效区间。
+- `(date, instrument)` 不得重复，`value` 必须全部为有限数值；缺失因子直接省略行。
+- `coverage` 由有限因子行数除以快照 `row_count` 重算，`valid_days` 由输出中的不同
+  交易日重算，并与 `metrics.json` 完全一致。
+- 评估结果写入 `evaluation.json`，记录快照哈希、因子文件哈希、行数、股票数、有效
+  交易日、覆盖率和稳定 `evaluation_hash`，不包含宿主路径或当前时间。
+
+执行前静态检查只允许 `json`、`math`、`statistics`、`pathlib`、`numpy`、`pandas`、
+`scipy` 和 `qlib` 等研究导入，拒绝 shell、网络、进程、环境变量、动态执行、动态导入、
+内部属性和固定路径之外的绝对路径。该检查负责尽早反馈；容器断网、只读挂载、非 root
+和资源限制仍是强制安全边界。
 
 ## 结构化反馈
 
@@ -95,7 +114,7 @@ Prompt 或研究假设，并遮蔽 API Key、Bearer Token、已知密钥和宿�
 
 ## 产物与人工提升
 
-每次研究把所有代码提案、运行状态、stdout/stderr、指标和错误写入
+每次研究把所有代码提案、运行状态、stdout/stderr、因子明细、评估结果、指标和错误写入
 `data/mining_sandbox/work/<sandbox_run_id>/`。`manifest.json` 记录全部尝试、代码哈希、
 镜像 ID、Python/Qlib 版本、依赖锁哈希、模型和提示版本，以及每个产物的 SHA-256。完成后
 目录封存为只读；`verify_artifact_tree()` 可检测文件缺失、大小变化和哈希篡改。
@@ -120,5 +139,5 @@ DSL/算子引用，并明确标记 `formal_candidate_created=false`。它不调�
 | `MINING-141` | 交易日或股票索引没有有效观察 |
 | `MINING-142` | 覆盖率越界 |
 | `MINING-143` | 指标不是有限数值或 RankIC 越界 |
-| `MINING-144` | 代码违反沙箱研究限制，供 P1-02 使用 |
+| `MINING-144` | 代码违反沙箱研究限制 |
 | `MINING-145` | 沙箱资源限制或执行超时 |

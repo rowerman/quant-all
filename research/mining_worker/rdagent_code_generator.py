@@ -19,8 +19,12 @@ def _prompt(request: WorkerCodeProposalRequest) -> tuple[str, str]:
     system = (
         "你是量化因子代码研究员。生成一段可独立运行的 Python 3.11 研究脚本，"
         "使用 Qlib 0.9.7 从只读目录 /snapshot 读取数据。代码不能联网，不能读取其他"
-        "路径，不能启动 shell，不能读取环境变量或密钥。脚本必须把结果写到 "
-        "/workspace/metrics.json，JSON 只包含 rank_ic、icir、coverage、valid_days。"
+        "路径，不能启动 shell，不能读取环境变量或密钥。脚本必须把有效因子值写到 "
+        "/workspace/factor.parquet，列只能是 date、instrument、value；date 和 "
+        "instrument 必须属于 /snapshot 冻结索引，value 必须有限，缺失值直接省略行。"
+        "脚本还必须把汇总写到 /workspace/metrics.json，JSON 只包含 rank_ic、icir、"
+        "coverage、valid_days；coverage 等于有限因子行数除以快照总行数，valid_days "
+        "等于 factor.parquet 中不同交易日的数量。"
         "输出严格 JSON，字段为 proposal_id、code、rationale、model、prompt_version、"
         "usage。只能研究开发期冻结数据，不能把结果表述为正式候选或审批结论。"
     )
