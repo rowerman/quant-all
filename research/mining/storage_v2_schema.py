@@ -175,6 +175,22 @@ V2_DDL = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS mining_v2.search_approval (
+        approval_id VARCHAR PRIMARY KEY,
+        run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
+        candidate_id VARCHAR NOT NULL,
+        decision VARCHAR NOT NULL,
+        reviewer VARCHAR NOT NULL,
+        note VARCHAR NOT NULL,
+        candidate_content_hash VARCHAR NOT NULL,
+        semantic_hash VARCHAR NOT NULL,
+        context_hash VARCHAR NOT NULL,
+        evidence_hash VARCHAR NOT NULL,
+        created_at VARCHAR NOT NULL,
+        UNIQUE (run_id, candidate_id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS mining_v2.analysis_tool_cache (
         run_id VARCHAR NOT NULL REFERENCES mining_v2.run(run_id),
         cache_key VARCHAR NOT NULL,
@@ -374,6 +390,10 @@ V2_DDL = (
     """
     CREATE INDEX IF NOT EXISTS idx_mining_v2_evaluation_candidate
     ON mining_v2.evaluation_evidence(run_id, candidate_id, stage)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_mining_v2_search_approval_candidate
+    ON mining_v2.search_approval(run_id, candidate_id)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_mining_v2_tool_audit

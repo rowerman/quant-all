@@ -110,4 +110,5 @@ curl -N 'http://127.0.0.1:8800/api/compare/stream?factors=MOM_20,MOM_60&mode=ic'
 
 V2 当前没有独立的候选审批入口：`GET .../candidates/{candidate_id}` 和
 `POST .../decision` 会拒绝 V2 运行，`POST .../publication-batches` 也尚未适配。
-这些限制对应根目录进度记录中的 P0，不应把 `review_ready` 解释为可发布状态。
+候选审批、证据哈希和最终状态已由 `MiningV2Store` 提供，但上述 Web 入口要到 P0-04
+才接入。因此不应把 `review_ready` 解释为可发布状态。

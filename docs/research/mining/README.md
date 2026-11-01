@@ -5,8 +5,9 @@
 V2 证据驱动搜索、四段时序窗口、尝试台账、受控分析工具、组合价值和统计诊断；M5
 隔离代码研究沙箱。V135 已复核路线图 34 项，当前 M1～M5 均已完成。
 
-V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用，当前停在
-`review_ready`，尚不能从 V2 页面审批或发布。M5 默认关闭，只产生人工审核材料。
+V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用，运行停在
+`review_ready`；候选审批已可在存储层完成，但尚无页面入口或正式发布适配。M5 默认
+关闭，只产生人工审核材料。
 后续任务见[根目录进度记录](../../../FACTOR_MINING_PROGRESS.md)。
 
 ## 启动与停止
@@ -59,7 +60,8 @@ bash tools/monitor/serve.sh
 ```
 
 默认仍使用 V1 生产编排。需要运行证据驱动 V2 实验时额外设置
-`MINING_SEARCH_V2_ENABLED=true`；V2 默认关闭，不开放实验候选的审批和正式发布。
+`MINING_SEARCH_V2_ENABLED=true`；V2 默认关闭，目前只开放存储层候选审批，不开放
+正式发布。
 
 监测站是前台服务，打开 http://127.0.0.1:8800/#/mining 进入挖掘页面。首次启动会创建
 独立候选库 `data/databases/factor_mining.duckdb` 和 `data/factor_mining/`；只有人工批准
@@ -247,7 +249,7 @@ Worker 用法与部署命令见 [独立 RD-Agent Worker](worker.md)。主服务�
 
 V2 搜索契约、分层窗口和角色可见性见
 [V2 搜索轨迹基础](search-v2.md)。M1～M4 已覆盖轨迹、逐轮闭环、组合价值、统计诊断
-和受控分析工具。V2 仍不接管 V1 默认编排，也不提供审批和正式发布。
+和受控分析工具。V2 仍不接管 V1 默认编排；候选审批已在存储层落地，正式发布尚未接入。
 
 M5 的 Qlib 快照、代码提案循环、产物清单和人工提升流程见
 [隔离代码研究沙箱](sandbox.md)。该能力不等同于直接运行上游 `FactorCoSTEER`，

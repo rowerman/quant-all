@@ -6,11 +6,13 @@ import json
 
 import duckdb
 
+from mining.contract_evidence import ApprovalDecision
 from mining.contract_types import sha256_json
 from mining.errors import MiningNotFoundError, MiningStorageError
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.search_evidence import EvidencePacket, SearchDecision
 from mining.search_evaluation_evidence import SearchEvaluationEvidence
+from mining.search_review import search_approval_record_hash
 from mining.search_trials import TrialRecord
 from mining.storage_v2_trace_states import ZERO_HASH
 
@@ -199,6 +201,31 @@ class V2TraceValidationMixin:
                 entry_id,
             )
             return SearchEvaluationEvidence.from_dict(payload).evidence_hash
+        if entry_type == "search_approval":
+            row = conn.execute(
+                "SELECT run_id, candidate_id, decision, reviewer, note, "
+                "candidate_content_hash, semantic_hash, context_hash, "
+                "evidence_hash, created_at "
+                "FROM mining_v2.search_approval "
+                "WHERE run_id=? AND approval_id=?",
+                [run_id, entry_id],
+            ).fetchone()
+            if row is None:
+                raise MiningStorageError(f"轨迹审批记录不存在：{entry_id}")
+            return search_approval_record_hash(
+                ApprovalDecision(
+                    run_id=row[0],
+                    candidate_id=row[1],
+                    decision=row[2],
+                    reviewer=row[3],
+                    note=row[4],
+                    candidate_content_hash=row[5],
+                    semantic_hash=row[6],
+                    context_hash=row[7],
+                    evidence_hash=row[8],
+                    created_at=row[9],
+                )
+            )
         return None
 
     def _candidate_rows_conn(

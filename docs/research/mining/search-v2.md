@@ -5,8 +5,9 @@
 V1 生产编排仍保持默认，V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用。
 V2 窗口、预算和角色配置位于 `configs/mining/search.json`。
 
-当前 V2 运行在一次性测试段后进入 `review_ready`。它尚未接入人工审批和正式发布，
-后续 V2 链路补齐及 V3 最终闭环见
+当前 V2 运行在一次性测试段后进入 `review_ready`。候选级审批资格、证据哈希和
+`approved/rejected` 状态已在 `MiningV2Store` 落地，但还没有 Web API、页面入口或正式
+发布适配。后续 V2 链路补齐及 V3 最终闭环见
 [根目录进度记录](../../../FACTOR_MINING_PROGRESS.md)。
 
 ## 分层窗口

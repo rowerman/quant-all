@@ -169,6 +169,12 @@ from mining.search_research_quality import (
     ResearchQualityConclusion,
     evaluate_research_quality,
 )
+from mining.search_review import (
+    SEARCH_APPROVAL_REQUIRED_STAGES,
+    SEARCH_APPROVAL_SCHEMA_VERSION,
+    SearchApprovalEvidence,
+    SearchApprovalEligibility,
+)
 from mining.search_statistical_diagnostics import (
     MULTIPLE_TESTING_STAGE,
     MultipleTestingReport,
@@ -300,6 +306,10 @@ __all__ = [
     "SEARCH_RUN_STATUSES",
     "SEARCH_RUN_TERMINAL_STATUSES",
     "SearchRunStateMachine",
+    "SEARCH_APPROVAL_REQUIRED_STAGES",
+    "SEARCH_APPROVAL_SCHEMA_VERSION",
+    "SearchApprovalEvidence",
+    "SearchApprovalEligibility",
     "EvidencePacket",
     "ExperimentBatch",
     "ExpressionValidationError",

@@ -36,8 +36,9 @@
 
 截至 2026-11-01，S2～S9 和 M1～M5 已交付。V135 复核了路线图 34 项，M1～M5
 均保持完成。V1 继续作为默认生产链路；V2 需设置 `MINING_SEARCH_V2_ENABLED=true`，
-当前停在 `review_ready`；M5 默认关闭，产物只能人工提升。后续 V2 生产闭环、四项
-扩展和 V3 集成见[根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
+运行停在 `review_ready`，候选审批已在存储层实现但还没有页面和正式发布；M5 默认关闭，
+产物只能人工提升。后续 V2 生产闭环、四项扩展和 V3 集成见
+[根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
 
 当前冻结数据版本为 `tushare_fullA_20000104_20261015`。字段目录包含 95 个字段声明，
 其中 84 个允许进入表达式；另有 34 个冻结算子。目录 schema 为 `mining_catalog_v1`，
