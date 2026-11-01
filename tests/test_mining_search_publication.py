@@ -11,150 +11,13 @@ import duckdb
 import pytest
 
 from factors.registry import FactorSpec
-from mining.contract_evidence import ApprovalDecision
 from mining.errors import MiningStorageError, PublicationConflictError
-from mining.expression_validation import validate_expression
 from mining.publication_contracts import new_publication_batch
 from mining.publication_builder import _entry
 from mining.publication_service import MiningPublicationService
-from mining.search_cards import ExperimentBatch, HypothesisCard
-from mining.search_context import FrozenSearchContext
-from mining.search_evaluation_evidence import SearchEvaluationEvidence
-from mining.search_orchestrator_support import candidate_payload
-from mining.search_review import SEARCH_APPROVAL_REQUIRED_STAGES
-from mining.search_run import SearchRunRequest
 from mining.storage import MiningStore
 from mining.storage_v2 import MiningV2Store
-
-
-def _approved_run(tmp_path: Path) -> tuple[MiningV2Store, str, tuple[str, ...]]:
-    """创建带两个已批准候选的 V2 审核态运行。"""
-
-    store = MiningV2Store(
-        tmp_path / "factor_mining.duckdb",
-        tmp_path / "data",
-    )
-    run = store.create_run(
-        SearchRunRequest(
-            "search-publication-0001",
-            "短期趋势可能带来开发期超额收益",
-        ),
-        FrozenSearchContext(data_fingerprint="a" * 64),
-    )
-    card = HypothesisCard(
-        run_id=run["run_id"],
-        turn_index=1,
-        branch_id="branch-0001",
-        statement="短期趋势可能带来开发期超额收益",
-        mechanism="价格趋势延续",
-        expected_direction="positive",
-        falsification_criteria=("完整评估未通过",),
-    )
-    definitions = (
-        validate_expression("mean(close, 5)", direction=1).to_candidate(
-            mechanism="短期趋势",
-            description="五日收盘均值",
-            steps=("读取收盘价", "计算五日均值"),
-            discovery_round=1,
-            discovery_index=1,
-        ),
-        validate_expression("mean(close, 10)", direction=1).to_candidate(
-            mechanism="中期趋势",
-            description="十日收盘均值",
-            steps=("读取收盘价", "计算十日均值"),
-            discovery_round=1,
-            discovery_index=2,
-        ),
-    )
-    candidate_ids = tuple(item.candidate_id for item in definitions)
-    batch = ExperimentBatch(
-        run_id=run["run_id"],
-        hypothesis_id=card.hypothesis_id,
-        turn_index=1,
-        branch_id=card.branch_id,
-        candidate_ids=candidate_ids,
-        parent_candidate_ids=(),
-        development_start="2012-01-01",
-        development_end="2019-12-31",
-        input_hash="b" * 64,
-    )
-    store.begin_turn(run["run_id"], card, batch)
-    for candidate_index, candidate in enumerate(definitions, start=1):
-        store.record_candidate(
-            run["run_id"],
-            candidate_id=candidate.candidate_id,
-            candidate_hash=candidate.content_hash,
-            semantic_hash=candidate.semantic_hash,
-            name=candidate.name,
-            status="proposed",
-            hypothesis_id=card.hypothesis_id,
-            batch_id=batch.batch_id,
-            payload=candidate_payload(candidate),
-        )
-        for target in (
-            "validating",
-            "screening",
-            "evaluating",
-            "evaluated",
-            "holdout_running",
-            "review_ready",
-        ):
-            store.transition_candidate(
-                run["run_id"],
-                candidate.candidate_id,
-                target,
-            )
-        for stage_index, stage in enumerate(SEARCH_APPROVAL_REQUIRED_STAGES):
-            suffix = f"{candidate_index:x}{stage_index + 1:x}" * 32
-            store.record_evaluation_evidence(
-                SearchEvaluationEvidence(
-                    run_id=run["run_id"],
-                    candidate_id=candidate.candidate_id,
-                    stage=stage,
-                    input_hash=suffix,
-                    status="passed",
-                    metrics={
-                        "rank_ic_mean": 0.03,
-                        "rank_ic_ir": 0.4,
-                        "year_sign_consistency": 0.75,
-                        "valid_days": 100,
-                        "values": {"coverage": 0.8, "rows": 10000},
-                    },
-                )
-            )
-    for target in (
-        "searching",
-        "selecting",
-        "evaluating",
-        "holding_out",
-        "review_ready",
-    ):
-        store.transition_search_run(
-            run["run_id"],
-            target,
-            event_key=f"run_{target}",
-            stage=target,
-        )
-    store.validate_search_trace(run["run_id"])
-    for candidate_id in candidate_ids:
-        eligibility = store.search_approval_eligibility(
-            run["run_id"],
-            candidate_id,
-        )
-        store.record_search_approval(
-            ApprovalDecision(
-                run_id=run["run_id"],
-                candidate_id=candidate_id,
-                decision="approved",
-                reviewer="reviewer-1",
-                note="证据完整，允许发布",
-                candidate_content_hash=eligibility.candidate_content_hash,
-                semantic_hash=eligibility.semantic_hash,
-                context_hash=eligibility.context_hash,
-                evidence_hash=eligibility.evidence_hash,
-            )
-        )
-    return store, run["run_id"], candidate_ids
+from tests.mining_v2_fixtures import approved_search_run
 
 
 def _batch(
@@ -186,8 +49,67 @@ def _staged(candidates, **_kwargs):
     )
 
 
+def test_v2_stale_transition_is_atomic_and_idempotent(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """快照失效收口要么整体成功，要么不改变任何状态。"""
+
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
+    original = store._append_event_conn
+    fail_once = {"value": True}
+
+    def fail_run_event(*args, **kwargs):
+        event_type = kwargs.get("event_type", args[3] if len(args) > 3 else None)
+        if event_type == "search_run_state_changed" and fail_once["value"]:
+            fail_once["value"] = False
+            raise RuntimeError("模拟运行失效事件写入失败")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_append_event_conn", fail_run_event)
+    with pytest.raises(RuntimeError, match="运行失效事件写入失败"):
+        store.mark_search_run_stale(
+            run_id,
+            event_key="web_decision_stale",
+            error_code="MINING-120",
+            error_message="审批前快照已变化",
+        )
+
+    assert store.get_run(run_id)["status"] == "review_ready"
+    assert {
+        store.get_candidate(run_id, item)["status"]
+        for item in candidate_ids
+    } == {"approved"}
+
+    first = store.mark_search_run_stale(
+        run_id,
+        event_key="web_decision_stale",
+        error_code="MINING-120",
+        error_message="审批前快照已变化",
+    )
+    second = store.mark_search_run_stale(
+        run_id,
+        event_key="web_decision_stale",
+        error_code="MINING-120",
+        error_message="审批前快照已变化",
+    )
+
+    assert first["status"] == "stale"
+    assert first["reused"] is False
+    assert second["reused"] is True
+    assert {
+        store.get_candidate(run_id, item)["status"]
+        for item in candidate_ids
+    } == {"stale"}
+    assert store.validate_search_trace(run_id) is True
+    assert sum(
+        item["event_key"] == "web_decision_stale"
+        for item in store.list_events(run_id)
+    ) == 1
+
+
 def test_v2_publication_service_publishes_entire_approved_batch(tmp_path: Path):
-    store, run_id, candidate_ids = _approved_run(tmp_path)
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
     captured = {}
 
     def prepare(**kwargs):
@@ -261,7 +183,7 @@ def test_v2_manifest_entry_keeps_source_provenance():
 
 
 def test_v2_publication_requires_all_publishable_candidates(tmp_path: Path):
-    store, run_id, candidate_ids = _approved_run(tmp_path)
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
     service = MiningPublicationService(
         store=store,
         data_root=tmp_path / "data",
@@ -278,7 +200,7 @@ def test_v2_publication_requires_all_publishable_candidates(tmp_path: Path):
 
 
 def test_v2_publication_failure_is_retryable(tmp_path: Path):
-    store, run_id, candidate_ids = _approved_run(tmp_path)
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
     service = MiningPublicationService(
         store=store,
         data_root=tmp_path / "data",
@@ -314,7 +236,7 @@ def test_v2_publication_failure_is_retryable(tmp_path: Path):
 
 
 def test_v2_publication_start_is_atomic(tmp_path: Path, monkeypatch):
-    store, run_id, candidate_ids = _approved_run(tmp_path)
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
     batch = _batch(store, run_id, candidate_ids, tmp_path)
 
     def fail_after_candidate_updates(*_args, **_kwargs):
@@ -342,7 +264,7 @@ def test_v2_publication_start_is_atomic(tmp_path: Path, monkeypatch):
 
 
 def test_v2_publication_detects_evidence_tampering(tmp_path: Path):
-    store, run_id, candidate_ids = _approved_run(tmp_path)
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
     candidate_id = candidate_ids[0]
     with duckdb.connect(str(store.db_path)) as conn:
         row = conn.execute(
@@ -378,7 +300,7 @@ def test_v2_publication_detects_evidence_tampering(tmp_path: Path):
 
 
 def test_v2_recovery_only_processes_v2_incomplete_batches(tmp_path: Path):
-    store, run_id, candidate_ids = _approved_run(tmp_path)
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
     batch = _batch(store, run_id, candidate_ids, tmp_path)
     store.start_publication_batch(batch)
     with duckdb.connect(str(store.db_path)) as conn:
@@ -423,7 +345,7 @@ def test_v2_recovery_only_processes_v2_incomplete_batches(tmp_path: Path):
 
 
 def test_v2_recovery_finishes_committed_batch(tmp_path: Path):
-    store, run_id, candidate_ids = _approved_run(tmp_path)
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
     batch = _batch(store, run_id, candidate_ids, tmp_path)
     store.start_publication_batch(batch)
     staging = Path(batch.staging_path)
@@ -478,7 +400,7 @@ def test_v2_recovery_finishes_committed_batch(tmp_path: Path):
 
 
 def test_v1_store_does_not_read_v2_batches(tmp_path: Path):
-    store, run_id, candidate_ids = _approved_run(tmp_path)
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
     batch = _batch(store, run_id, candidate_ids, tmp_path)
     store.start_publication_batch(batch)
     v1_store = MiningStore(store.db_path, tmp_path / "v1-data")
@@ -490,7 +412,7 @@ def test_v1_store_does_not_read_v2_batches(tmp_path: Path):
 
 
 def test_concurrent_v2_publication_starts_only_one_batch(tmp_path: Path):
-    store, run_id, candidate_ids = _approved_run(tmp_path)
+    store, run_id, candidate_ids = approved_search_run(tmp_path)
     first = _batch(store, run_id, candidate_ids, tmp_path / "first")
     approval_ids = tuple(
         store.get_search_approval(run_id, item)["approval_id"]

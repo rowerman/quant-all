@@ -40,7 +40,7 @@ class SearchRunStateMachine:
         "evaluating": {"holding_out", "interrupted", "failed", "cancelled", "stale"},
         "holding_out": {"review_ready", "interrupted", "failed", "cancelled", "stale"},
         "interrupted": {"failed", "cancelled", "stale"},
-        "review_ready": set(),
+        "review_ready": {"stale"},
         "failed": set(),
         "cancelled": set(),
         "stale": set(),

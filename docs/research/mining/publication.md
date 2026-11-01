@@ -69,6 +69,10 @@ data/factors/mined -> .mined-versions/<batch_id>
 - `quant.load_factor_list()` 从正式因子目录库读取 `mined` 元数据；
 - `quant.load_factor_panel/wide()`、评估、模型特征和回测通过统一解析入口读取数值。
 
+P0-05 使用临时 V2 数据库、临时因子目录和临时目录库执行了真实全量发布验收。
+发布后的两个 `source_kind=v2_search` 因子均可被因子清单/面板、评估面板、模型周频
+特征、回测因子加载和输入快照解析；重新初始化发布服务不会改变已发布状态。
+
 普通源码构建命令只重建内置族，不会自动覆盖人工批准的 `mined` 族。
 
 ## API 与页面
@@ -89,11 +93,17 @@ POST 请求体为 `candidate_ids` 和 `expected_context_hash`，受理后返回 
 | `MINING-121` | 发布资格、批次组成或并发冲突 |
 | `MINING-122` | 全量行集、取值、覆盖率、前视或冲突校验失败 |
 | `MINING-123` | 提交、回滚或重启恢复失败 |
+| `MINING-120` | 审批或发布前数据、目录、正式因子快照失效 |
+
+V1 和 V2 在审批或发布预检发现快照失效时，都会把运行和全部未终态候选原子收口为
+`stale`；V2 使用 `MiningV2Store.mark_search_run_stale()` 同时写候选状态、运行状态、
+链式轨迹和幂等事件。
 
 ## 验收
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_mining_publication.py
+.venv/bin/python -m pytest -q tests/test_mining_search_publication.py tests/test_mining_search_downstream.py
 .venv/bin/python -m pytest -q apps/monitor/backend/tests/test_mining_api.py
 .venv/bin/python tools/monitor/mining_check.py --output AiRecord/evidence/mining_s8
 ```

@@ -7,7 +7,13 @@ from typing import Any, Mapping
 
 import duckdb
 
-from mining.contract_types import canonical_json, identifier, utc_now_iso
+from mining.contract_types import (
+    canonical_json,
+    identifier,
+    sha256_json,
+    text,
+    utc_now_iso,
+)
 from mining.errors import (
     MiningContractError,
     MiningDuplicateError,
@@ -20,6 +26,7 @@ from mining.search_states import (
     SEARCH_RUN_STATUSES,
     SearchRunStateMachine,
 )
+from mining.states import CANDIDATE_TERMINAL_STATUSES, CandidateStateMachine
 from mining.storage_lock import database_state_lock
 
 
@@ -205,6 +212,122 @@ class V2SearchControlMixin:
                     payload={"reason": "主服务重启"},
                 )
             )
+        return result
+
+    def mark_search_run_stale(
+        self,
+        run_id: str,
+        *,
+        event_key: str,
+        error_code: str,
+        error_message: str,
+    ) -> dict[str, Any]:
+        """原子把运行和未终态候选收口为 stale。"""
+
+        run_id = identifier(run_id, "run_id")
+        event_key = identifier(event_key, "event_key")
+        error_code = identifier(error_code, "error_code")
+        error_message = text(error_message, "error_message", maximum=2000)
+        try:
+            with database_state_lock(self.db_path):
+                with self._connection() as conn:
+                    with self._transaction(conn):
+                        self._require_run_conn(conn, run_id)
+                        control = self._ensure_run_control_conn(conn, run_id)
+                        previous = control["status"]
+                        reused = previous in {"failed", "cancelled", "stale"}
+                        changed_candidates = 0
+                        if not reused:
+                            SearchRunStateMachine.ensure(previous, "stale")
+                            now = utc_now_iso()
+                            rows = conn.execute(
+                                "SELECT candidate_id, status "
+                                "FROM mining_v2.candidate_trace "
+                                "WHERE run_id=? ORDER BY candidate_id",
+                                [run_id],
+                            ).fetchall()
+                            for candidate_id, candidate_status in rows:
+                                if candidate_status in CANDIDATE_TERMINAL_STATUSES:
+                                    continue
+                                CandidateStateMachine.ensure(
+                                    candidate_status,
+                                    "stale",
+                                )
+                                updated = conn.execute(
+                                    "UPDATE mining_v2.candidate_trace "
+                                    "SET status='stale', updated_at=? "
+                                    "WHERE run_id=? AND candidate_id=? "
+                                    "AND status=? RETURNING candidate_id",
+                                    [
+                                        now,
+                                        run_id,
+                                        candidate_id,
+                                        candidate_status,
+                                    ],
+                                ).fetchall()
+                                if not updated:
+                                    raise MiningStateError(
+                                        "V2 候选状态已被其他请求修改"
+                                    )
+                                self._append_trace_conn(
+                                    conn,
+                                    run_id,
+                                    "candidate_state",
+                                    f"candidate:{candidate_id}:stale",
+                                    sha256_json({"status": "stale"}),
+                                    now,
+                                )
+                                self._append_event_conn(
+                                    conn,
+                                    run_id,
+                                    f"candidate_{candidate_id}_stale",
+                                    "candidate_state_changed",
+                                    {
+                                        "candidate_id": candidate_id,
+                                        "from": candidate_status,
+                                        "to": "stale",
+                                        "error_code": error_code,
+                                    },
+                                    created_at=now,
+                                )
+                                changed_candidates += 1
+                            updated = conn.execute(
+                                "UPDATE mining_v2.run_control SET "
+                                "status='stale', interrupted_from=NULL, "
+                                "cancel_requested=FALSE, stop_reason=?, "
+                                "updated_at=? "
+                                "WHERE run_id=? AND status=? RETURNING run_id",
+                                [error_message, now, run_id, previous],
+                            ).fetchall()
+                            if not updated:
+                                raise MiningStateError(
+                                    "V2 运行状态已被其他请求修改"
+                                )
+                            self._append_event_conn(
+                                conn,
+                                run_id,
+                                event_key,
+                                "search_run_state_changed",
+                                {
+                                    "from": previous,
+                                    "to": "stale",
+                                    "error_code": error_code,
+                                    "candidate_count": changed_candidates,
+                                },
+                                created_at=now,
+                            )
+            result = self.search_control_state(run_id)
+        except (
+            MiningContractError,
+            MiningNotFoundError,
+            MiningStateError,
+        ):
+            raise
+        except duckdb.Error as error:
+            raise MiningStorageError(
+                f"收口 V2 失效运行失败：{error}"
+            ) from error
+        result["reused"] = reused
         return result
 
     def search_control_state(self, run_id: str) -> dict[str, Any]:

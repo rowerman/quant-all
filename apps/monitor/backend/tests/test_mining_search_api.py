@@ -594,6 +594,59 @@ def test_v2_snapshot_change_blocks_decision(tmp_path: Path):
     assert current.json()["review"]["snapshot_current"] is False
     assert blocked.status_code == 409
     assert blocked.json()["code"] == "MINING-120"
+    assert store.get_run(run_id)["status"] == "stale"
+    assert {
+        store.get_candidate(run_id, item)["status"]
+        for item in candidate_ids
+    } == {"stale"}
+
+
+def test_v2_snapshot_change_blocks_publication_and_closes_run_stale(
+    tmp_path: Path,
+):
+    stale = {"value": False}
+
+    def snapshot_check(*_args, **_kwargs):
+        if stale["value"]:
+            raise SnapshotStaleError("V2 发布快照已变化")
+
+    service, store = _services(tmp_path, snapshot_check=snapshot_check)
+    run_id, candidate_ids = _seed_v2_review_ready(
+        store,
+        "v2-publication-stale-0001",
+    )
+    for candidate_id in candidate_ids:
+        detail = service.candidate_detail(run_id, candidate_id)
+        review = detail["review"]
+        service.decide(
+            run_id,
+            candidate_id,
+            {
+                "decision": "approved",
+                "reviewer": "reviewer-stale",
+                "note": "批准后发生快照变化",
+                "candidate_content_hash": review["candidate_content_hash"],
+                "evidence_hash": review["evidence_hash"],
+            },
+        )
+    stale["value"] = True
+    app = create_app(mining_service=service)
+    with TestClient(app) as client:
+        blocked = client.post(
+            f"/api/mining/runs/{run_id}/publication-batches",
+            json={
+                "candidate_ids": list(candidate_ids),
+                "expected_context_hash": store.get_run(run_id)["context_hash"],
+            },
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "MINING-120"
+    assert store.get_run(run_id)["status"] == "stale"
+    assert {
+        store.get_candidate(run_id, item)["status"]
+        for item in candidate_ids
+    } == {"stale"}
 
 
 def test_v2_publication_api_requires_batch_and_supports_retry(

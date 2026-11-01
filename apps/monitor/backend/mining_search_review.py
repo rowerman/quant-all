@@ -169,7 +169,16 @@ class MiningSearchReviewAdapter:
 
         body = self._body(payload, _DECISION_FIELDS)
         run = self.store.get_run(run_id)
-        self._assert_snapshot(run)
+        try:
+            self._assert_snapshot(run)
+        except SnapshotStaleError as error:
+            self._mark_snapshot_stale(
+                run_id,
+                event_key=f"web_decision_stale_{candidate_id}",
+                error=error,
+                error_message="审批前数据、目录或正式因子快照已变化",
+            )
+            raise
         eligibility = self.store.search_approval_eligibility(
             run_id,
             candidate_id,
@@ -227,12 +236,21 @@ class MiningSearchReviewAdapter:
         """整批构建并发布 V2 运行内全部可发布候选。"""
 
         body = self._body(payload, _PUBLICATION_FIELDS)
-        batch = self.publication_service.start_batch(
-            run_id,
-            body.get("candidate_ids"),
-            expected_context_hash=body.get("expected_context_hash"),
-            background=True,
-        )
+        try:
+            batch = self.publication_service.start_batch(
+                run_id,
+                body.get("candidate_ids"),
+                expected_context_hash=body.get("expected_context_hash"),
+                background=True,
+            )
+        except SnapshotStaleError as error:
+            self._mark_snapshot_stale(
+                run_id,
+                event_key="web_publication_stale",
+                error=error,
+                error_message="发布前数据、目录或正式因子快照已变化",
+            )
+            raise
         return self._publication_batch_view(batch)
 
     def publication_batch(
@@ -312,6 +330,23 @@ class MiningSearchReviewAdapter:
             db_file=self.db_file,
             factor_dir=self.factor_dir,
             manifest_file=self.manifest_file,
+        )
+
+    def _mark_snapshot_stale(
+        self,
+        run_id: str,
+        *,
+        event_key: str,
+        error: SnapshotStaleError,
+        error_message: str,
+    ) -> None:
+        """把快照失效的运行与未终态候选一并收口。"""
+
+        self.store.mark_search_run_stale(
+            run_id,
+            event_key=event_key,
+            error_code=error.code,
+            error_message=error_message,
         )
 
     @staticmethod
