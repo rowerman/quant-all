@@ -14,7 +14,8 @@ P0-01 冻结 V2 搜索运行进入现有审批、整批发布和正式因子写�
 |---|---|---|
 | V2 候选定义、假设、批次、尝试和分阶段证据 | `mining_v2` schema | 只读 |
 | V2 候选最终审批 | `mining_v2.search_approval` | 只由 V2 审批存储写入 |
-| V1 候选、正式发布批次和正式因子关联 | `mining` schema | P0-03 才可写入 |
+| V1 来源正式发布批次和正式因子关联 | `mining` schema | 只写发布事实 |
+| V2 来源正式发布批次和正式因子关联 | `mining` schema，`source_kind=v2_search` | P0-03 写入 |
 | 正式 `mined` 因子清单和目录 | 现有 `factors.published` 与因子目录 | 继续由 `MiningPublicationService` 独占 |
 | 发布用临时 V1 上下文 | V2 冻结上下文的内存派生 | 不持久化，不作为审批或发布事实 |
 
@@ -41,7 +42,8 @@ P0-01 冻结 V2 搜索运行进入现有审批、整批发布和正式因子写�
 | V2 `control_policy` | V1 覆盖率、失败率等约束 | 转换 | 不改变 V2 已冻结的搜索判定 |
 | `review_ready` | 审批前置状态 | 转换 | 仅表示可构造桥接视图和审批资格 |
 | V2 `approved/rejected` | V2 最终审批结果 | 复用 | 审批记录保存在 `mining_v2.search_approval` |
-| V1 `approved`、`building`、`published` | 不适用 | 禁止 | 正式发布适配属于 P0-03 |
+| V2 `approved/build_failed` | 发布批次 `building` | 转换 | 仍写 `mining_v2.candidate_trace` |
+| V2 `building` | `published/build_failed` | 转换 | 与正式发布批次同事务收口 |
 
 临时 V1 上下文的哈希只用于构建器内部稳定性，不能替换
 `source_context_hash`，也不能作为 V2 审批证据。
@@ -88,5 +90,17 @@ ID 排序的全部候选级证据引用。全局运行轨迹哈希不进入该�
 返回 `MINING-108`。审批、候选状态、事件和链式轨迹在一个事务内提交，审计轨迹会校验
 审批记录内容。
 
-P0-03 还需让已批准 V2 候选适配现有 `MiningPublicationService`。V2 尚未接入正式发布，
-也没有审批 API、页面入口或下游读取验收。
+## 正式发布
+
+P0-03 已让 `MiningPublicationService` 直接接受 `MiningV2Store`。服务从 V2 加载当前
+全部 `approved/build_failed` 候选，继续使用原构建器、全量校验器、原子提交器和回滚器。
+V2 原始上下文哈希作为批次确认值；由搜索窗口派生的 V1 上下文只供构建器计算。
+
+发布批次和逐候选发布记录保存在现有 `mining.publication*` 表，并以
+`source_kind=v2_search` 与 V1 隔离。V2 候选状态、发布事件和链式轨迹仍保存在
+`mining_v2`，没有创建对应的 V1 运行、候选或审批行。V1 和 V2 共用一个全局活动批次
+约束，避免并发切换同一正式因子目录。
+
+正式提交前会重新核对 V2 候选仍处于 `building`、审批记录未变化且当前证据哈希仍匹配；
+核验失败时执行现有回滚流程并把候选置为 `build_failed`。启动恢复只扫描对应来源的
+未完成批次。V2 的审批/发布 API、页面入口和下游联合验收仍属于 P0-04、P0-05。

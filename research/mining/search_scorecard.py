@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from mining.contract_types import sha256_json
 from mining.errors import MiningContractError
@@ -15,7 +15,9 @@ from mining.search_selection_diagnostics import (
 )
 from mining.search_stability_contracts import STABILITY_STAGE
 from mining.search_statistical_diagnostics import MULTIPLE_TESTING_STAGE
-from mining.storage_v2 import MiningV2Store
+
+if TYPE_CHECKING:
+    from mining.storage_v2 import MiningV2Store
 
 SCORECARD_SCHEMA_VERSION = "mining_candidate_scorecard_v2"
 _CORE_EVALUATION_STAGES = {

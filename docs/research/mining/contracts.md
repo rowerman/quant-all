@@ -194,7 +194,7 @@ building -> build_failed -> building
 | `mining.technical_gate` | 技术门禁及检查哈希 |
 | `mining.approval` | 最终人工审批 |
 | `mining.publication` | 发布尝试及状态 |
-| `mining.publication_batch` | 同一上下文内整批发布、清单和产物哈希 |
+| `mining.publication_batch` | 同一上下文内整批发布、清单、产物哈希和 `source_kind` |
 | `mining.event` | 按运行连续编号的不可变事件 |
 | `mining.holdout_usage` | 模块测试段唯一领取记录 |
 

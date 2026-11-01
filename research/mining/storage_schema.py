@@ -155,6 +155,7 @@ DDL = (
         attempt INTEGER NOT NULL,
         started_at VARCHAR NOT NULL,
         finished_at VARCHAR,
+        source_kind VARCHAR NOT NULL DEFAULT 'v1',
         UNIQUE (run_id, candidate_id, approval_id, attempt)
     )
     """,
@@ -174,6 +175,7 @@ DDL = (
         attempt INTEGER NOT NULL,
         started_at VARCHAR NOT NULL,
         finished_at VARCHAR,
+        source_kind VARCHAR NOT NULL DEFAULT 'v1',
         UNIQUE (run_id, context_hash, attempt)
     )
     """,
@@ -220,6 +222,12 @@ DDL = (
 
 SCHEMA_MIGRATIONS = (
     "ALTER TABLE mining.publication ADD COLUMN IF NOT EXISTS batch_id VARCHAR",
+    "ALTER TABLE mining.publication ADD COLUMN IF NOT EXISTS "
+    "source_kind VARCHAR DEFAULT 'v1'",
+    "ALTER TABLE mining.publication_batch ADD COLUMN IF NOT EXISTS "
+    "source_kind VARCHAR DEFAULT 'v1'",
+    "UPDATE mining.publication SET source_kind='v1' WHERE source_kind IS NULL",
+    "UPDATE mining.publication_batch SET source_kind='v1' WHERE source_kind IS NULL",
 )
 
 

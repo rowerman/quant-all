@@ -15,15 +15,13 @@ from common.paths import (
     MINING_DATA_DIR,
 )
 from mining.contract_requests import FrozenContext
-from mining.contract_types import sha256_text, utc_now_iso
+from mining.contract_types import utc_now_iso
 from mining.errors import (
-    ApprovalConflictError,
     MiningContractError,
     PublicationConflictError,
     SnapshotStaleError,
 )
 from mining.logging_conf import format_event, get_mining_logger
-from mining.orchestration_support import context_from_run
 from mining.publication_builder import (
     commit_publication,
     prepare_publication,
@@ -32,6 +30,7 @@ from mining.publication_builder import (
 from mining.publication_contracts import PublicationBatch, new_publication_batch
 from mining.snapshot import DEFAULT_DATA_MANIFEST, assert_context_snapshot
 from mining.storage import MiningStore
+from mining.storage_v2 import MiningV2Store
 
 _LOGGER = get_mining_logger("mining.publication")
 
@@ -42,7 +41,7 @@ class MiningPublicationService:
     def __init__(
         self,
         *,
-        store: MiningStore | None = None,
+        store: MiningStore | MiningV2Store | None = None,
         db_file: Path | str = DB_FILE,
         factor_dir: Path | str = FACTOR_DIR,
         catalog_file: Path | str = FACTOR_DB_FILE,
@@ -127,39 +126,14 @@ class MiningPublicationService:
         selected = tuple(sorted(dict.fromkeys(str(item) for item in candidate_ids)))
         if not selected:
             raise PublicationConflictError("发布批次至少需要一个候选")
-        run = self.store.get_run(run_id)
-        context = context_from_run(run)
-        if sha256_text(expected_context_hash, "expected_context_hash") != context.context_hash:
-            raise PublicationConflictError("页面上下文已变化，请刷新")
+        inputs = self.store.load_publication_inputs(
+            run_id,
+            selected,
+            expected_context_hash=expected_context_hash,
+        )
+        context = inputs.builder_context
         self._check_snapshot(context)
-        candidates = [self.store.get_candidate(run_id, item) for item in selected]
-        publishable = {
-            row["candidate_id"]
-            for row in self.store.list_candidates(run_id)
-            if row["status"] in {"approved", "build_failed"}
-        }
-        if publishable != set(selected):
-            raise PublicationConflictError(
-                "发布批次必须包含该运行内全部已批准候选"
-            )
-        approval_ids: list[str] = []
-        for candidate in candidates:
-            if candidate["status"] not in {"approved", "build_failed"}:
-                raise PublicationConflictError(
-                    f"候选 {candidate['candidate_id']} 当前不可重新发布"
-                )
-            approval = self.store.get_approval(run_id, candidate["candidate_id"])
-            if approval["decision"] != "approved":
-                raise PublicationConflictError("候选没有批准记录")
-            evidence = self.store.approval_evidence(
-                run_id,
-                candidate["candidate_id"],
-                candidate_content_hash=candidate["content_hash"],
-                context_hash=context.context_hash,
-            )
-            if evidence != approval["evidence_hash"]:
-                raise ApprovalConflictError("审批证据已变化，不能发布")
-            approval_ids.append(approval["approval_id"])
+        candidates = inputs.candidates
         attempt = self.store.next_publication_attempt(run_id, selected)
         staging = (
             self.data_root
@@ -169,11 +143,12 @@ class MiningPublicationService:
         )
         batch = new_publication_batch(
             run_id=run_id,
-            context_hash=context.context_hash,
+            context_hash=inputs.source_context_hash,
             candidate_ids=selected,
-            approval_ids=tuple(approval_ids),
+            approval_ids=inputs.approval_ids,
             staging_path=str(staging),
             attempt=attempt,
+            source_kind=inputs.source_kind,
         )
         saved = self.store.start_publication_batch(batch)
         if background:
@@ -217,6 +192,7 @@ class MiningPublicationService:
                 manifest_hash=staged.manifest_hash,
                 artifact_sha256=staged.artifact_sha256,
             )
+            self.store.assert_publication_batch_current(batch)
             self._commit(
                 staged=staged,
                 batch_id=batch.batch_id,

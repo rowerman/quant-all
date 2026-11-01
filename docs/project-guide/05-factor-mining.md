@@ -36,8 +36,8 @@
 
 截至 2026-11-01，S2～S9 和 M1～M5 已交付。V135 复核了路线图 34 项，M1～M5
 均保持完成。V1 继续作为默认生产链路；V2 需设置 `MINING_SEARCH_V2_ENABLED=true`，
-运行停在 `review_ready`，候选审批已在存储层实现但还没有页面和正式发布；M5 默认关闭，
-产物只能人工提升。后续 V2 生产闭环、四项扩展和 V3 集成见
+运行停在 `review_ready`，候选审批和正式发布已在服务层实现但还没有页面入口；M5 默认
+关闭，产物只能人工提升。后续 V2 生产闭环、四项扩展和 V3 集成见
 [根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
 
 当前冻结数据版本为 `tushare_fullA_20000104_20261015`。字段目录包含 95 个字段声明，
@@ -603,6 +603,10 @@ V1 `mining` schema 不会被普通 V2 初始化静默改写。
 
 批准只改变候选到 `approved`，不会自动构建或发布。
 
+V2 审批继续以 `mining_v2.search_approval` 和 `mining_v2.candidate_trace` 为唯一事实
+来源，不把 V2 候选或审批复制到 V1。已批准候选由同一个 `MiningPublicationService`
+读取和发布。
+
 ## 9. 正式发布
 
 [publication_service.py](../../research/mining/publication_service.py) 负责资格预检和
@@ -623,6 +627,8 @@ V1 `mining` schema 不会被普通 V2 初始化静默改写。
 - 同一候选库没有其他 `staging/validating` 批次。
 
 `build_failed` 候选可用新的 attempt 重试；每次尝试都有独立批次 ID、暂存目录和状态。
+V2 发布批次额外记录 `source_kind=v2_search`，候选状态只在 `mining_v2` 中迁移；
+V1 和 V2 共用一个活动发布批次约束。
 
 ### 9.2 全量构建与校验
 

@@ -263,6 +263,16 @@ def test_existing_publication_table_is_migrated_with_batch_id(tmp_path: Path):
             ).fetchall()
         ]
     assert "batch_id" in columns
+    assert "source_kind" in columns
+    with duckdb.connect(str(db_path), read_only=True) as check:
+        batch_columns = [
+            row[0]
+            for row in check.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='mining' AND table_name='publication_batch'"
+            ).fetchall()
+        ]
+    assert "source_kind" in batch_columns
 
 
 def test_commit_failure_restores_previous_link_and_catalog(

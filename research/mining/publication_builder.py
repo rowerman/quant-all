@@ -88,6 +88,15 @@ def _entry(
                 "approval_id": approval_id,
             }
         )
+        for name in (
+            "source_kind",
+            "source_context_hash",
+            "source_trace_hash",
+            "scorecard_hash",
+            "approval_evidence_hash",
+        ):
+            if candidate.get(name) is not None:
+                payload[name] = candidate[name]
     return payload
 
 

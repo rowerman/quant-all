@@ -19,6 +19,7 @@ from mining.errors import (
 )
 from mining.logging_conf import ensure_safe_event_payload, get_mining_logger
 from mining.storage_lock import database_state_lock
+from mining.storage_schema import ensure_schema
 from mining.storage_v2_schema import (
     ensure_v2_schema,
     initialize_v2_schema,
@@ -45,6 +46,7 @@ class V2StorageBase:
                 with self._connection() as conn:
                     if schema_exists(conn, "mining_v2"):
                         ensure_v2_schema(conn)
+                        ensure_schema(conn)
                     elif schema_exists(conn, "mining"):
                         raise MiningMigrationError(
                             "检测到 mining_v1，请先执行显式 V2 迁移"
@@ -52,6 +54,7 @@ class V2StorageBase:
                     else:
                         with self._transaction(conn):
                             initialize_v2_schema(conn)
+                            ensure_schema(conn)
         except (MiningContractError, MiningMigrationError, MiningStorageError):
             raise
         except (OSError, duckdb.Error) as error:

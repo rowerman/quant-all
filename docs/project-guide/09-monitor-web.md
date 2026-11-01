@@ -229,8 +229,9 @@ HTTP 路由位于 [mining_routes.py](../../apps/monitor/backend/mining_routes.py
 设置 `MINING_SEARCH_V2_ENABLED=true` 后，运行创建、列表、详情、事件、SSE、取消和
 恢复仍使用同一组路径，但新运行 ID 使用 `searchrun_`，创建请求使用 V2 `budget`，
 `GET /api/mining/options` 增加 `search_v2` 窗口、预算和工具目录。V2 候选审批已由
-`MiningV2Store` 支持，但候选审批接口、正式发布和候选专用详情尚未接入现有 V1 链路；
-页面只在 `review_ready` 展示研究证据。后续接口收口见
+`MiningV2Store` 支持，正式发布已接入现有 `MiningPublicationService`；但候选审批接口、
+发布接口和候选专用详情尚未接入现有 Web 链路，页面只在 `review_ready` 展示研究证据。
+后续接口收口见
 [根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
 
 审批请求必须同时提交当前 `candidate_content_hash` 和 `evidence_hash`。任一哈希变化返回
