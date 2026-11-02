@@ -313,6 +313,73 @@ def record_manual_promotion(
     return {**payload, "reused": False}
 
 
+def load_manual_promotion(
+    *,
+    policy: SandboxPolicy,
+    sandbox_run_id: str,
+    promotion_id: str,
+) -> PromotionRequest:
+    """读取并复核服务端人工提升记录及其沙箱产物。"""
+
+    sandbox_run_id = identifier(sandbox_run_id, "sandbox_run_id")
+    promotion_id = identifier(promotion_id, "promotion_id")
+    path = policy.review_root_path / sandbox_run_id / f"{promotion_id}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SandboxArtifactError(
+            f"人工提升记录不可用：{promotion_id}"
+        ) from error
+    if not isinstance(payload, Mapping):
+        raise SandboxArtifactError("人工提升记录必须是 JSON 对象")
+    request_fields = set(PromotionRequest.__dataclass_fields__)
+    missing = request_fields - set(payload)
+    if missing:
+        raise SandboxArtifactError(
+            f"人工提升记录缺少字段：{sorted(missing)}"
+        )
+    request = PromotionRequest(**{name: payload[name] for name in request_fields})
+    if (
+        payload.get("promotion_id") != request.promotion_id
+        or request.promotion_id != promotion_id
+        or payload.get("formal_candidate_created") is not False
+    ):
+        raise SandboxArtifactError("人工提升记录标识或人工边界不一致")
+    artifact_dir = policy.review_root_path / "artifacts" / sandbox_run_id
+    if not artifact_dir.is_dir():
+        artifact_dir = policy.workspace_root_path / sandbox_run_id
+    manifest = verify_artifact_tree(artifact_dir)
+    if (
+        manifest.sandbox_run_id != request.sandbox_run_id
+        or manifest.manifest_hash != request.artifact_manifest_hash
+    ):
+        raise SandboxArtifactError("人工提升记录绑定了不同沙箱产物")
+    return request
+
+
+def list_manual_promotions(
+    *,
+    policy: SandboxPolicy,
+) -> tuple[PromotionRequest, ...]:
+    """列出可加载的服务端人工提升记录。"""
+
+    root = policy.review_root_path
+    if not root.is_dir():
+        return ()
+    result: list[PromotionRequest] = []
+    for path in sorted(root.glob("*/promotion_*.json")):
+        try:
+            request = load_manual_promotion(
+                policy=policy,
+                sandbox_run_id=path.parent.name,
+                promotion_id=path.stem,
+            )
+        except (OSError, SandboxArtifactError):
+            continue
+        result.append(request)
+    return tuple(result)
+
+
 def copy_artifacts_for_review(
     *,
     policy: SandboxPolicy,
@@ -347,6 +414,8 @@ __all__ = [
     "SANDBOX_PROMOTION_SCHEMA_VERSION",
     "SandboxArtifactManifest",
     "copy_artifacts_for_review",
+    "list_manual_promotions",
+    "load_manual_promotion",
     "record_manual_promotion",
     "seal_artifact_tree",
     "verify_artifact_tree",

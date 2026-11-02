@@ -83,7 +83,7 @@ function decisionForm(detail) {
     <p>请核对候选哈希和关键结论。批准只记录决定，正式入库仍由后续阶段执行。</p>
     <div class="hash-grid">
       <div><span>候选内容哈希</span><code>${esc(review.candidate_content_hash)}</code></div>
-      <div><span>审批证据哈希</span><code>${esc(review.evidence_hash)}</code></div>
+      <div><span>审批证据哈希</span><code>${esc(review.evidence_hash || review.approval_evidence_hash)}</code></div>
     </div>
     <div class="quality-summary">
       <span>技术门禁：${detail.technical_gate?.passed ? '通过' : '未通过'}</span>
@@ -175,7 +175,8 @@ export function renderCandidate(
 ) {
   const candidate = detail.candidate;
   const definition = candidate.definition;
-  const isV2 = detail.run.engine === 'v2';
+  const isV2 = detail.run.engine === 'v2' || detail.run.engine === 'v3';
+  const isV3 = detail.run.engine === 'v3';
   const technical = latestReport(detail.evaluations, 'technical');
   const quick = latestReport(detail.evaluations, 'quick');
   const development = latestReport(detail.evaluations, 'development');
@@ -185,6 +186,7 @@ export function renderCandidate(
   const holdout = latestReport(detail.evaluations, 'holdout');
   const latestBatchStatus = detail.publication?.latest_batch?.status;
   const researchSource = detail.research_source;
+  const v3Source = detail.v3_source;
   const displayStatus = candidate.status === 'building' && latestBatchStatus === 'published'
     ? 'published'
     : candidate.status === 'building' && latestBatchStatus === 'failed'
@@ -234,6 +236,16 @@ export function renderCandidate(
     <div id="research-source-evidence"></div>
     <p class="mini muted">只展示与本候选有关的字段证据和短引用，不展示完整研报正文。</p>
   </section>` : ''}
+  ${isV3 && v3Source ? `<section class="card">
+    <h2>V3 来源绑定</h2>
+    <div class="hash-grid">
+      <div><span>来源类型</span><span>${esc(v3Source.source_kind)}</span></div>
+      <div><span>来源 ID</span><code>${esc(v3Source.source_id)}</code></div>
+      <div><span>来源哈希</span><code>${esc(v3Source.source_hash)}</code></div>
+      <div><span>候选包络哈希</span><code>${esc(detail.review.candidate_envelope_hash)}</code></div>
+      <div><span>审批证据哈希</span><code>${esc(detail.review.approval_evidence_hash || '—')}</code></div>
+    </div>
+  </section>` : ''}
   <section class="card">
     <h2>阶段结论</h2>
     <div id="candidate-stage-summary"></div>
@@ -260,7 +272,7 @@ export function renderCandidate(
     <div id="holdout-evaluation"></div>
     <div class="hash-grid">
       <div><span>测试段批次哈希</span><code>${esc(detail.review.holdout_batch_hash || '—')}</code></div>
-      <div><span>本批候选数</span><span>${detail.review.holdout_candidates.length}</span></div>
+      <div><span>本批候选数</span><span>${(detail.review.holdout_candidates || []).length}</span></div>
     </div>
   </section>
   ${scorecardSection(detail)}
@@ -354,7 +366,8 @@ export function renderCandidate(
         return;
       }
       const action = decision === 'approved' ? '批准' : '拒绝';
-      if (!confirm(`${action}候选？\n\n内容哈希：${detail.review.candidate_content_hash}\n证据哈希：${detail.review.evidence_hash}\n\n批准仅记录决定，不会正式入库。`)) return;
+      const evidenceHash = detail.review.evidence_hash || detail.review.approval_evidence_hash;
+      if (!confirm(`${action}候选？\n\n内容哈希：${detail.review.candidate_content_hash}\n证据哈希：${evidenceHash}\n\n批准仅记录决定，不会正式入库。`)) return;
       for (const button of form.querySelectorAll('button')) button.disabled = true;
       status.className = 'mini muted';
       status.textContent = `正在提交${action}决定…`;

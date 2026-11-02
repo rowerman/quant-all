@@ -37,6 +37,7 @@ class SearchRunRequest:
     schema_version: str = SEARCH_SCHEMA_VERSION
     input_mode: str = HYPOTHESIS_INPUT_MODE
     exploration_seed: int | None = None
+    run_id_prefix: str = "searchrun"
 
     def __post_init__(self) -> None:
         if self.schema_version != SEARCH_SCHEMA_VERSION:
@@ -83,6 +84,10 @@ class SearchRunRequest:
                 raise MiningContractError(
                     "exploration_seed 必须是 0～2^64-1 的整数"
                 )
+        if self.run_id_prefix not in {"searchrun", "researchrun"}:
+            raise MiningContractError(
+                "run_id_prefix 必须是 searchrun 或 researchrun"
+            )
 
     def material(self) -> dict[str, Any]:
         """返回参与幂等请求哈希的字段。"""
@@ -110,7 +115,7 @@ class SearchRunRequest:
         """返回与 V1 不冲突的稳定运行 ID。"""
 
         return stable_id(
-            "searchrun",
+            self.run_id_prefix,
             {
                 "schema_version": self.schema_version,
                 "idempotency_key": self.idempotency_key,
@@ -141,7 +146,11 @@ class SearchRunRequest:
             raise MiningContractError("search_run_request 必须是 JSON 对象")
         expected = set(cls.__dataclass_fields__)
         actual = set(value)
-        missing = expected - actual - {"exploration_seed", "input_mode"}
+        missing = expected - actual - {
+            "exploration_seed",
+            "input_mode",
+            "run_id_prefix",
+        }
         unknown = actual - expected
         if missing or unknown:
             raise MiningContractError(
@@ -151,13 +160,14 @@ class SearchRunRequest:
         payload = dict(value)
         payload.setdefault("input_mode", HYPOTHESIS_INPUT_MODE)
         payload.setdefault("exploration_seed", None)
+        payload.setdefault("run_id_prefix", "searchrun")
         payload["budget"] = SearchBudget.from_dict(payload["budget"])
         return cls(**payload)
 
     def to_dict(self) -> dict[str, Any]:
         """返回稳定持久化字典。"""
 
-        return {
+        payload = {
             "input_mode": self.input_mode,
             "hypothesis": self.hypothesis,
             "budget": self.budget.to_dict(),
@@ -165,3 +175,6 @@ class SearchRunRequest:
             "schema_version": self.schema_version,
             "exploration_seed": self.exploration_seed,
         }
+        if self.run_id_prefix != "searchrun":
+            payload["run_id_prefix"] = self.run_id_prefix
+        return payload

@@ -369,3 +369,17 @@ class V3MigrationRollbackError(MiningMigrationError):
 
     code = "MINING-163"
     status = 409
+
+
+class V3SourceImportError(MiningError):
+    """CoSTEER 人工提升记录或目标 DSL 不能进入 V3。"""
+
+    code = "MINING-164"
+    status = 422
+
+
+class V3RunStateError(MiningError):
+    """V3 运行恢复或状态迁移与当前事实冲突。"""
+
+    code = "MINING-165"
+    status = 409

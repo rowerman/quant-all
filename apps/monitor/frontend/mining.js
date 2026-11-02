@@ -38,6 +38,8 @@ function inputModeLabel(mode) {
     hypothesis: '手工研究假设',
     free_exploration: '自由探索',
     research: '资料驱动',
+    research_report: '资料驱动',
+    costeer: 'CoSTEER 人工提升',
   }[mode] || '手工研究假设';
 }
 
@@ -67,10 +69,11 @@ function numericField(name, label, value, step, min, max, hint = '') {
 async function newPage(app, current) {
   const opts = await miningOptions();
   if (!current()) return;
-  const v2 = Boolean(opts.search_v2?.enabled);
-  const defaults = v2 ? opts.search_v2.defaults : opts.defaults;
-  const v2Options = opts.search_v2 || {};
-  const research = opts.search_v2?.research || {};
+  const v3 = Boolean(opts.search_v3?.enabled);
+  const v2 = v3 || Boolean(opts.search_v2?.enabled);
+  const v2Options = v3 ? opts.search_v3 : (opts.search_v2 || {});
+  const defaults = v2 ? v2Options.defaults : opts.defaults;
+  const research = v2Options.research || {};
   const budgetFields = v2
     ? searchBudgetFields(v2Options.defaults, v2Options.limits)
     : `
@@ -89,13 +92,13 @@ async function newPage(app, current) {
     ? `开发期 ${esc(v2Options.windows.development_start)}～${esc(v2Options.windows.development_end)} · 选择期仅供控制器 · 最终研究期和模块测试段不进入 Worker`
     : `研究期 ${esc(opts.windows.research_start)}～${esc(opts.windows.research_end)} · 完整评估 ${esc(opts.windows.full_eval_start)}～${esc(opts.windows.full_eval_end)} · 测试段 ${esc(opts.windows.holdout_start)}～${esc(opts.windows.holdout_end)}`;
   app.innerHTML = `<div class="page-heading">
-    <div><h1>新建挖掘运行</h1><p class="intro muted">${v2 ? '可从手工假设、自由探索或服务端研报资料启动。选择期、最终研究期和测试段不会反馈给 Worker。' : '假设会与预算、数据快照、字段目录和算子目录一起冻结。Worker 不可用时任务会明确失败，不会回退到 Mock。'}</p></div>
+    <div><h1>新建挖掘运行</h1><p class="intro muted">${v3 ? 'V3 统一接入手工假设、自由探索、资料驱动和 CoSTEER 人工提升；审批与发布边界不变。' : v2 ? '可从手工假设、自由探索或服务端研报资料启动。选择期、最终研究期和测试段不会反馈给 Worker。' : '假设会与预算、数据快照、字段目录和算子目录一起冻结。Worker 不可用时任务会明确失败，不会回退到 Mock。'}</p></div>
     <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
   </div>
   <form id="mining-form">
     <section class="card">
       <h2>研究输入</h2>
-      ${v2 ? `<label>输入模式<select name="source_mode" id="source-mode"><option value="hypothesis">手工研究假设</option><option value="free_exploration">自由探索</option><option value="research">资料驱动</option></select></label>` : ''}
+      ${v2 ? `<label>输入模式<select name="source_mode" id="source-mode"><option value="hypothesis">手工研究假设</option><option value="free_exploration">自由探索</option><option value="research">资料驱动</option>${v3 ? '<option value="costeer">CoSTEER 人工提升</option>' : ''}</select></label>` : ''}
       <div data-mode-section="hypothesis">
         <label>研究假设<textarea name="hypothesis" minlength="8" maxlength="4000" rows="7" required placeholder="例如：短期换手率下降可能预示未来五日超额收益。"></textarea></label>
       </div>
@@ -106,6 +109,16 @@ async function newPage(app, current) {
       ${v2 ? `<div data-mode-section="research" hidden>
         <label>资料相对路径<input name="material_path" value="." maxlength="1000" placeholder="例如：2026-10 或 report.pdf"><span class="mini muted">只接受 ${esc(research.material_root || 'data/source/reports')} 下的 PDF 文件或目录；默认递归扫描。</span></label>
         <p class="mini muted">系统先解析文本型 PDF，再由 Worker v5/v6 抽取和转换候选。扫描件 OCR 尚未支持。</p>
+      </div>` : ''}
+      ${v3 ? `<div data-mode-section="costeer" hidden>
+        <label>人工提升记录<select name="promotion_id" id="promotion-id"><option value="">加载中…</option></select><span class="mini muted">只接受服务端已封存且校验通过的人工提升记录。</span></label>
+        <div class="form-grid">
+          <label>方向<select name="costeer_direction"><option value="1">正向</option><option value="-1">负向</option></select></label>
+          <label>机制<input name="costeer_mechanism" maxlength="200" value="沙箱代码研究人工转写"></label>
+        </div>
+        <label>候选说明<textarea name="costeer_description" rows="3" maxlength="2000">从 CoSTEER 沙箱产物人工转写，需重新完成全部阶段评估。</textarea></label>
+        <label>白话步骤<textarea name="costeer_steps" rows="3" placeholder="每行一个步骤，例如：读取收盘价&#10;计算截面排名"></textarea></label>
+        <p class="mini muted">导入不会执行沙箱代码，也不会跳过 DSL、五阶段评估、审批或发布。</p>
       </div>` : ''}
       <p class="mini muted">固定口径：${esc(opts.fixed.universe)} · ${esc(opts.fixed.label)} · ${esc(opts.fixed.price_channel)}。研究与测试窗口在运行时冻结。</p>
     </section>
@@ -129,16 +142,32 @@ async function newPage(app, current) {
     });
     const hypothesis = form.querySelector('[name=hypothesis]');
     const materialPath = form.querySelector('[name=material_path]');
+    const promotion = form.querySelector('[name=promotion_id]');
     if (hypothesis) hypothesis.required = mode === 'hypothesis';
     if (materialPath) materialPath.required = mode === 'research';
+    if (promotion) promotion.required = mode === 'costeer';
     status.textContent = mode === 'free_exploration'
       ? '自由探索会先冻结方向池和预算，再调用 Worker；隐藏窗口不会进入请求。'
+      : mode === 'costeer'
+        ? 'CoSTEER 只导入服务端已封存的人工提升记录，并重新执行受控阶段评估。'
       : opts.worker_configured
         ? 'Worker 已配置；提交时仍会检查健康状态。'
         : '主服务尚未配置 MINING_WORKER_URL；提交会明确失败。';
   };
   sourceMode?.addEventListener('change', syncMode);
   syncMode();
+  if (v3) {
+    miningRequest('/api/mining/costeer-promotions').then(items => {
+      const select = form.querySelector('#promotion-id');
+      if (!select) return;
+      select.innerHTML = items.length
+        ? items.map(item => `<option value="${esc(item.promotion_id)}" ${item.eligible ? '' : 'disabled'}>${esc(item.promotion_id)} · ${esc(item.target_type)} · ${item.eligible ? '可导入' : '不可导入'}</option>`).join('')
+        : '<option value="">暂无可用人工提升记录</option>';
+    }).catch(() => {
+      const select = form.querySelector('#promotion-id');
+      if (select) select.innerHTML = '<option value="">人工提升记录加载失败</option>';
+    });
+  }
   let idempotencyKey = `web-${crypto.randomUUID()}`;
   form.addEventListener('submit', async event => {
     event.preventDefault();
@@ -163,19 +192,29 @@ async function newPage(app, current) {
     status.textContent = '正在冻结上下文并提交 Worker 任务…';
     try {
       const researchMode = sourceMode?.value === 'research';
+      const costeerMode = sourceMode?.value === 'costeer';
       const body = researchMode
         ? {
             material_path: data.get('material_path'),
             idempotency_key: idempotencyKey,
           }
-        : {
+        : costeerMode
+          ? {
+              promotion_id: data.get('promotion_id'),
+              idempotency_key: idempotencyKey,
+              direction: Number(data.get('costeer_direction')),
+              mechanism: data.get('costeer_mechanism'),
+              description: data.get('costeer_description'),
+              steps: String(data.get('costeer_steps') || '').split('\n').map(item => item.trim()).filter(Boolean),
+            }
+          : {
             idempotency_key: idempotencyKey,
             input_mode: sourceMode?.value || 'hypothesis',
           };
-      if (!researchMode && sourceMode?.value === 'free_exploration') {
+      if (!researchMode && !costeerMode && sourceMode?.value === 'free_exploration') {
         const seed = String(data.get('exploration_seed') || '').trim();
         if (seed) body.exploration_seed = seed;
-      } else if (!researchMode) {
+      } else if (!researchMode && !costeerMode) {
         body.hypothesis = data.get('hypothesis');
       }
       if (v2) {
@@ -192,7 +231,11 @@ async function newPage(app, current) {
         body.constraints = constraints;
       }
       const detail = await miningJSON(
-        researchMode ? '/api/mining/research-runs' : '/api/mining/runs',
+        researchMode
+          ? '/api/mining/research-runs'
+          : costeerMode
+            ? '/api/mining/costeer-runs'
+            : '/api/mining/runs',
         body,
       );
       location.hash = `#/mining/${encodeURIComponent(detail.run.run_id)}`;
@@ -240,7 +283,7 @@ function renderRun(app, detail, opts, current) {
       status.textContent = errorText(error);
     }
   }
-  if (run.engine === 'v2') {
+  if (run.engine === 'v2' || run.engine === 'v3' || run.engine === 'v3-legacy') {
     renderSearchRun(app, detail, mutateRun);
     return;
   }
@@ -391,7 +434,7 @@ async function candidatePage(app, runId, candidateId, current) {
           reviewer,
           note,
           candidate_content_hash: detail.review.candidate_content_hash,
-          evidence_hash: detail.review.evidence_hash,
+          evidence_hash: detail.review.evidence_hash || detail.review.approval_evidence_hash,
         },
       );
       if (current()) await candidatePage(app, runId, candidateId, current);

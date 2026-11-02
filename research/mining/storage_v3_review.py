@@ -104,6 +104,118 @@ class V3ReviewStoreMixin:
         with self._connection() as conn:
             return self._context_conn(conn, identifier(run_id, "run_id"))
 
+    def initialize_candidate_state(
+        self,
+        run_id: str,
+        candidate_id: str,
+        source_id: str,
+        *,
+        status: str = "proposed",
+    ) -> dict[str, Any]:
+        """为进入 V3 运行链路的候选建立可迁移状态。"""
+
+        run_id = identifier(run_id, "run_id")
+        candidate_id = identifier(candidate_id, "candidate_id")
+        source_id = identifier(source_id, "source_id")
+        if status != "proposed":
+            raise MiningContractError("V3 候选初始状态必须是 proposed")
+        with database_state_lock(self.db_path):
+            with self._connection() as conn:
+                with self._transaction(conn):
+                    self._candidate_envelope_conn(
+                        conn,
+                        run_id,
+                        candidate_id,
+                        source_id,
+                    )
+                    existing = self._candidate_state_conn(
+                        conn,
+                        run_id,
+                        candidate_id,
+                        missing_ok=True,
+                    )
+                    if existing is None:
+                        conn.execute(
+                            "INSERT INTO mining_v3.candidate_state VALUES "
+                            "(?, ?, ?, ?, NULL, NULL, ?)",
+                            [
+                                run_id,
+                                candidate_id,
+                                source_id,
+                                status,
+                                utc_now_iso(),
+                            ],
+                        )
+                        reused = False
+                    elif existing["source_id"] != source_id:
+                        raise MiningDuplicateError(
+                            "V3 候选状态已绑定其他来源"
+                        )
+                    else:
+                        reused = True
+        return {
+            "run_id": run_id,
+            "candidate_id": candidate_id,
+            "source_id": source_id,
+            "status": status,
+            "reused": reused,
+        }
+
+    def candidate_source_id(self, run_id: str, candidate_id: str) -> str:
+        """返回运行候选的唯一来源；多来源候选由最终审批选择来源。"""
+
+        with self._connection() as conn:
+            return self._single_candidate_source_conn(
+                conn,
+                identifier(run_id, "run_id"),
+                identifier(candidate_id, "candidate_id"),
+            )
+
+    def sync_candidate_state(self, run_id: str, candidate_id: str, target: str) -> dict[str, Any]:
+        """把共享运行状态同步到 V3 候选状态表。"""
+
+        run_id = identifier(run_id, "run_id")
+        candidate_id = identifier(candidate_id, "candidate_id")
+        timestamp = utc_now_iso()
+        with database_state_lock(self.db_path):
+            with self._connection() as conn:
+                with self._transaction(conn):
+                    state = self._candidate_state_conn(conn, run_id, candidate_id)
+                    previous = str(state["status"])
+                    if previous == target:
+                        reused = True
+                    else:
+                        CandidateStateMachine.ensure(previous, target)
+                        updated = conn.execute(
+                            "UPDATE mining_v3.candidate_state SET status=?, "
+                            "updated_at=? WHERE run_id=? AND candidate_id=? "
+                            "AND status=? RETURNING candidate_id",
+                            [target, timestamp, run_id, candidate_id, previous],
+                        ).fetchall()
+                        if not updated:
+                            raise MiningStateError(
+                                "V3 候选状态已被其他请求修改"
+                            )
+                        self._append_v3_event_conn(
+                            conn,
+                            run_id,
+                            f"v3_runtime_candidate_{candidate_id}_{target}",
+                            "v3_candidate_state_changed",
+                            {
+                                "candidate_id": candidate_id,
+                                "from": previous,
+                                "to": target,
+                            },
+                            created_at=timestamp,
+                        )
+                        reused = False
+        return {
+            "run_id": run_id,
+            "candidate_id": candidate_id,
+            "status": target,
+            "reused": reused,
+        }
+
     def candidate_review(
         self,
         run_id: str,
@@ -224,17 +336,46 @@ class V3ReviewStoreMixin:
                                 if decision.decision == "approved"
                                 else "rejected"
                             )
-                            conn.execute(
-                                "INSERT INTO mining_v3.candidate_state VALUES "
-                                "(?, ?, ?, ?, NULL, NULL, ?)",
-                                [
-                                    decision.run_id,
-                                    decision.candidate_id,
-                                    source_id,
-                                    target,
-                                    timestamp,
-                                ],
+                            state = self._candidate_state_conn(
+                                conn,
+                                decision.run_id,
+                                decision.candidate_id,
+                                missing_ok=True,
                             )
+                            if state is None:
+                                conn.execute(
+                                    "INSERT INTO mining_v3.candidate_state VALUES "
+                                    "(?, ?, ?, ?, NULL, NULL, ?)",
+                                    [
+                                        decision.run_id,
+                                        decision.candidate_id,
+                                        source_id,
+                                        target,
+                                        timestamp,
+                                    ],
+                                )
+                            else:
+                                if state["source_id"] != source_id:
+                                    raise ApprovalConflictError(
+                                        "候选状态绑定了不同来源"
+                                    )
+                                CandidateStateMachine.ensure(
+                                    str(state["status"]),
+                                    target,
+                                )
+                                conn.execute(
+                                    "UPDATE mining_v3.candidate_state SET "
+                                    "status=?, error_code=NULL, error_message=NULL, "
+                                    "updated_at=? WHERE run_id=? AND candidate_id=? "
+                                    "AND source_id=?",
+                                    [
+                                        target,
+                                        timestamp,
+                                        decision.run_id,
+                                        decision.candidate_id,
+                                        source_id,
+                                    ],
+                                )
                             self._append_v3_event_conn(
                                 conn,
                                 decision.run_id,
@@ -434,6 +575,27 @@ class V3ReviewStoreMixin:
             ),
             evidence=envelope.evidence,
         )
+
+    def _single_candidate_source_conn(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        run_id: str,
+        candidate_id: str,
+    ) -> str:
+        rows = conn.execute(
+            "SELECT source_id FROM mining_v3.candidate_source "
+            "WHERE run_id=? AND candidate_id=? ORDER BY source_id",
+            [run_id, candidate_id],
+        ).fetchall()
+        if not rows:
+            raise MiningNotFoundError(
+                f"V3 候选来源不存在：{run_id}/{candidate_id}"
+            )
+        if len(rows) != 1:
+            raise MiningContractError(
+                "运行候选必须只绑定一个来源，最终审批后才能选择来源"
+            )
+        return str(rows[0][0])
 
     @staticmethod
     def _validate_v3_approval_decision(

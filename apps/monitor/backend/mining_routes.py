@@ -57,6 +57,33 @@ def build_mining_router(
             )
         )
 
+    @router.post("/costeer-runs")
+    async def create_costeer_run(payload: dict):
+        """导入服务端 CoSTEER 人工提升记录并创建 V3 运行。"""
+
+        return json_safe(
+            await asyncio.to_thread(
+                current_service().create_costeer_run,
+                payload,
+            )
+        )
+
+    @router.get("/costeer-promotions")
+    async def costeer_promotions():
+        """列出可导入的服务端人工提升记录。"""
+
+        return json_safe(
+            await asyncio.to_thread(current_service().costeer_promotions)
+        )
+
+    @router.get("/v3/status")
+    async def v3_status():
+        """返回 V3 运行、审核和发布监控摘要。"""
+
+        return json_safe(
+            await asyncio.to_thread(current_service().v3_status)
+        )
+
     @router.get("/runs")
     async def list_runs(limit: int = 50):
         """列出近期挖掘运行。"""

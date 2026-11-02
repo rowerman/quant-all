@@ -17,6 +17,8 @@ function inputModeLabel(mode) {
     hypothesis: '手工研究假设',
     free_exploration: '自由探索',
     research: '资料驱动',
+    research_report: '资料驱动',
+    costeer: 'CoSTEER 人工提升',
   }[mode] || '手工研究假设';
 }
 
@@ -49,6 +51,25 @@ export function searchBudgetFields(defaults, limits) {
 
 export function renderSearchRun(app, detail, mutateRun) {
   const run = detail.run;
+  if (run.engine === 'v3-legacy') {
+    app.innerHTML = `<div class="page-heading">
+      <div><h1>只读旧运行 ${esc(run.run_id)}</h1><p class="intro muted">迁移自 ${esc(run.source_schema)}，不可恢复或发布。</p></div>
+      <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
+    </div>
+    <section class="card"><h2>运行状态</h2>${statusTag(run.status)}<p>${esc(run.hypothesis)}</p></section>
+    <section class="card"><h2>候选摘要</h2><div id="search-candidates"></div></section>`;
+    if (detail.candidates.length) {
+      table(app.querySelector('#search-candidates'), detail.candidates.map(item => ({
+        候选: item.name,
+        状态: statusLabel(item.status),
+        候选ID: item.candidate_id,
+        更新时间: formatTime(item.updated_at),
+      })));
+    } else {
+      app.querySelector('#search-candidates').innerHTML = '<p class="muted">没有候选摘要。</p>';
+    }
+    return;
+  }
   const progress = detail.progress;
   const budget = progress.budget || {};
   const attempts = progress.attempts || {};
@@ -64,7 +85,7 @@ export function renderSearchRun(app, detail, mutateRun) {
       ? `${run.effective_exploration_seed}（请求哈希派生）`
       : '—';
   app.innerHTML = `<div class="page-heading">
-    <div><h1>V2 搜索 ${esc(run.run_id)}</h1><p class="intro muted">${esc(inputModeLabel(inputMode))} · ${esc(run.hypothesis)}</p></div>
+    <div><h1>${esc((run.engine || 'v2').toUpperCase())} 搜索 ${esc(run.run_id)}</h1><p class="intro muted">${esc(inputModeLabel(inputMode))} · ${esc(run.hypothesis)}</p></div>
     <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
   </div>
   <section class="card">
@@ -80,7 +101,7 @@ export function renderSearchRun(app, detail, mutateRun) {
     <h2>研究输入</h2>
     <div class="quality-summary">
       <span>模式：${esc(inputModeLabel(inputMode))}</span>
-      <span>${inputMode === 'free_exploration' ? `种子：${esc(seedText)}` : '输入：人工或资料候选'}</span>
+      <span>${inputMode === 'free_exploration' ? `种子：${esc(seedText)}` : inputMode === 'costeer' ? '来源：服务端人工提升记录' : '输入：人工或资料候选'}</span>
       ${direction ? `<span>首轮机制：${esc(direction.mechanism_category)}</span>` : ''}
     </div>
     ${direction ? `<div id="exploration-direction"></div>` : ''}

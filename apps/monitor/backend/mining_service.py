@@ -44,6 +44,7 @@ from mining.publication_service import MiningPublicationService
 from mining.snapshot import DEFAULT_DATA_MANIFEST, assert_context_snapshot
 from mining.storage import MiningStore
 from backend.mining_search_service import MiningSearchWebService
+from backend.mining_v3_service import MiningV3WebService
 
 _LOGGER = get_mining_logger("mining.web")
 _STREAM_END_STATUSES = {
@@ -88,23 +89,38 @@ class MiningWebService:
         catalog_file: Path | str = FACTOR_DB_FILE,
         manifest_file: Path | str = DEFAULT_DATA_MANIFEST,
         search_service: MiningSearchWebService | None = None,
+        v3_service: MiningV3WebService | None = None,
     ) -> None:
-        self.store = store or MiningStore(MINING_DB_FILE, MINING_DATA_DIR)
-        self.orchestrator = orchestrator or MiningOrchestrator(store=self.store)
-        self.defaults = defaults or load_orchestration_constraints(
-            MINING_ORCHESTRATOR_FILE
-        )
         self.reviewer = reviewer or getpass.getuser()
         self.db_file = Path(db_file)
         self.factor_dir = Path(factor_dir)
         self.catalog_file = Path(catalog_file)
         self.manifest_file = Path(manifest_file)
         self.search_service = search_service
+        self.v3_service = v3_service
+        self._v3_enabled = (
+            v3_service is not None
+            or self._env_enabled("MINING_SEARCH_V3_ENABLED")
+        )
         self._search_enabled = (
             search_service is not None
             or self._env_enabled("MINING_SEARCH_V2_ENABLED")
         )
         self._snapshot_check = snapshot_check or assert_context_snapshot
+        if self._v3_enabled and self.v3_service is None:
+            self.v3_service = MiningV3WebService(
+                db_file=self.db_file,
+                factor_dir=self.factor_dir,
+                catalog_file=self.catalog_file,
+                manifest_file=self.manifest_file,
+                snapshot_check=self._snapshot_check,
+                reviewer=self.reviewer,
+            )
+        self.store = store or MiningStore(MINING_DB_FILE, MINING_DATA_DIR)
+        self.orchestrator = orchestrator or MiningOrchestrator(store=self.store)
+        self.defaults = defaults or load_orchestration_constraints(
+            MINING_ORCHESTRATOR_FILE
+        )
         self.publication_service = MiningPublicationService(
             store=self.store,
             db_file=self.db_file,
@@ -129,6 +145,8 @@ class MiningWebService:
             self.publication_service.initialize()
             if self._search_enabled:
                 self._search_service().initialize()
+            if self._v3_enabled and self.v3_service is not None:
+                self._v3_service().initialize()
             self._initialized = True
             _LOGGER.info(
                 format_event(
@@ -150,6 +168,8 @@ class MiningWebService:
         self.publication_service.close()
         if self.search_service is not None:
             self.search_service.close()
+        if self.v3_service is not None:
+            self.v3_service.close()
         self.orchestrator.close()
 
     def options(self) -> dict[str, Any]:
@@ -181,8 +201,22 @@ class MiningWebService:
             "worker_configured": bool(
                 os.environ.get("MINING_WORKER_URL", "").strip()
             ),
-            "engine": "v2" if self._search_enabled else "v1",
+            "engine": (
+                "v3"
+                if self._v3_enabled
+                else "v2"
+                if self._search_enabled
+                else "v1"
+            ),
         }
+        if self._v3_enabled:
+            result["search_v3"] = {
+                "enabled": True,
+                **self._v3_service().options(),
+            }
+            result["search_v2"] = {"enabled": False}
+            result["worker_configured"] = result["search_v3"]["worker_configured"]
+            return result
         if self._search_enabled:
             search = self._search_service().options()
             result["search_v2"] = {"enabled": True, **search}
@@ -194,6 +228,8 @@ class MiningWebService:
     def create_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """校验并创建后台挖掘运行。"""
 
+        if self._v3_enabled:
+            return self._v3_service().create_run(payload)
         if self._search_enabled:
             return self._search_service().create_run(payload)
         body = self._body(payload, _CREATE_FIELDS)
@@ -223,9 +259,32 @@ class MiningWebService:
     def create_research_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """创建资料驱动运行；V2 未启用时明确拒绝。"""
 
+        if self._v3_enabled:
+            return self._v3_service().create_research_run(payload)
         if not self._search_enabled:
             raise MiningStateError("资料驱动运行需要启用 V2 搜索")
         return self._search_service().create_research_run(payload)
+
+    def create_costeer_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """导入服务端 CoSTEER 人工提升记录并创建 V3 运行。"""
+
+        if not self._v3_enabled:
+            raise MiningStateError("CoSTEER 导入需要启用 V3 搜索")
+        return self._v3_service().create_costeer_run(payload)
+
+    def costeer_promotions(self) -> list[dict[str, Any]]:
+        """列出可导入的 CoSTEER 人工提升记录。"""
+
+        if not self._v3_enabled:
+            return []
+        return self._v3_service().costeer_promotions()
+
+    def v3_status(self) -> dict[str, Any]:
+        """返回 V3 运行和发布监控摘要。"""
+
+        if not self._v3_enabled:
+            return {"engine": "v3", "enabled": False}
+        return {"enabled": True, **self._v3_service().monitor_status()}
 
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         """返回近期运行的页面摘要。"""
@@ -239,8 +298,11 @@ class MiningWebService:
         ]
         if self._search_enabled:
             rows.extend(self._search_service().list_runs(size))
+        if self._v3_enabled:
+            rows.extend(self._v3_service().list_runs(size))
+        unique = {str(item["run_id"]): item for item in rows}
         return sorted(
-            rows,
+            unique.values(),
             key=lambda item: str(item.get("created_at", "")),
             reverse=True,
         )[:size]
@@ -248,6 +310,8 @@ class MiningWebService:
     def run_detail(self, run_id: str) -> dict[str, Any]:
         """返回运行、预算进度和候选摘要。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().run_detail(run_id)
         if self._is_search_run(run_id):
             return self._search_service().run_detail(run_id)
         run = self.store.get_run(run_id)
@@ -263,6 +327,8 @@ class MiningWebService:
     def run_status(self, run_id: str) -> dict[str, Any]:
         """返回 SSE 轮询所需的轻量运行状态。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().run_status(run_id)
         if self._is_search_run(run_id):
             return self._search_service().run_status(run_id)
         run = self.store.get_run(run_id)
@@ -285,6 +351,8 @@ class MiningWebService:
     ) -> dict[str, Any]:
         """按序号读取安全业务事件。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().events(run_id, after=after, limit=limit)
         if self._is_search_run(run_id):
             return self._search_service().events(
                 run_id,
@@ -308,6 +376,8 @@ class MiningWebService:
     def cancel(self, run_id: str) -> dict[str, Any]:
         """请求取消运行并返回最新摘要。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().cancel(run_id)
         if self._is_search_run(run_id):
             return self._search_service().cancel(run_id)
         run = self.orchestrator.cancel(run_id)
@@ -316,6 +386,8 @@ class MiningWebService:
     def resume(self, run_id: str) -> dict[str, Any]:
         """恢复中断运行并返回最新详情。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().resume(run_id)
         if self._is_search_run(run_id):
             return self._search_service().resume(run_id)
         self.orchestrator.resume(run_id, background=True)
@@ -324,6 +396,8 @@ class MiningWebService:
     def candidate_detail(self, run_id: str, candidate_id: str) -> dict[str, Any]:
         """返回候选定义、四阶段证据和当前审批资格。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().candidate_detail(run_id, candidate_id)
         if self._is_search_run(run_id):
             return self._search_service().candidate_detail(
                 run_id,
@@ -375,6 +449,8 @@ class MiningWebService:
     ) -> dict[str, Any]:
         """整批构建并发布当前运行的全部已批准候选。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().start_publication_batch(run_id, payload)
         if self._is_search_run(run_id):
             return self._search_service().start_publication_batch(
                 run_id,
@@ -393,6 +469,8 @@ class MiningWebService:
     def publication_batch(self, run_id: str, batch_id: str) -> dict[str, Any]:
         """读取发布批次进度。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().publication_batch(run_id, batch_id)
         if self._is_search_run(run_id):
             return self._search_service().publication_batch(run_id, batch_id)
         return self.publication_service.get_batch(run_id, batch_id)
@@ -400,6 +478,8 @@ class MiningWebService:
     def publication_batches(self, run_id: str) -> list[dict[str, Any]]:
         """列出运行的全部发布批次。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().publication_batches(run_id)
         if self._is_search_run(run_id):
             return self._search_service().publication_batches(run_id)
         self.store.get_run(run_id)
@@ -441,6 +521,8 @@ class MiningWebService:
     ) -> dict[str, Any]:
         """记录人工批准或拒绝；不触发正式发布。"""
 
+        if self._is_v3_managed_run(run_id):
+            return self._v3_service().decide(run_id, candidate_id, payload)
         if self._is_search_run(run_id):
             return self._search_service().decide(
                 run_id,
@@ -514,6 +596,20 @@ class MiningWebService:
                 self.search_service.initialize()
         return self.search_service
 
+    def _v3_service(self) -> MiningV3WebService:
+        if self.v3_service is None:
+            self.v3_service = MiningV3WebService(
+                db_file=self.db_file,
+                factor_dir=self.factor_dir,
+                catalog_file=self.catalog_file,
+                manifest_file=self.manifest_file,
+                snapshot_check=self._snapshot_check,
+                reviewer=self.reviewer,
+            )
+            if self._initialized:
+                self.v3_service.initialize()
+        return self.v3_service
+
     @staticmethod
     def _env_enabled(name: str) -> bool:
         return os.environ.get(name, "").strip().lower() in {
@@ -526,6 +622,19 @@ class MiningWebService:
     @staticmethod
     def _is_search_run(run_id: str) -> bool:
         return run_id.startswith("searchrun_")
+
+    @staticmethod
+    def _is_v3_run(run_id: str) -> bool:
+        return run_id.startswith("researchrun_")
+
+    def _is_v3_managed_run(self, run_id: str) -> bool:
+        if self._is_v3_run(run_id):
+            return self._v3_enabled
+        return (
+            self._v3_enabled
+            and self.v3_service is not None
+            and self.v3_service.is_legacy_run(run_id)
+        )
 
     @staticmethod
     def _body(payload: Mapping[str, Any], allowed: set[str]) -> dict[str, Any]:

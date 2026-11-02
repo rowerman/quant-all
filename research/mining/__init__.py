@@ -95,6 +95,8 @@ from mining.errors import (
     WorkerTimeoutError,
     V3MigrationConflictError,
     V3MigrationRollbackError,
+    V3RunStateError,
+    V3SourceImportError,
 )
 from mining.research_materials import (
     RESEARCH_CLASSIFICATION_KINDS,
@@ -355,6 +357,8 @@ from mining.states import (
 from mining.storage import MiningStore
 from mining.storage_v2 import MiningV2Store
 from mining.storage_v3 import MiningV3Store
+from mining.storage_v3_runtime import MiningV3RuntimeStore
+from mining.search_orchestrator_v3 import MiningV3SearchOrchestrator
 from mining.storage_v2_trace_states import TURN_STATUSES
 from mining.migration_v1_v2 import migrate_v1_to_v2
 from mining.migration_v1_v2_v3 import (
@@ -602,6 +606,8 @@ __all__ = [
     "MiningMigrationError",
     "V3MigrationConflictError",
     "V3MigrationRollbackError",
+    "V3RunStateError",
+    "V3SourceImportError",
     "MiningRecoveryError",
     "MiningStateError",
     "MiningStorageError",
@@ -636,6 +642,8 @@ __all__ = [
     "MiningStore",
     "MiningV2Store",
     "MiningV3Store",
+    "MiningV3RuntimeStore",
+    "MiningV3SearchOrchestrator",
     "MiningProgress",
     "MiningOrchestrator",
     "load_orchestration_constraints",

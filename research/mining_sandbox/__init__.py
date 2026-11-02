@@ -33,6 +33,8 @@ from mining_sandbox.artifacts import (
     PromotionRequest,
     SandboxArtifactManifest,
     copy_artifacts_for_review,
+    list_manual_promotions,
+    load_manual_promotion,
     record_manual_promotion,
     verify_artifact_tree,
 )
@@ -113,6 +115,8 @@ __all__ = [
     "build_sandbox_knowledge",
     "build_worker_knowledge_evidence",
     "copy_artifacts_for_review",
+    "list_manual_promotions",
+    "load_manual_promotion",
     "evaluate_factor_output",
     "load_sandbox_policy",
     "load_sandbox_knowledge",

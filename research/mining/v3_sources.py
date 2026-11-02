@@ -73,8 +73,13 @@ def _search_input_envelope(
 ) -> ResearchInputEnvelope:
     """构造手工假设或自由探索输入包络。"""
 
+    run_id = (
+        request.run_id
+        if request.run_id.startswith(f"{V3_RUN_ID_PREFIX}_")
+        else research_run_id(request.idempotency_key)
+    )
     return ResearchInputEnvelope(
-        run_id=research_run_id(request.idempotency_key),
+        run_id=run_id,
         idempotency_key=request.idempotency_key,
         input_mode=source_kind,
         context_hash=context_hash,
@@ -199,8 +204,13 @@ def research_report_input_envelope(
             "manifest_hash": research_input.manifest.manifest_hash,
         }
     )
+    run_id = (
+        research_input.run_id
+        if research_input.run_id.startswith(f"{V3_RUN_ID_PREFIX}_")
+        else research_run_id(research_input.idempotency_key)
+    )
     return ResearchInputEnvelope(
-        run_id=research_run_id(research_input.idempotency_key),
+        run_id=run_id,
         idempotency_key=research_input.idempotency_key,
         input_mode="research_report",
         context_hash=context_hash,
@@ -279,11 +289,17 @@ def costeer_input_envelope(
     promotion: PromotionRequest,
     *,
     context_hash: str,
+    idempotency_key: str | None = None,
+    run_id: str | None = None,
 ) -> ResearchInputEnvelope:
     """构造 CoSTEER 人工提升导入的 V3 输入。"""
 
     if not isinstance(promotion, PromotionRequest):
         raise MiningContractError("promotion 必须是 PromotionRequest")
+    key = promotion.promotion_id if idempotency_key is None else identifier(
+        idempotency_key,
+        "idempotency_key",
+    )
     source = costeer_candidate_source(promotion)
     request_hash = sha256_json(
         {
@@ -295,8 +311,8 @@ def costeer_input_envelope(
         }
     )
     return ResearchInputEnvelope(
-        run_id=research_run_id(promotion.promotion_id),
-        idempotency_key=promotion.promotion_id,
+        run_id=run_id or research_run_id(key),
+        idempotency_key=key,
         input_mode="costeer",
         context_hash=context_hash,
         request_hash=request_hash,

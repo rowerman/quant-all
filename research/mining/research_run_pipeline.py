@@ -176,6 +176,7 @@ def prepare_research_run(
     extractor: ResearchFactorExtractor,
     converter: ResearchFactorConverter,
     admission_limit: int,
+    enrich_candidates: bool = True,
 ) -> ResearchRunPreparation:
     """执行资料解析、字段抽取、候选转换和来源构造。
 
@@ -186,6 +187,7 @@ def prepare_research_run(
         extractor: Worker v5 抽取客户端。
         converter: Worker v6 转换客户端。
         admission_limit: 本次运行最多自动准入的候选数。
+        enrich_candidates: V2 是否把来源哈希写入候选参数；V3 固定为否。
     """
 
     if not isinstance(research_input, ResearchRunInput):
@@ -246,14 +248,19 @@ def prepare_research_run(
             document=document,
             candidate=converted.candidate,
         )
-        enriched = _enrich_candidate(converted.candidate, provisional)
-        provenance = _provenance(
-            converted,
-            extraction=extraction,
-            document=document,
-            candidate=enriched,
-        )
-        admitted_ids[converted.candidate.candidate_id] = enriched.candidate_id
+        if enrich_candidates:
+            enriched = _enrich_candidate(converted.candidate, provisional)
+            provenance = _provenance(
+                converted,
+                extraction=extraction,
+                document=document,
+                candidate=enriched,
+            )
+            stored_candidate_id = enriched.candidate_id
+        else:
+            provenance = provisional
+            stored_candidate_id = converted.candidate.candidate_id
+        admitted_ids[converted.candidate.candidate_id] = stored_candidate_id
         provenances.append(provenance)
 
     decisions = _admission_decisions(

@@ -10,6 +10,7 @@
 | app | FastAPI 路由、SSE；调用 service/scheduler/mining_service；提供 frontend 静态文件 | HTTP 错误须在开流前返回；流内错误使用 error 事件 |
 | mining_service | 挖掘预算、运行视图、候选证据、人工审批和发布批次入口 | 只调用 mining 公开接口；批准和发布必须分开，发布不得绕过整批资格 |
 | mining_search_service | V2 搜索视图、五阶段审核证据、审批和 V2 发布服务适配 | 运行级接口继续复用现有路径；V2 事实只从 `MiningV2Store` 读取 |
+| mining_v3_service | V3 四类来源、CoSTEER 人工提升导入、审核、发布和监控 | 运行事实从 `MiningV3RuntimeStore` 读取；`researchrun_` 统一分派 |
 | mining_routes | `/api/mining/*` REST 与可续传 SSE | 断流不能取消运行；事件序号必须可重放 |
 | service | 目录与参数预检；调用 quant 元数据读取及 calculate 指标 | 不在这里重写指标公式；保留只读与已有资源限制 |
 | scheduler | 调度名额、背压、状态、锁等待与取消；由 app 持有 | Future 真正结束才释放容量，不共享数据库连接；原生计算阶段由 `calculate.native` 串行保护，同步和流式回测共用同一调度路径 |

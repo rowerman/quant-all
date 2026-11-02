@@ -207,6 +207,7 @@ Worker：
 | 监测站脚本 | `MONITOR_PORT` | 监听端口，默认 `8800` |
 | 监测站 | `BACKTEST_WORKERS` / `BACKTEST_WAITING` | 回测执行槽和等待槽，默认 `1` / `2` |
 | 监测站 | `MINING_WORKER_URL` | Worker 地址；未配置时挖掘接口报 `MINING-119` |
+| 监测站 | `MINING_SEARCH_V3_ENABLED` | 显式启用 V3 四类来源统一入口；同时开启 V2/V3 时 V3 优先 |
 | 监测站 | `MINING_WORKER_TOKEN_FILE` | Worker Token 路径，默认 `data/mining_worker/token` |
 | 监测站 | `MINING_WORKER_TIMEOUT` | 客户端总超时；默认取 Worker 配置 |
 | Worker | `FACTOR_DEEPSEEK_API` | 只在 Compose 中读取，再映射为容器内 `DEEPSEEK_API_KEY` |
