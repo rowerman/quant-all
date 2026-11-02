@@ -321,6 +321,19 @@ from mining.v3_states import (
     V3_RESEARCH_RUN_TERMINAL_STATUSES,
     V3ResearchStateMachine,
 )
+from mining.v3_sources import (
+    costeer_candidate_source,
+    costeer_input_envelope,
+    costeer_promotion_hash,
+    evidence_reference_from_search,
+    free_exploration_candidate_source,
+    free_exploration_input_envelope,
+    hypothesis_input_envelope,
+    research_report_candidate_source,
+    research_report_input_envelope,
+    research_run_id,
+    source_independent_research_candidate,
+)
 from mining.states import (
     CANDIDATE_ACTIVE_STATUSES,
     CANDIDATE_STATUSES,
@@ -335,6 +348,7 @@ from mining.states import (
 )
 from mining.storage import MiningStore
 from mining.storage_v2 import MiningV2Store
+from mining.storage_v3 import MiningV3Store
 from mining.storage_v2_trace_states import TURN_STATUSES
 from mining.migration_v1_v2 import migrate_v1_to_v2
 from mining.worker_client import (
@@ -606,6 +620,7 @@ __all__ = [
     "RunStateMachine",
     "MiningStore",
     "MiningV2Store",
+    "MiningV3Store",
     "MiningProgress",
     "MiningOrchestrator",
     "load_orchestration_constraints",
@@ -635,4 +650,15 @@ __all__ = [
     "convert_research_factor_drafts",
     "tool_catalog",
     "migrate_v1_to_v2",
+    "costeer_candidate_source",
+    "costeer_input_envelope",
+    "costeer_promotion_hash",
+    "evidence_reference_from_search",
+    "free_exploration_candidate_source",
+    "free_exploration_input_envelope",
+    "hypothesis_input_envelope",
+    "research_report_candidate_source",
+    "research_report_input_envelope",
+    "research_run_id",
+    "source_independent_research_candidate",
 ]

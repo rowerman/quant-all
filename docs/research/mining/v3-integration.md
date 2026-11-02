@@ -105,7 +105,8 @@ queued -> searching -> selecting -> evaluating -> holding_out -> review_ready
 
 ## 存储范围
 
-目标 schema 为 `mining_v3`，由 P4-04 的显式迁移创建。V3 沿用 V2 的以下事实类别：
+目标 schema 为 `mining_v3`。全新数据库由 P4-02 直接初始化，已有 V1/V2 数据库由
+P4-04 的显式迁移创建。V3 沿用 V2 的以下事实类别：
 
 - 冻结上下文、运行、运行控制、turn 和链式轨迹。
 - 假设、实验批次、候选、候选谱系和尝试台账。
@@ -121,6 +122,29 @@ V3 新增的事实类别为：
 正式发布事实不进入 `mining_v3`。共享 `mining.publication*` 使用
 `source_kind=v3_research`，并保留 `researchrun_*` 来源运行 ID、候选 ID、上下文哈希、
 审批证据哈希和 `CandidateEnvelope.envelope_hash`。
+
+### P4-02 已实现范围
+
+P4-02 已在全新数据库初始化以下表：
+
+| 表 | 内容 |
+|---|---|
+| `mining_v3.schema_meta` | `mining_v3` schema 版本 |
+| `mining_v3.research_input` | 统一运行输入和主来源 ID |
+| `mining_v3.source_reference` | 四类来源的白名单身份和哈希 |
+| `mining_v3.candidate_source` | 来源无关候选与一个来源的绑定 |
+| `mining_v3.evaluation_evidence` | 候选来源绑定的五阶段证据引用 |
+
+`MiningV3Store` 原子登记输入、候选来源和证据，追加证据时保持候选身份不变。同一候选
+可在同一运行中绑定多个来源；同一候选和来源重复写入必须产生相同内容。检测到
+`mining` 或 `mining_v2` 时，V3 初始化直接失败并提示执行后续显式迁移，不会自动改变
+旧库。
+
+`mining.v3_sources` 为手工假设、自由探索、资料报告和 CoSTEER 构造稳定来源身份。
+资料候选在进入 V3 前移除 V2 专用的 `source_kind` 和 `research_provenance_hash`
+参数，因此资料差异只改变来源包络。CoSTEER 导入只接受已封存产物对应的人工提升记录
+和受控 DSL 候选，不执行沙箱代码。V3 证据适配器只接收技术、开发、选择、完整和测试段
+五个阶段；诊断和稳定性辅助证据仍留在原研究链。
 
 ## 迁移与兼容
 
