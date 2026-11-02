@@ -16,6 +16,7 @@ from mining.errors import (
 )
 from mining.search_budget import TrialCounts
 from mining.search_context import FrozenSearchContext
+from mining.search_contract_types import FREE_EXPLORATION_INPUT_MODE
 from mining.research_run_contracts import ResearchRunInput
 from mining.search_run import SearchRunRequest
 from mining.storage_lock import database_state_lock
@@ -248,12 +249,40 @@ class V2RunStoreMixin:
             rows = conn.execute(
                 "SELECT r.run_id, r.idempotency_key, "
                 "coalesce(ctl.status, r.status) AS status, r.hypothesis, "
-                "r.trace_hash, r.created_at, "
+                "r.trace_hash, r.request_json, r.created_at, "
+                "CASE WHEN rr.run_id IS NULL THEN 0 ELSE 1 END AS is_research, "
                 "coalesce(ctl.updated_at, r.updated_at) AS updated_at "
                 "FROM mining_v2.run r LEFT JOIN mining_v2.run_control ctl "
                 "ON ctl.run_id=r.run_id "
+                "LEFT JOIN mining_v2.research_run rr ON rr.run_id=r.run_id "
                 "ORDER BY r.created_at DESC LIMIT ?",
                 [limit],
             ).fetchall()
             columns = [item[0] for item in conn.description]
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(zip(columns, row, strict=True))
+            stored = json.loads(item.pop("request_json"))
+            request = SearchRunRequest.from_dict(
+                {
+                    "idempotency_key": item["idempotency_key"],
+                    **stored,
+                }
+            )
+            item["input_mode"] = request.input_mode
+            item["is_research"] = bool(item.pop("is_research"))
+            item["exploration_seed"] = request.exploration_seed
+            if request.input_mode == FREE_EXPLORATION_INPUT_MODE:
+                item["effective_exploration_seed"] = (
+                    request.effective_exploration_seed
+                )
+                item["seed_source"] = (
+                    "request"
+                    if request.exploration_seed is not None
+                    else "request_hash"
+                )
+            else:
+                item["effective_exploration_seed"] = None
+                item["seed_source"] = None
+            result.append(item)
+        return result

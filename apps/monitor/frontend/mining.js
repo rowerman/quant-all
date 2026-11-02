@@ -33,6 +33,14 @@ function statusTag(status) {
   return `<span class="tag mining-status mining-status-${esc(status)}">${esc(statusLabel(status))}</span>`;
 }
 
+function inputModeLabel(mode) {
+  return {
+    hypothesis: '手工研究假设',
+    free_exploration: '自由探索',
+    research: '资料驱动',
+  }[mode] || '手工研究假设';
+}
+
 async function listPage(app, current) {
   const runs = await miningRequest('/api/mining/runs?limit=50');
   if (!current()) return;
@@ -47,8 +55,8 @@ async function listPage(app, current) {
   <p class="note">批准只记录人工决定，不会自动修改正式因子库、模型、策略或回测。</p>`;
   if (!runs.length) return;
   const wrap = app.querySelector('#mining-runs');
-  wrap.innerHTML = `<div class="table-wrap"><table><thead><tr><th>研究假设</th><th>状态</th><th>阶段</th><th>创建时间</th><th>错误</th></tr></thead><tbody>
-    ${runs.map(run => `<tr><td><a href="#/mining/${encodeURIComponent(run.run_id)}">${esc(run.hypothesis)}</a><div class="mini muted">${esc(run.run_id)} · ${esc(run.engine || 'v1')}</div></td><td>${statusTag(run.status)}</td><td>${esc(statusLabel(run.last_completed_stage || run.status))}</td><td>${esc(formatTime(run.created_at))}</td><td>${esc(run.error_code || '—')}${run.error_message ? `<div class="mini muted">${esc(run.error_message)}</div>` : ''}</td></tr>`).join('')}
+  wrap.innerHTML = `<div class="table-wrap"><table><thead><tr><th>研究输入</th><th>模式</th><th>状态</th><th>阶段</th><th>创建时间</th><th>错误</th></tr></thead><tbody>
+    ${runs.map(run => `<tr><td><a href="#/mining/${encodeURIComponent(run.run_id)}">${esc(run.hypothesis)}</a><div class="mini muted">${esc(run.run_id)} · ${esc(run.engine || 'v1')}</div></td><td>${esc(inputModeLabel(run.source_mode || run.input_mode))}</td><td>${statusTag(run.status)}</td><td>${esc(statusLabel(run.last_completed_stage || run.status))}</td><td>${esc(formatTime(run.created_at))}</td><td>${esc(run.error_code || '—')}${run.error_message ? `<div class="mini muted">${esc(run.error_message)}</div>` : ''}</td></tr>`).join('')}
   </tbody></table></div>`;
 }
 
@@ -81,16 +89,20 @@ async function newPage(app, current) {
     ? `开发期 ${esc(v2Options.windows.development_start)}～${esc(v2Options.windows.development_end)} · 选择期仅供控制器 · 最终研究期和模块测试段不进入 Worker`
     : `研究期 ${esc(opts.windows.research_start)}～${esc(opts.windows.research_end)} · 完整评估 ${esc(opts.windows.full_eval_start)}～${esc(opts.windows.full_eval_end)} · 测试段 ${esc(opts.windows.holdout_start)}～${esc(opts.windows.holdout_end)}`;
   app.innerHTML = `<div class="page-heading">
-    <div><h1>新建挖掘运行</h1><p class="intro muted">${v2 ? '可从手工假设或服务端研报资料启动。选择期、最终研究期和测试段不会反馈给 Worker。' : '假设会与预算、数据快照、字段目录和算子目录一起冻结。Worker 不可用时任务会明确失败，不会回退到 Mock。'}</p></div>
+    <div><h1>新建挖掘运行</h1><p class="intro muted">${v2 ? '可从手工假设、自由探索或服务端研报资料启动。选择期、最终研究期和测试段不会反馈给 Worker。' : '假设会与预算、数据快照、字段目录和算子目录一起冻结。Worker 不可用时任务会明确失败，不会回退到 Mock。'}</p></div>
     <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
   </div>
   <form id="mining-form">
     <section class="card">
       <h2>研究输入</h2>
-      ${v2 ? `<label>输入模式<select name="source_mode" id="source-mode"><option value="hypothesis">手工研究假设</option><option value="research">资料驱动</option></select></label>` : ''}
+      ${v2 ? `<label>输入模式<select name="source_mode" id="source-mode"><option value="hypothesis">手工研究假设</option><option value="free_exploration">自由探索</option><option value="research">资料驱动</option></select></label>` : ''}
       <div data-mode-section="hypothesis">
         <label>研究假设<textarea name="hypothesis" minlength="8" maxlength="4000" rows="7" required placeholder="例如：短期换手率下降可能预示未来五日超额收益。"></textarea></label>
       </div>
+      ${v2 ? `<div data-mode-section="free_exploration" hidden>
+        <label>探索种子（可选）<input name="exploration_seed" inputmode="numeric" pattern="[0-9]*" placeholder="留空则按请求哈希自动生成"><span class="mini muted">范围 0～${esc(v2Options.exploration?.seed_max || '18446744073709551615')}；显式种子会让同一请求可复现同一研究方向。</span></label>
+        <p class="note">${esc(v2Options.exploration?.safety_notice || '自由探索只替代初始假设，不会扩大冻结预算，也不会把选择期、最终研究期或模块测试段送入 Worker。')}</p>
+      </div>` : ''}
       ${v2 ? `<div data-mode-section="research" hidden>
         <label>资料相对路径<input name="material_path" value="." maxlength="1000" placeholder="例如：2026-10 或 report.pdf"><span class="mini muted">只接受 ${esc(research.material_root || 'data/source/reports')} 下的 PDF 文件或目录；默认递归扫描。</span></label>
         <p class="mini muted">系统先解析文本型 PDF，再由 Worker v5/v6 抽取和转换候选。扫描件 OCR 尚未支持。</p>
@@ -119,6 +131,11 @@ async function newPage(app, current) {
     const materialPath = form.querySelector('[name=material_path]');
     if (hypothesis) hypothesis.required = mode === 'hypothesis';
     if (materialPath) materialPath.required = mode === 'research';
+    status.textContent = mode === 'free_exploration'
+      ? '自由探索会先冻结方向池和预算，再调用 Worker；隐藏窗口不会进入请求。'
+      : opts.worker_configured
+        ? 'Worker 已配置；提交时仍会检查健康状态。'
+        : '主服务尚未配置 MINING_WORKER_URL；提交会明确失败。';
   };
   sourceMode?.addEventListener('change', syncMode);
   syncMode();
@@ -152,9 +169,15 @@ async function newPage(app, current) {
             idempotency_key: idempotencyKey,
           }
         : {
-            hypothesis: data.get('hypothesis'),
             idempotency_key: idempotencyKey,
+            input_mode: sourceMode?.value || 'hypothesis',
           };
+      if (!researchMode && sourceMode?.value === 'free_exploration') {
+        const seed = String(data.get('exploration_seed') || '').trim();
+        if (seed) body.exploration_seed = seed;
+      } else if (!researchMode) {
+        body.hypothesis = data.get('hypothesis');
+      }
       if (v2) {
         body.budget = {
           ...v2Options.defaults,

@@ -23,6 +23,10 @@ from mining.search_orchestrator_support import candidate_payload
 from mining.search_progress import progress_for_search
 from mining.search_review import SEARCH_APPROVAL_REQUIRED_STAGES
 from mining.search_run import SearchRunRequest
+from mining.search_contract_types import (
+    FREE_EXPLORATION_INPUT_MODE,
+    HYPOTHESIS_INPUT_MODE,
+)
 from mining.search_statistical_diagnostics import (
     build_multiple_testing_report,
 )
@@ -274,6 +278,87 @@ def test_v2_api_creates_lists_and_reads_safe_detail(tmp_path: Path):
             f"/api/mining/runs/{run_id}/candidates/unknown"
         )
         assert candidate.status_code == 404
+
+
+def test_v2_api_exposes_free_exploration_mode_and_64_bit_seed(tmp_path: Path):
+    service, store = _services(tmp_path)
+    app = create_app(mining_service=service)
+    explicit_seed = 2**64 - 1
+    with TestClient(app) as client:
+        options = client.get("/api/mining/options").json()["search_v2"]
+        assert [item["value"] for item in options["input_modes"]] == [
+            HYPOTHESIS_INPUT_MODE,
+            FREE_EXPLORATION_INPUT_MODE,
+        ]
+        assert options["exploration"] == {
+            "seed_min": 0,
+            "seed_max": explicit_seed,
+            "seed_optional": True,
+            "safety_notice": (
+                "自由探索只替代初始假设，不会扩大冻结预算，也不会把选择期、"
+                "最终研究期或模块测试段送入 Worker。"
+            ),
+        }
+
+        created = client.post(
+            "/api/mining/runs",
+            json={
+                "input_mode": FREE_EXPLORATION_INPUT_MODE,
+                "exploration_seed": str(explicit_seed),
+                "idempotency_key": "web-v2-free-0001",
+                "budget": options["defaults"],
+            },
+        )
+        assert created.status_code == 200
+        detail = created.json()
+        run = detail["run"]
+        assert run["input_mode"] == FREE_EXPLORATION_INPUT_MODE
+        assert run["hypothesis"] == "自由探索"
+        assert run["exploration_seed"] == explicit_seed
+        assert run["effective_exploration_seed"] == explicit_seed
+        assert run["seed_source"] == "request"
+        assert detail["exploration"] == {"initial_direction": None}
+        stored = store.get_run(run["run_id"])
+        assert stored["request"]["exploration_seed"] == explicit_seed
+
+        listed = client.get("/api/mining/runs").json()
+        assert listed[0]["source_mode"] == FREE_EXPLORATION_INPUT_MODE
+        assert listed[0]["effective_exploration_seed"] == explicit_seed
+
+        invalid_mode = client.post(
+            "/api/mining/runs",
+            json={
+                "input_mode": "research",
+                "idempotency_key": "web-v2-free-0002",
+                "budget": options["defaults"],
+            },
+        )
+        assert invalid_mode.status_code == 400
+        assert invalid_mode.json()["code"] == "MINING-101"
+
+        mixed_input = client.post(
+            "/api/mining/runs",
+            json={
+                "input_mode": FREE_EXPLORATION_INPUT_MODE,
+                "hypothesis": "不应同时提供初始假设",
+                "idempotency_key": "web-v2-free-0003",
+                "budget": options["defaults"],
+            },
+        )
+        assert mixed_input.status_code == 400
+        assert "不得提供 hypothesis" in mixed_input.json()["message"]
+
+        invalid_seed = client.post(
+            "/api/mining/runs",
+            json={
+                "input_mode": FREE_EXPLORATION_INPUT_MODE,
+                "exploration_seed": "-1",
+                "idempotency_key": "web-v2-free-0004",
+                "budget": options["defaults"],
+            },
+        )
+        assert invalid_seed.status_code == 400
+        assert "exploration_seed" in invalid_seed.json()["message"]
 
 
 def test_research_run_api_freezes_relative_material_target(tmp_path: Path):

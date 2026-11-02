@@ -71,6 +71,22 @@ curl -N 'http://127.0.0.1:8800/api/compare/stream?factors=MOM_20,MOM_60&mode=ic'
 `constraints` 可省略；服务端把部分覆盖合并到默认预算后校验并冻结。固定股票池、标签和
 价格通道不接受页面修改。相同幂等键和相同请求返回原运行，内容不同返回 `MINING-105`。
 
+V2 显式启用后，`POST /api/mining/runs` 还可使用自由探索模式：
+
+```json
+{
+  "input_mode": "free_exploration",
+  "exploration_seed": "18446744073709551615",
+  "idempotency_key": "web-free-...",
+  "budget": {}
+}
+```
+
+自由探索不得携带 `hypothesis`。`exploration_seed` 可省略，也可使用 JSON 整数或十进制
+字符串；字符串形式用于浏览器无损传递完整 64 位范围。省略时由请求哈希派生有效种子。
+运行摘要返回 `input_mode`、`exploration_seed`、`effective_exploration_seed` 和
+`seed_source`，列表另返回 `source_mode` 以区分资料运行。
+
 挖掘 SSE 使用 `event: mining`、`data: <事件 JSON>` 和递增 `id`。事件 JSON 包含
 `sequence`、`stage`、`event_type`、`payload` 与 `created_at`。客户端可从
 `?after=<最后序号>` 重连；运行进入待审核、中断或终态后发送 `event: done`。断开挖掘

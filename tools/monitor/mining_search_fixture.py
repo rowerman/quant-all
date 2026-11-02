@@ -17,6 +17,10 @@ from mining.contract_requests import MiningConstraints
 from mining.contract_types import sha256_json, stable_id, utc_now_iso
 from mining.expression_validation import validate_expression
 from mining.catalog import load_catalog
+from mining.free_exploration import (
+    direction_to_hypothesis,
+    generate_initial_direction,
+)
 from mining.research_extraction_contracts import (
     RESEARCH_EXTRACTION_PROMPT_VERSION,
     RESEARCH_EXTRACTION_RULE_VERSION,
@@ -45,6 +49,7 @@ from mining.research_run_contracts import (
 from mining.orchestration_support import progress_for_run
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.search_context import FrozenSearchContext
+from mining.search_contract_types import FREE_EXPLORATION_INPUT_MODE
 from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_orchestrator_support import candidate_payload
 from mining.search_progress import progress_for_search
@@ -208,6 +213,67 @@ def _seed_review_ready(
             stage=target,
         )
     return run["run_id"], candidate_ids
+
+
+def _seed_free_exploration_review_ready(
+    store: MiningV2Store,
+    key: str,
+) -> str:
+    """创建带冻结方向的自由探索审核态样例。"""
+
+    request = SearchRunRequest(
+        key,
+        None,
+        input_mode=FREE_EXPLORATION_INPUT_MODE,
+        exploration_seed=20261102,
+    )
+    catalog = load_catalog()
+    context = FrozenSearchContext(
+        data_fingerprint="e" * 64,
+        field_catalog=catalog.frozen_field_mappings(),
+        operator_catalog=catalog.frozen_operator_mappings(),
+    )
+    run = store.create_run(request, context)
+    direction = generate_initial_direction(request, context)
+    hypothesis = direction_to_hypothesis(direction)
+    batch = ExperimentBatch(
+        run_id=run["run_id"],
+        hypothesis_id=hypothesis.hypothesis_id,
+        turn_index=1,
+        branch_id=hypothesis.branch_id,
+        candidate_ids=(),
+        parent_candidate_ids=(),
+        development_start=context.windows.development_start,
+        development_end=context.windows.development_end,
+        input_hash="f" * 64,
+    )
+    store.append_event(
+        run["run_id"],
+        event_key="free_exploration_direction_planned",
+        stage="searching",
+        event_type="free_exploration_direction_planned",
+        payload={
+            "direction": direction.to_dict(),
+            "direction_hash": direction.direction_hash,
+            "direction_id": direction.direction_id,
+        },
+    )
+    store.begin_turn(run["run_id"], hypothesis, batch)
+    for target in ("searching", "selecting", "evaluating", "holding_out"):
+        store.transition_search_run(
+            run["run_id"],
+            target,
+            event_key=f"free_run_{target}",
+            stage=target,
+        )
+    store.transition_search_run(
+        run["run_id"],
+        "review_ready",
+        event_key="free_run_review_ready",
+        stage="review_ready",
+        stop_reason="搜索轮次预算耗尽，进入人工审核",
+    )
+    return run["run_id"]
 
 
 def _seed_research_review_ready(
@@ -466,6 +532,10 @@ RUN_ID, CANDIDATE_IDS = _seed_review_ready(
 RESEARCH_RUN_ID, RESEARCH_CANDIDATE_ID = _seed_research_review_ready(
     _V2_STORE,
     "v2-browser-research-0001",
+)
+FREE_RUN_ID = _seed_free_exploration_review_ready(
+    _V2_STORE,
+    "v2-browser-free-0001",
 )
 _SEARCH_SERVICE = MiningSearchWebService(
     store=_V2_STORE,

@@ -21,6 +21,8 @@ from common.paths import (
 from mining.analysis_tool_gateway import AnalysisToolGateway
 from mining.catalog import load_catalog
 from mining.errors import MiningContractError, MiningNotFoundError
+from mining.free_exploration import direction_from_hypothesis
+from mining.free_exploration_contracts import EXPLORATION_SEED_MAX
 from mining.logging_conf import format_event, get_mining_logger
 from mining.publication_service import MiningPublicationService
 from mining.research_material_io import (
@@ -36,6 +38,10 @@ from mining.search_cards import HypothesisCard
 from mining.search_evidence import EvidencePacket
 from mining.search_orchestrator import MiningSearchOrchestrator
 from mining.search_run import SearchRunRequest
+from mining.search_contract_types import (
+    FREE_EXPLORATION_INPUT_MODE,
+    HYPOTHESIS_INPUT_MODE,
+)
 from mining.search_research_quality import evaluate_research_quality
 from mining.search_scorecard import build_run_scorecards
 from mining.search_statistical_diagnostics import MULTIPLE_TESTING_STAGE
@@ -47,7 +53,14 @@ from mining.storage_v2 import MiningV2Store
 from mining_worker.worker_config import load_worker_config
 
 _LOGGER = get_mining_logger("mining.search.web")
-_CREATE_FIELDS = {"hypothesis", "idempotency_key", "llm_profile", "budget"}
+_CREATE_FIELDS = {
+    "hypothesis",
+    "idempotency_key",
+    "llm_profile",
+    "budget",
+    "input_mode",
+    "exploration_seed",
+}
 _RESEARCH_CREATE_FIELDS = {
     "material_path",
     "idempotency_key",
@@ -145,6 +158,25 @@ class MiningSearchWebService:
             "defaults": config.budget.to_dict(),
             "control_policy": config.control_policy.to_dict(),
             "windows": config.windows.to_dict(),
+            "input_modes": [
+                {
+                    "value": HYPOTHESIS_INPUT_MODE,
+                    "label": "手工研究假设",
+                },
+                {
+                    "value": FREE_EXPLORATION_INPUT_MODE,
+                    "label": "自由探索",
+                },
+            ],
+            "exploration": {
+                "seed_min": 0,
+                "seed_max": EXPLORATION_SEED_MAX,
+                "seed_optional": True,
+                "safety_notice": (
+                    "自由探索只替代初始假设，不会扩大冻结预算，也不会把选择期、"
+                    "最终研究期或模块测试段送入 Worker。"
+                ),
+            },
             "limits": {
                 "max_search_turns": 6,
                 "max_hypothesis_branches": 3,
@@ -207,6 +239,8 @@ class MiningSearchWebService:
             hypothesis=payload.get("hypothesis"),
             budget=budget,
             llm_profile=payload.get("llm_profile", "default"),
+            input_mode=payload.get("input_mode", HYPOTHESIS_INPUT_MODE),
+            exploration_seed=_exploration_seed(payload.get("exploration_seed")),
         )
         context = self._freeze_context(request)
         run = self.orchestrator.create_run(
@@ -303,10 +337,16 @@ class MiningSearchWebService:
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         """列出 V2 运行摘要。"""
 
-        return [
-            {**item, "engine": "v2"}
-            for item in self.store.list_runs(limit)
-        ]
+        result = []
+        for row in self.store.list_runs(limit):
+            item = dict(row)
+            is_research = bool(item.pop("is_research", False))
+            item["source_mode"] = (
+                "research" if is_research else item["input_mode"]
+            )
+            item["engine"] = "v2"
+            result.append(item)
+        return result
 
     def run_detail(self, run_id: str) -> dict[str, Any]:
         """返回 V2 假设树、turn、尝试和候选评分摘要。"""
@@ -471,8 +511,14 @@ class MiningSearchWebService:
         )
         research_summary = self.store.load_research_summary(run_id)
         research_state = self.store.research_run_state(run_id)
+        run_view = self._run_view(run)
         return {
-            "run": self._run_view(run),
+            "run": run_view,
+            "exploration": (
+                self._exploration_detail(trace)
+                if run_view["input_mode"] == FREE_EXPLORATION_INPUT_MODE
+                else None
+            ),
             "progress": progress.to_dict(),
             "hypotheses": [
                 {
@@ -622,17 +668,78 @@ class MiningSearchWebService:
 
     @staticmethod
     def _run_view(run: Mapping[str, Any]) -> dict[str, Any]:
+        request = SearchRunRequest.from_dict(
+            {
+                "idempotency_key": run["idempotency_key"],
+                **run["request"],
+            }
+        )
+        is_free = request.input_mode == FREE_EXPLORATION_INPUT_MODE
         return {
             "run_id": run["run_id"],
             "idempotency_key": run["idempotency_key"],
             "status": run["status"],
             "hypothesis": run["hypothesis"],
             "engine": "v2",
+            "input_mode": request.input_mode,
+            "exploration_seed": request.exploration_seed,
+            "effective_exploration_seed": (
+                request.effective_exploration_seed if is_free else None
+            ),
+            "seed_source": (
+                (
+                    "request"
+                    if request.exploration_seed is not None
+                    else "request_hash"
+                )
+                if is_free
+                else None
+            ),
             "created_at": run["created_at"],
             "updated_at": run["updated_at"],
             "context": run["context"],
             "context_hash": run["context_hash"],
         }
+
+    @staticmethod
+    def _exploration_detail(
+        trace: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """返回已冻结首轮方向的安全摘要。"""
+
+        for row in trace.get("hypotheses", ()):
+            card = HypothesisCard.from_dict(row)
+            if card.metadata.get("source") != "free_exploration":
+                continue
+            direction = direction_from_hypothesis(card)
+            if direction is None:
+                continue
+            return {
+                "initial_direction": {
+                    "direction_id": direction.direction_id,
+                    "direction_hash": direction.direction_hash,
+                    "semantic_hash": direction.semantic_hash,
+                    "mechanism_category": direction.mechanism_category,
+                    "statement": direction.statement,
+                    "mechanism": direction.mechanism,
+                    "expected_direction": direction.expected_direction,
+                    "falsification_criteria": list(
+                        direction.falsification_criteria
+                    ),
+                    "data_dependencies": list(
+                        direction.data_dependencies
+                    ),
+                    "expression_complexity": (
+                        direction.expression_complexity
+                    ),
+                    "max_expression_depth": (
+                        direction.max_expression_depth
+                    ),
+                    "seed": direction.seed,
+                    "seed_source": direction.seed_source,
+                }
+            }
+        return {"initial_direction": None}
 
     def _public_material_root(self) -> str:
         """返回不暴露主机绝对路径的资料根目录标签。"""
@@ -663,3 +770,17 @@ def _feedback_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
         ],
         "trial_counts": packet.get("trial_counts"),
     }
+
+
+def _exploration_seed(value: Any) -> int | None:
+    """把页面十进制种子转换为整数，避免浏览器丢失 64 位精度。"""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if not value or not value.isascii() or not value.isdecimal():
+            raise MiningContractError(
+                "exploration_seed 必须是 0～2^64-1 的整数"
+            )
+        return int(value)
+    return value

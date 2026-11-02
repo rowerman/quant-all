@@ -84,6 +84,33 @@ def check(url: str, output: Path) -> None:
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.on("dialog", lambda dialog: dialog.accept())
 
+        page.goto(url + "/#/mining/new")
+        page.wait_for_selector("#source-mode")
+        page.locator("#source-mode").select_option("free_exploration")
+        page.locator("[name=exploration_seed]").wait_for(state="visible")
+        page.locator("[data-mode-section=hypothesis]").wait_for(state="hidden")
+        assert "自由探索只替代初始假设" in page.locator("main").inner_text()
+
+        page.goto(url + "/#/mining")
+        page.wait_for_selector("#mining-runs tbody tr")
+        page.locator("#mining-runs a", has_text="自由探索").first.click()
+        page.wait_for_selector("#exploration-direction tbody tr")
+        assert "研究输入" in page.locator("main").inner_text()
+        assert "首轮机制" in page.locator("main").inner_text()
+        assert "停止原因" in page.locator("main").inner_text()
+        assert "最大假设分支" in page.locator("main").inner_text()
+        assert "20261102" in page.locator("main").inner_text()
+        page.screenshot(
+            path=str(output / "free-run-desktop.png"),
+            full_page=True,
+        )
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.screenshot(
+            path=str(output / "free-run-mobile.png"),
+            full_page=True,
+        )
+        page.set_viewport_size({"width": 1440, "height": 1000})
+
         page.goto(url + "/#/mining")
         page.wait_for_selector("text=短期趋势可能带来开发期超额收益")
         page.locator(

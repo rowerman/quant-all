@@ -12,6 +12,14 @@ function statusTag(status) {
   return `<span class="tag mining-status mining-status-${esc(status)}">${esc(statusLabel(status))}</span>`;
 }
 
+function inputModeLabel(mode) {
+  return {
+    hypothesis: '手工研究假设',
+    free_exploration: '自由探索',
+    research: '资料驱动',
+  }[mode] || '手工研究假设';
+}
+
 function candidateEvidence(item) {
   const diagnostics = item.selection_diagnostics || {};
   const correlation = diagnostics.correlation || {};
@@ -48,8 +56,15 @@ export function renderSearchRun(app, detail, mutateRun) {
   const canResume = run.status === 'interrupted';
   const research = detail.research;
   const researchSummary = research?.summary;
+  const inputMode = research ? 'research' : (run.input_mode || 'hypothesis');
+  const direction = detail.exploration?.initial_direction;
+  const seedText = run.exploration_seed !== null && run.exploration_seed !== undefined
+    ? String(run.exploration_seed)
+    : run.effective_exploration_seed !== null && run.effective_exploration_seed !== undefined
+      ? `${run.effective_exploration_seed}（请求哈希派生）`
+      : '—';
   app.innerHTML = `<div class="page-heading">
-    <div><h1>V2 搜索 ${esc(run.run_id)}</h1><p class="intro muted">${esc(run.hypothesis)}</p></div>
+    <div><h1>V2 搜索 ${esc(run.run_id)}</h1><p class="intro muted">${esc(inputModeLabel(inputMode))} · ${esc(run.hypothesis)}</p></div>
     <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
   </div>
   <section class="card">
@@ -60,6 +75,16 @@ export function renderSearchRun(app, detail, mutateRun) {
       ${canResume ? '<button type="button" id="resume-mining">恢复运行</button>' : ''}
     </div>
     <p class="mini muted">实验链路只读取开发期反馈；选择期、最终研究期和测试段不会进入 Worker。</p>
+  </section>
+  <section class="card">
+    <h2>研究输入</h2>
+    <div class="quality-summary">
+      <span>模式：${esc(inputModeLabel(inputMode))}</span>
+      <span>${inputMode === 'free_exploration' ? `种子：${esc(seedText)}` : '输入：人工或资料候选'}</span>
+      ${direction ? `<span>首轮机制：${esc(direction.mechanism_category)}</span>` : ''}
+    </div>
+    ${direction ? `<div id="exploration-direction"></div>` : ''}
+    <p class="mini muted">${inputMode === 'free_exploration' ? '自由探索只替代初始假设。方向、种子和预算在首次 Worker 调用前冻结；公开页面不展示 Prompt、密钥或工作区路径。' : '输入和冻结预算共同确定运行内容，审批与发布仍须人工完成。'}</p>
   </section>
   ${research ? `<section class="card">
     <h2>资料来源</h2>
@@ -76,11 +101,14 @@ export function renderSearchRun(app, detail, mutateRun) {
     <h2>预算与尝试</h2>
     <div class="budget-progress">
       ${budgetBar('搜索轮次', progress.turns_completed, budget.max_search_turns)}
+      ${budgetBar('假设分支', detail.branch_count, budget.max_hypothesis_branches)}
       ${budgetBar('候选尝试', attempts.proposed, budget.max_candidates_per_run)}
       ${budgetBar('完整评估', attempts.full_evaluated, budget.max_full_evaluations)}
       ${budgetBar('测试段领取', attempts.holdout_claimed, 1)}
     </div>
     <p class="mini muted">假设 ${esc(progress.hypotheses)} · 分支 ${esc(detail.branch_count)} · 候选 ${esc(progress.candidates)} · 失败候选 ${esc(progress.failed_candidates)} · 拒绝 ${esc(attempts.rejected || 0)} · 门禁失败 ${esc(attempts.gate_failed || 0)} · 当前动作 ${esc(statusLabel(progress.current_action))}</p>
+    <p class="mini muted"><strong>停止原因：</strong>${esc(progress.stop_reason || '尚在运行或未触发停止')}</p>
+    <div id="search-budget"></div>
   </section>
   <section class="card">
     <h2>假设树</h2>
@@ -120,6 +148,27 @@ export function renderSearchRun(app, detail, mutateRun) {
       父假设: item.parent_hypothesis_id || '—',
     })));
   }
+  if (direction) {
+    table(app.querySelector('#exploration-direction'), [{
+      研究方向: direction.statement,
+      机制类别: direction.mechanism_category,
+      预期方向: statusLabel(direction.expected_direction),
+      数据依赖: (direction.data_dependencies || []).join(', '),
+      表达复杂度: `${direction.expression_complexity} / 最大深度 ${direction.max_expression_depth}`,
+      可证伪条件: (direction.falsification_criteria || []).join('；'),
+      方向哈希: direction.direction_hash,
+    }]);
+  }
+  table(app.querySelector('#search-budget'), [
+    {项目: '最大搜索轮次', 冻结值: budget.max_search_turns, 当前: progress.turns_completed},
+    {项目: '最大假设分支', 冻结值: budget.max_hypothesis_branches, 当前: detail.branch_count},
+    {项目: '每分支最大修正', 冻结值: budget.max_refines_per_branch, 当前: '按分支控制'},
+    {项目: '每轮最大候选', 冻结值: budget.max_candidates_per_turn, 当前: '按轮次控制'},
+    {项目: '每运行最大候选', 冻结值: budget.max_candidates_per_run, 当前: attempts.proposed || 0},
+    {项目: '完整评估上限', 冻结值: budget.max_full_evaluations, 当前: attempts.full_evaluated || 0},
+    {项目: '连续无改善停止', 冻结值: budget.stop_after_no_improvement_turns, 当前: '由控制器判断'},
+    {项目: '每轮工具调用', 冻结值: budget.max_tool_calls_per_turn, 当前: '按轮次控制'},
+  ]);
   if (researchSummary?.materials?.length) {
     table(app.querySelector('#research-materials'), researchSummary.materials.map(item => ({
       资料: item.relative_path,
