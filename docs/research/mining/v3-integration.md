@@ -103,6 +103,10 @@ queued -> searching -> selecting -> evaluating -> holding_out -> review_ready
 - 候选、审批和共享发布继续使用 V1/V2 的规范状态机。
 - 选择期、最终研究期和模块测试段证据只进入确定性控制器，不反馈给任何 Worker。
 
+运行和候选只有同时处于 `review_ready` 时才允许形成最终人工决定。失败、中断、
+测试段未完成、已决定或状态缺失都会出现在审核阻断原因中。审批事务会重新读取运行和
+候选状态，因此直接调用 API 也不能绕过页面门禁。
+
 ## 存储范围
 
 目标 schema 为 `mining_v3`。全新数据库由 P4-02 直接初始化，已有 V1/V2 数据库由
@@ -165,12 +169,21 @@ P4-02 已在全新数据库初始化以下表：
 来源形成最终批准或拒绝；最终审批按 `(run_id, candidate_id)` 唯一，其他来源只保留
 审计价值。
 
+`mining_v3.candidate_state` 是 V3 候选批准后生命周期状态的唯一权威来源。V3 运行详情、
+候选详情和决策响应都以该状态覆盖 runtime 轨迹中的候选状态，因此批准后统一返回
+`approved`，发布期间返回 `building`，失败返回 `build_failed`，成功后返回
+`published`。Runtime 轨迹继续提供定义、指标和搜索谱系，但不再单独决定页面状态。
+
 `MiningV3Store` 实现现有 `MiningPublicationService` 所需仓储接口。`v3_research`
 批次通过原有构建、全量校验、原子提交和回滚流程写共享 `mining.publication*`；
 候选审批或证据在构建期间变化时，整批中止并收口为 `build_failed`。正式定义清单保留
 `source_kind`、来源上下文、`candidate_envelope_hash`、来源引用哈希和审批证据哈希。
 V3 没有另建因子读取接口，发布结果由现有因子清单、评估、模型特征和回测加载器直接
 读取。
+
+V3 在发布输入加载、批次启动和最终提交前都会重新确认运行仍为 `review_ready`。
+运行已过期、中断、失败或状态记录缺失时不会启动或完成发布，已有构建状态保持原样等待
+上层失败收口。
 
 ## 迁移与兼容
 

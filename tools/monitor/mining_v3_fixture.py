@@ -186,7 +186,7 @@ def _budget(*, research: bool = False) -> dict[str, object]:
     return result
 
 
-def _approve_and_publish(run_id: str) -> None:
+def _approve_and_publish(run_id: str, *, publish: bool = True) -> None:
     review = next(
         item for item in _CONTRACT.list_candidate_reviews(run_id)
         if item.eligible
@@ -202,15 +202,16 @@ def _approve_and_publish(run_id: str) -> None:
             "evidence_hash": review.approval_evidence_hash,
         },
     )
-    _PUBLICATION.start_batch(
-        run_id,
-        (review.candidate_id,),
-        expected_context_hash=_CONTRACT.load_input(run_id).context_hash,
-        background=False,
-    )
+    if publish:
+        _PUBLICATION.start_batch(
+            run_id,
+            (review.candidate_id,),
+            expected_context_hash=_CONTRACT.load_input(run_id).context_hash,
+            background=False,
+        )
 
 
-def _create(kind: str) -> str:
+def _create(kind: str, *, publish: bool = True) -> str:
     delegate = _orchestrator(_RUNTIME, kind, _MATERIAL_ROOT)
     _SERVICE.orchestrator = SynchronousV3Orchestrator(delegate)
     if kind == "hypothesis":
@@ -253,12 +254,12 @@ def _create(kind: str) -> str:
     else:
         raise ValueError(kind)
     run_id = run["run"]["run_id"]
-    _approve_and_publish(run_id)
+    _approve_and_publish(run_id, publish=publish)
     return run_id
 
 
 RUN_IDS = {
-    "hypothesis": _create("hypothesis"),
+    "hypothesis": _create("hypothesis", publish=False),
     "free_exploration": _create("free_exploration"),
     "research_report": _create("research_report"),
     "costeer": _create("costeer"),

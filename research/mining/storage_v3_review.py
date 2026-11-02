@@ -515,6 +515,11 @@ class V3ReviewStoreMixin:
         blockers: list[str] = []
         if not context_valid:
             blockers.append("CONTEXT_NOT_REGISTERED")
+        run_status = self._review_run_status_conn(conn, run_id)
+        if run_status is None:
+            blockers.append("RUN_STATE_NOT_REGISTERED")
+        elif run_status != "review_ready":
+            blockers.append(f"RUN_NOT_REVIEW_READY:{run_status}")
         by_stage: dict[str, list[str]] = {}
         for item in envelope.evidence:
             by_stage.setdefault(item.stage, []).append(item.status)
@@ -540,8 +545,14 @@ class V3ReviewStoreMixin:
             missing_ok=True,
         )
         candidate_status = (
-            str(state["status"]) if state is not None else "review_ready"
+            str(state["status"]) if state is not None else "proposed"
         )
+        if state is None:
+            blockers.append("CANDIDATE_STATE_NOT_REGISTERED")
+        elif candidate_status != "review_ready":
+            blockers.append(
+                f"CANDIDATE_NOT_REVIEW_READY:{candidate_status}"
+            )
         approval_hash = None
         if not any(
             reason.startswith(("MISSING_EVIDENCE:", "EVIDENCE_NOT_PASSED:"))
@@ -683,6 +694,28 @@ class V3ReviewStoreMixin:
                 f"V3 候选状态不存在：{run_id}/{candidate_id}"
             )
         return row
+
+    @staticmethod
+    def _review_run_status_conn(
+        conn: duckdb.DuckDBPyConnection,
+        run_id: str,
+    ) -> str | None:
+        """读取 V3 审核所依赖的权威运行状态。"""
+
+        runtime_table = conn.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema='mining_v3' AND table_name='runtime_run'"
+        ).fetchone()
+        if runtime_table is None:
+            return None
+        row = conn.execute(
+            "SELECT coalesce(ctl.status, r.status) "
+            "FROM mining_v3.runtime_run r "
+            "LEFT JOIN mining_v3.runtime_run_control ctl "
+            "ON ctl.run_id=r.run_id WHERE r.run_id=?",
+            [run_id],
+        ).fetchone()
+        return None if row is None else str(row[0])
 
     def _context_conn(
         self,

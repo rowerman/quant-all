@@ -641,6 +641,7 @@ V2 审批继续以 `mining_v2.search_approval` 和 `mining_v2.candidate_trace` �
 - 每个候选仍有通过的批准记录。
 - 门禁、测试段和证据哈希仍与批准时一致。
 - 同一候选库没有其他 `staging/validating` 批次。
+- V3 运行在发布输入加载、批次启动和提交前仍为 `review_ready`。
 
 `build_failed` 候选可用新的 attempt 重试；每次尝试都有独立批次 ID、暂存目录和状态。
 V2 发布批次额外记录 `source_kind=v2_search`，候选状态只在 `mining_v2` 中迁移；

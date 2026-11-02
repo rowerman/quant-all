@@ -408,6 +408,26 @@ class MiningV3WebService:
             run_id,
             self._run_view(run, envelope),
         )
+        contract_candidates = {
+            item["candidate_id"]: item
+            for item in self.contract_store.list_candidates(run_id)
+        }
+        for candidate in detail["candidates"]:
+            state = contract_candidates.get(candidate["candidate_id"])
+            if state is None:
+                continue
+            candidate.update(
+                {
+                    "status": state["status"],
+                    "error_code": state["error_code"],
+                    "error_message": state["error_message"],
+                    "source_id": state["source_id"],
+                    "candidate_envelope_hash": state[
+                        "candidate_envelope_hash"
+                    ],
+                    "source_reference_hash": state["source_reference_hash"],
+                }
+            )
         detail["v3"] = {
             "input_mode": envelope.input_mode,
             "input_hash": envelope.input_hash,
@@ -482,6 +502,14 @@ class MiningV3WebService:
             approval = self.contract_store.get_approval(run_id, candidate_id)
         except MiningNotFoundError:
             approval = None
+        contract_candidate = self.contract_store.get_candidate(
+            run_id,
+            candidate_id,
+        )
+        runtime_candidate = self.runtime_store.get_candidate(
+            run_id,
+            candidate_id,
+        )
         evaluations = [
             evaluation_view(row)
             for row in self.runtime_store.list_evaluation_evidence(run_id)
@@ -500,7 +528,17 @@ class MiningV3WebService:
         return {
             "run": self._run_view(run, envelope),
             "candidate": {
-                **self.runtime_store.get_candidate(run_id, candidate_id),
+                **runtime_candidate,
+                "status": contract_candidate["status"],
+                "error_code": contract_candidate["error_code"],
+                "error_message": contract_candidate["error_message"],
+                "source_id": contract_candidate["source_id"],
+                "candidate_envelope_hash": contract_candidate[
+                    "candidate_envelope_hash"
+                ],
+                "source_reference_hash": contract_candidate[
+                    "source_reference_hash"
+                ],
                 "content_hash": candidate_envelope.candidate.content_hash,
                 "definition": {
                     "name": candidate_envelope.candidate.name,
@@ -565,7 +603,10 @@ class MiningV3WebService:
                 }
             )
         )
-        return {"approval": approval, "candidate": self.runtime_store.get_candidate(run_id, candidate_id)}
+        return {
+            "approval": approval,
+            "candidate": self.contract_store.get_candidate(run_id, candidate_id),
+        }
 
     def start_publication_batch(self, run_id: str, payload: Mapping[str, Any]):
         if self.is_legacy_run(run_id):

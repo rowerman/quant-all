@@ -5,13 +5,17 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import duckdb
+
 from mining.contract_candidates import CandidateDefinition
 from mining.contract_evidence import ApprovalDecision
-from mining.contract_types import sha256_json
+from mining.contract_types import canonical_json, sha256_json
 from mining.expression_validation import validate_expression
 from mining.search_context import FrozenSearchContext
 from mining.search_run import SearchRunRequest
 from mining.storage_v3 import MiningV3Store
+from mining.storage_v3_runtime import MiningV3RuntimeStore
+from mining.storage_lock import database_state_lock
 from mining.v3_contracts import (
     V3_REQUIRED_EVIDENCE_STAGES,
     CandidateEnvelope,
@@ -148,6 +152,115 @@ def v3_candidate_envelope(
     )
 
 
+def seed_v3_runtime_state(
+    store: MiningV3Store,
+    input_envelope: ResearchInputEnvelope,
+    context: FrozenSearchContext,
+    *,
+    run_status: str = "review_ready",
+) -> MiningV3RuntimeStore:
+    """为 contract 单元测试建立最小且一致的 V3 运行状态。"""
+
+    runtime = MiningV3RuntimeStore(
+        store.db_path,
+        store.data_root,
+        contract_store=store,
+    )
+    windows = context.windows
+    now = CREATED_AT
+    with database_state_lock(store.db_path):
+        with duckdb.connect(str(store.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT INTO mining_v3.runtime_context VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        context.context_id,
+                        context.context_hash,
+                        context.data_version,
+                        context.data_fingerprint,
+                        context.label,
+                        context.universe,
+                        context.price_channel,
+                        windows.development_start,
+                        windows.development_end,
+                        windows.selection_start,
+                        windows.selection_end,
+                        windows.final_start,
+                        windows.final_end,
+                        windows.holdout_start,
+                        windows.holdout_end,
+                        context.field_catalog_hash,
+                        context.operator_catalog_hash,
+                        sha256_json(list(context.existing_factors)),
+                        context.budget.budget_hash,
+                        context.windows_hash,
+                        canonical_json(context.to_dict()),
+                        context.created_at,
+                    ],
+                )
+                conn.execute(
+                    "INSERT INTO mining_v3.runtime_run VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        input_envelope.run_id,
+                        context.context_id,
+                        input_envelope.idempotency_key,
+                        input_envelope.request_hash,
+                        run_status,
+                        input_envelope.input_mode,
+                        "{}",
+                        None,
+                        now,
+                        now,
+                    ],
+                )
+                conn.execute(
+                    "INSERT INTO mining_v3.runtime_run_control VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        input_envelope.run_id,
+                        run_status,
+                        None,
+                        False,
+                        None,
+                        None,
+                        0,
+                        None,
+                        now,
+                    ],
+                )
+    return runtime
+
+
+def make_v3_candidate_review_ready(
+    store: MiningV3Store,
+    run_id: str,
+    envelope: CandidateEnvelope,
+) -> None:
+    """把候选沿规范状态机推进到人工审核态。"""
+
+    store.initialize_candidate_state(
+        run_id,
+        envelope.candidate.candidate_id,
+        envelope.source.source_id,
+    )
+    for target in (
+        "validating",
+        "screening",
+        "evaluating",
+        "evaluated",
+        "holdout_running",
+        "review_ready",
+    ):
+        store.sync_candidate_state(
+            run_id,
+            envelope.candidate.candidate_id,
+            target,
+        )
+
+
 def approved_v3_run(
     tmp_path: Path,
     *,
@@ -166,6 +279,8 @@ def approved_v3_run(
     store.register_input(input_envelope)
     store.register_context(input_envelope.run_id, context)
     store.record_candidate_envelope(input_envelope.run_id, envelope)
+    seed_v3_runtime_state(store, input_envelope, context)
+    make_v3_candidate_review_ready(store, input_envelope.run_id, envelope)
     review = store.candidate_review(
         input_envelope.run_id,
         envelope.candidate.candidate_id,
@@ -190,6 +305,8 @@ def approved_v3_run(
 __all__ = [
     "CREATED_AT",
     "approved_v3_run",
+    "make_v3_candidate_review_ready",
+    "seed_v3_runtime_state",
     "v3_candidate",
     "v3_candidate_envelope",
     "v3_context",

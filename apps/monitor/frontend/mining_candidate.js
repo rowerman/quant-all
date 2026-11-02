@@ -184,14 +184,8 @@ export function renderCandidate(
   const primary = development || quick;
   const full = latestReport(detail.evaluations, 'full');
   const holdout = latestReport(detail.evaluations, 'holdout');
-  const latestBatchStatus = detail.publication?.latest_batch?.status;
   const researchSource = detail.research_source;
   const v3Source = detail.v3_source;
-  const displayStatus = candidate.status === 'building' && latestBatchStatus === 'published'
-    ? 'published'
-    : candidate.status === 'building' && latestBatchStatus === 'failed'
-      ? 'build_failed'
-      : candidate.status;
   const stageRows = isV2
     ? [
         reportRow('技术门禁', technical),
@@ -208,7 +202,7 @@ export function renderCandidate(
       ];
   app.innerHTML = `<div class="page-heading">
     <div><h1>${esc(candidate.name)}</h1>
-      <p class="intro muted">${esc(definition.description)} · ${esc(definition.mechanism)} · ${displayStatus === 'review_ready' ? '待审核' : esc(statusLabel(displayStatus))}</p>
+      <p class="intro muted">${esc(definition.description)} · ${esc(definition.mechanism)} · ${candidate.status === 'review_ready' ? '待审核' : esc(statusLabel(candidate.status))}</p>
     </div>
     <a class="button-link secondary-link" href="#/mining/${encodeURIComponent(candidate.run_id)}">返回运行</a>
   </div>
@@ -383,9 +377,7 @@ export function renderCandidate(
 
   const latest = detail.publication?.latest_batch;
   const activePublication = latest && ['staging', 'validating'].includes(latest.status);
-  const completedButCandidatePending = latest && candidate.status === 'building'
-    && ['published', 'failed', 'rolled_back'].includes(latest.status);
-  if (activePublication || completedButCandidatePending) {
+  if (activePublication) {
     setTimeout(() => onRefresh?.(), 1000);
   }
   const publish = app.querySelector('#publish-batch');

@@ -62,6 +62,7 @@ class V3PublicationStoreMixin:
             raise MiningContractError("candidate_ids 不能重复")
 
         with self._connection() as conn:
+            self._require_review_ready_run_conn(conn, run_id)
             input_envelope = self._input_envelope_conn(conn, run_id)
             context = self._context_conn(conn, run_id)
             publishable = self._publishable_candidate_ids_conn(conn, run_id)
@@ -116,6 +117,8 @@ class V3PublicationStoreMixin:
 
         if batch.source_kind != V3_PUBLICATION_SOURCE_KIND:
             raise PublicationConflictError("发布批次不是 V3 研究来源")
+        with self._connection() as conn:
+            self._require_review_ready_run_conn(conn, batch.run_id)
         for candidate_id, approval_id in zip(
             batch.candidate_ids,
             batch.approval_ids,
@@ -187,6 +190,10 @@ class V3PublicationStoreMixin:
                 with self._connection() as conn:
                     with self._transaction(conn):
                         self._ensure_no_active_publication_conn(conn)
+                        self._require_review_ready_run_conn(
+                            conn,
+                            batch.run_id,
+                        )
                         input_envelope = self._input_envelope_conn(
                             conn,
                             batch.run_id,
@@ -367,6 +374,10 @@ class V3PublicationStoreMixin:
             with self._connection() as conn:
                 with self._transaction(conn):
                     batch = self._publication_batch_row(conn, batch_id)
+                    self._require_review_ready_run_conn(
+                        conn,
+                        str(batch["run_id"]),
+                    )
                     if batch["source_kind"] != V3_PUBLICATION_SOURCE_KIND:
                         raise PublicationConflictError("发布批次不是 V3 来源")
                     if batch["status"] != "validating":
@@ -506,6 +517,20 @@ class V3PublicationStoreMixin:
                 run_id,
                 candidate_id,
                 source_id,
+            )
+
+    def _require_review_ready_run_conn(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        run_id: str,
+    ) -> None:
+        """确认 V3 运行当前允许进入或完成发布。"""
+
+        status = self._review_run_status_conn(conn, run_id)
+        if status != "review_ready":
+            rendered = status or "未登记"
+            raise PublicationConflictError(
+                f"V3 运行状态为 {rendered}，当前不可发布"
             )
 
     def _publishable_candidate_ids_conn(

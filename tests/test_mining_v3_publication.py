@@ -16,9 +16,11 @@ from mining.publication_builder import _entry
 from mining.publication_contracts import new_publication_batch
 from mining.publication_service import MiningPublicationService
 from mining.storage_v3 import MiningV3Store
+from mining.storage_v3_runtime import MiningV3RuntimeStore
 from mining.v3_contracts import CandidateEnvelope, EvidenceReference
 from tests.mining_v3_fixtures import (
     approved_v3_run,
+    make_v3_candidate_review_ready,
     v3_candidate_envelope,
     v3_context,
 )
@@ -108,6 +110,11 @@ def test_v3_publication_requires_every_approved_candidate(tmp_path: Path):
         name="V3_SECOND_APPROVED",
     )
     store.record_candidate_envelope(input_envelope.run_id, second)
+    make_v3_candidate_review_ready(
+        store,
+        input_envelope.run_id,
+        second,
+    )
     review = store.candidate_review(
         input_envelope.run_id,
         second.candidate.candidate_id,
@@ -316,6 +323,67 @@ def test_v3_service_restart_rolls_back_uncommitted_batch(tmp_path: Path):
         input_envelope.run_id,
         envelope.candidate.candidate_id,
     )["status"] == "build_failed"
+
+
+@pytest.mark.parametrize("run_status", ("failed", "interrupted", "stale"))
+def test_v3_publication_rejects_non_review_ready_run(
+    tmp_path: Path,
+    run_status: str,
+):
+    store, input_envelope, envelope = approved_v3_run(tmp_path)
+    candidate_ids = (envelope.candidate.candidate_id,)
+
+    with duckdb.connect(str(store.db_path)) as conn:
+        conn.execute(
+            "UPDATE mining_v3.runtime_run_control SET status=? "
+            "WHERE run_id=?",
+            [run_status, input_envelope.run_id],
+        )
+
+    with pytest.raises(PublicationConflictError, match=run_status):
+        store.load_publication_inputs(
+            input_envelope.run_id,
+            candidate_ids,
+            expected_context_hash=input_envelope.context_hash,
+        )
+
+
+def test_v3_publication_rechecks_run_before_commit(tmp_path: Path):
+    store, input_envelope, envelope = approved_v3_run(tmp_path)
+    runtime = MiningV3RuntimeStore(
+        store.db_path,
+        store.data_root,
+        contract_store=store,
+    )
+    candidate_ids = (envelope.candidate.candidate_id,)
+    batch = _batch(
+        store,
+        input_envelope.run_id,
+        candidate_ids,
+        tmp_path,
+    )
+    store.start_publication_batch(batch)
+    store.mark_publication_validating(batch.batch_id)
+    runtime.transition_search_run(
+        input_envelope.run_id,
+        "stale",
+        event_key="run_stale_before_commit",
+        stage="review_ready",
+    )
+
+    with pytest.raises(PublicationConflictError, match="stale"):
+        store.complete_publication_batch(
+            batch.batch_id,
+            manifest_hash="a" * 64,
+            artifact_sha256="b" * 64,
+            formal_factor_names=(envelope.candidate.name,),
+        )
+
+    assert store.get_candidate(
+        input_envelope.run_id,
+        candidate_ids[0],
+    )["status"] == "building"
+    assert store.get_publication_batch(batch.batch_id)["status"] == "validating"
 
 
 def test_v3_manifest_entry_keeps_source_and_envelope_identity():

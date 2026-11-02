@@ -100,6 +100,23 @@ def check(url: str, output: Path) -> None:
             assert label in text
         page.screenshot(path=str(output / "v3-runs.png"), full_page=True)
 
+        approved_row = page.locator("#mining-runs tbody tr", has_text="手工研究假设").first
+        approved_row.locator("a").click()
+        page.wait_for_selector("#search-candidates tbody tr")
+        approved_run_candidate = page.locator("#search-candidates tbody tr").first
+        assert "已批准" in approved_run_candidate.inner_text()
+        approved_run_candidate.locator("a").click()
+        page.wait_for_selector("text=V3 来源绑定")
+        approved_text = page.locator("main").inner_text()
+        assert "已批准" in approved_text
+        assert "待审核" not in approved_text
+        page.screenshot(
+            path=str(output / "v3-candidate-approved.png"),
+            full_page=True,
+        )
+
+        page.goto(url + "/#/mining")
+        page.wait_for_selector("#mining-runs tbody tr")
         row = page.locator("#mining-runs a", has_text="CoSTEER").first
         row.click()
         page.wait_for_selector("#search-candidates tbody tr")
@@ -107,11 +124,14 @@ def check(url: str, output: Path) -> None:
         assert "V3 搜索 researchrun_" in run_text
         assert "尚未登记假设" not in run_text
         assert "CoSTEER 人工提升" in run_text
+        assert "已发布" in page.locator("#search-candidates tbody tr").first.inner_text()
         page.locator("#search-candidates tbody tr").first.locator("a").click()
         page.wait_for_selector("text=V3 来源绑定")
         candidate_text = page.locator("main").inner_text()
         assert "审批证据哈希" in candidate_text
         assert "规则版本 mining_search_approval_v1 · 通过" in candidate_text
+        assert "已发布" in candidate_text
+        assert "待审核" not in candidate_text
         page.screenshot(
             path=str(output / "v3-candidate.png"),
             full_page=True,

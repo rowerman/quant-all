@@ -14,6 +14,8 @@ from mining.v3_contracts import CandidateEnvelope, EvidenceReference
 from tests.mining_v3_fixtures import (
     CREATED_AT,
     approved_v3_run,
+    make_v3_candidate_review_ready,
+    seed_v3_runtime_state,
     v3_candidate_envelope,
     v3_context,
     v3_input,
@@ -63,6 +65,12 @@ def test_every_v3_source_uses_same_review_and_approval(
     store.register_input(input_envelope)
     store.register_context(input_envelope.run_id, context)
     store.record_candidate_envelope(input_envelope.run_id, envelope)
+    seed_v3_runtime_state(store, input_envelope, context)
+    make_v3_candidate_review_ready(
+        store,
+        input_envelope.run_id,
+        envelope,
+    )
 
     review = store.candidate_review(
         input_envelope.run_id,
@@ -230,6 +238,12 @@ def test_one_final_approval_selects_one_of_multiple_sources(tmp_path: Path):
     store.register_context(input_envelope.run_id, context)
     store.record_candidate_envelope(input_envelope.run_id, primary)
     store.record_candidate_envelope(input_envelope.run_id, secondary)
+    seed_v3_runtime_state(store, input_envelope, context)
+    make_v3_candidate_review_ready(
+        store,
+        input_envelope.run_id,
+        primary,
+    )
     first_review = store.candidate_review(
         input_envelope.run_id,
         primary.candidate.candidate_id,
@@ -250,4 +264,80 @@ def test_one_final_approval_selects_one_of_multiple_sources(tmp_path: Path):
         store.record_approval(
             _decision(second_review),
             second_source.source_id,
+        )
+
+
+@pytest.mark.parametrize("run_status", ("failed", "interrupted"))
+def test_review_and_approval_require_review_ready_run(
+    tmp_path: Path,
+    run_status: str,
+):
+    store = _store(tmp_path)
+    context = v3_context()
+    input_envelope = v3_input("hypothesis", context)
+    envelope = v3_candidate_envelope(input_envelope)
+    store.register_input(input_envelope)
+    store.register_context(input_envelope.run_id, context)
+    store.record_candidate_envelope(input_envelope.run_id, envelope)
+    seed_v3_runtime_state(
+        store,
+        input_envelope,
+        context,
+        run_status=run_status,
+    )
+    make_v3_candidate_review_ready(
+        store,
+        input_envelope.run_id,
+        envelope,
+    )
+
+    review = store.candidate_review(
+        input_envelope.run_id,
+        envelope.candidate.candidate_id,
+        envelope.source.source_id,
+    )
+
+    assert review.eligible is False
+    assert f"RUN_NOT_REVIEW_READY:{run_status}" in review.blocking_reasons
+    with pytest.raises(
+        ApprovalConflictError,
+        match=f"RUN_NOT_REVIEW_READY:{run_status}",
+    ):
+        store.record_approval(
+            _decision(review, evidence_hash="a" * 64),
+            envelope.source.source_id,
+        )
+
+
+def test_review_and_approval_require_review_ready_candidate(tmp_path: Path):
+    store = _store(tmp_path)
+    context = v3_context()
+    input_envelope = v3_input("hypothesis", context)
+    envelope = v3_candidate_envelope(input_envelope)
+    store.register_input(input_envelope)
+    store.register_context(input_envelope.run_id, context)
+    store.record_candidate_envelope(input_envelope.run_id, envelope)
+    seed_v3_runtime_state(store, input_envelope, context)
+    store.initialize_candidate_state(
+        input_envelope.run_id,
+        envelope.candidate.candidate_id,
+        envelope.source.source_id,
+        status="proposed",
+    )
+
+    review = store.candidate_review(
+        input_envelope.run_id,
+        envelope.candidate.candidate_id,
+        envelope.source.source_id,
+    )
+
+    assert review.eligible is False
+    assert "CANDIDATE_NOT_REVIEW_READY:proposed" in review.blocking_reasons
+    with pytest.raises(
+        ApprovalConflictError,
+        match="CANDIDATE_NOT_REVIEW_READY:proposed",
+    ):
+        store.record_approval(
+            _decision(review, evidence_hash="a" * 64),
+            envelope.source.source_id,
         )
