@@ -17,6 +17,8 @@ V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用�
 `review_ready` 后进入人工审核；候选批准、拒绝、整批正式发布和失败重试均已接入页面。
 M5 默认关闭，只产生人工审核材料。
 后续任务见[根目录进度记录](../../../FACTOR_MINING_PROGRESS.md)。
+P4-01 已冻结 V3 的四类来源、候选与证据绑定、`mining_v3` 存储范围和 V1/V2 兼容策略，
+详见 [V3 统一研究闭环](v3-integration.md)。
 
 ## 启动与停止
 

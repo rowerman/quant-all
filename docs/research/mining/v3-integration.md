@@ -1,0 +1,153 @@
+# V3 统一研究闭环设计
+
+本文件冻结 P4-01 的 V3 集成边界。V3 在 V2 的冻结窗口、预算、尝试台账、分阶段证据、
+人工审批和原子发布基础上，统一接入手工假设、自由探索、资料驱动和 CoSTEER 代码研究。
+P4-01 只提供公共契约和设计，不接入运行、存储、API、页面或真实迁移。
+
+## 目标与边界
+
+V3 的唯一正式入口仍是人工批准和原子发布。四类来源只能帮助形成研究假设或受控候选，
+不能替代候选内容哈希、分阶段证据或人工审批。
+
+V3 不新增第二套候选、审批和发布体系：
+
+- 新运行、来源、候选、尝试和证据事实写入新的 `mining_v3` schema。
+- 正式发布批次、逐候选发布记录和正式因子继续写共享 `mining.publication*`。
+- V1 `mining` 和 V2 `mining_v2` 保留原表，迁移完成后作为只读审计来源。
+- Worker Prompt、原始异常、密钥、主机路径和沙箱源码不进入 V3 公开契约。
+
+## 四类来源
+
+| 输入模式 | 产生可控候选的路径 | 允许的来源身份 |
+|---|---|---|
+| `hypothesis` | 手工假设进入搜索 Worker，再由主服务校验候选 | 请求哈希和幂等请求身份 |
+| `free_exploration` | 冻结种子和方向池生成方向，Worker 只在方向内生成候选 | 请求哈希、有效种子和方向哈希 |
+| `research_report` | PDF 清单、页正文、字段抽取和 Worker 转换后形成种子批次 | 资料、抽取、草稿、转换和来源引用哈希 |
+| `costeer` | 沙箱完成代码研究并封存产物，人工转写为受控 DSL 后导入种子批次 | 沙箱运行、产物清单、人工提升记录和导入候选哈希 |
+
+四类来源都归一为 `ResearchInputEnvelope`。来源类型必须等于输入模式，未知模式、模式与
+来源不一致或携带未知字段时直接拒绝。
+
+CoSTEER 来源必须同时提供 `artifact_manifest_hash` 和 `promotion_hash`；其他来源禁止
+携带这两个字段。CoSTEER 不直接在沙箱执行主服务 DSL，也不自动创建正式候选。导入前
+必须重新执行受控 DSL 校验、候选哈希、技术门禁和全部研究窗口评估。
+
+## 公共契约
+
+版本常量位于 `mining.v3_contracts`：
+
+| 常量 | 值 | 用途 |
+|---|---|---|
+| `MINING_V3_SCHEMA_VERSION` | `mining_v3` | V3 存储 schema 版本 |
+| `V3_RUN_ID_PREFIX` | `researchrun` | V3 运行 ID 前缀 |
+| `V3_PUBLICATION_SOURCE_KIND` | `v3_research` | 共享正式发布批次来源 |
+| `V3_RESEARCH_INPUT_SCHEMA_VERSION` | `mining_research_input_v3` | 统一输入包络 |
+| `V3_RESEARCH_SOURCE_SCHEMA_VERSION` | `mining_research_source_v3` | 来源引用 |
+| `V3_RESEARCH_CANDIDATE_SCHEMA_VERSION` | `mining_research_candidate_v3` | 候选包络 |
+| `V3_RESEARCH_EVIDENCE_SCHEMA_VERSION` | `mining_research_evidence_v3` | 分阶段证据引用 |
+
+### 输入包络
+
+`ResearchInputEnvelope` 保存 `run_id`、`idempotency_key`、`input_mode`、
+`context_hash`、`request_hash` 和 `ResearchSourceReference`。其 `input_hash` 由规范化
+JSON 计算，不包含数据库写入时间。
+
+### 来源引用
+
+`ResearchSourceReference` 固定保存：
+
+- `source_kind`
+- `source_id`
+- `source_hash`
+- 可空 `artifact_manifest_hash`
+- 可空 `promotion_hash`
+
+来源引用采用字段白名单，不允许附加任意 metadata。来源正文和大文件只保存在原有受控
+模块目录，V3 数据库只保存可重算的身份和哈希。
+
+### 候选包络
+
+`CandidateEnvelope` 绑定冻结的 `CandidateDefinition`、来源引用和候选级证据引用。
+`candidate.semantic_hash`、`candidate.content_hash` 和 `candidate.candidate_id` 的计算
+保持不变，不包含来源。
+
+同一候选从不同来源导入时应保持相同候选 ID。来源差异通过 `source.reference_hash`、
+`CandidateEnvelope.envelope_hash` 和审批证据哈希区分。P4-02 不得再把资料或沙箱来源
+哈希塞入 `CandidateDefinition.parameters` 来改变候选身份。
+
+### 分阶段证据
+
+`EvidenceReference` 只保存候选 ID、阶段、评估 ID、输入哈希、证据哈希和状态。阶段固定
+为：
+
+```text
+technical -> development -> selection -> full -> holdout
+```
+
+`CandidateEnvelope.approval_material()` 要求每个阶段至少有一条 `passed` 证据，并把
+候选内容、语义哈希、上下文、来源引用和全部证据引用纳入审批摘要。
+`approval_evidence_hash()` 是后续 P4-03 审批记录必须复用的稳定哈希入口。
+
+## 状态机
+
+V3 不复制状态表，`V3ResearchStateMachine` 只委托既有规范状态机：
+
+```text
+queued -> searching -> selecting -> evaluating -> holding_out -> review_ready
+```
+
+- 手工假设、自由探索和资料解析都在 `searching` 开始。
+- CoSTEER 在进入 V3 前已完成沙箱执行和人工转写，导入后同样从 `searching` 开始。
+- `interrupted` 只能恢复到中断前阶段。
+- `cancelled`、`failed`、`stale` 和 `review_ready` 不能回到活动阶段。
+- 候选、审批和共享发布继续使用 V1/V2 的规范状态机。
+- 选择期、最终研究期和模块测试段证据只进入确定性控制器，不反馈给任何 Worker。
+
+## 存储范围
+
+目标 schema 为 `mining_v3`，由 P4-04 的显式迁移创建。V3 沿用 V2 的以下事实类别：
+
+- 冻结上下文、运行、运行控制、turn 和链式轨迹。
+- 假设、实验批次、候选、候选谱系和尝试台账。
+- 分阶段评估证据、分析工具审计和审批记录。
+- 事件、尝试计数和 legacy 只读快照。
+
+V3 新增的事实类别为：
+
+- `research_input`：统一输入包络和输入哈希。
+- `source_reference`：来源白名单引用。
+- `candidate_source`：候选包络、来源和候选级证据绑定。
+
+正式发布事实不进入 `mining_v3`。共享 `mining.publication*` 使用
+`source_kind=v3_research`，并保留 `researchrun_*` 来源运行 ID、候选 ID、上下文哈希、
+审批证据哈希和 `CandidateEnvelope.envelope_hash`。
+
+## 迁移与兼容
+
+- 普通启动不得静默迁移 V1 或 V2。
+- 新空库可由 V3 存储首次初始化；已有 V1/V2 数据库必须执行显式迁移命令。
+- 迁移前停止监测站和 Worker，并确认没有活动 V1/V2 运行。
+- V1/V2 源数据分别计算稳定快照哈希，复制为 `mining_v3` 内只读 legacy 记录。
+- 迁移在一个事务内完成；中断整体回滚，相同源快照重复执行返回复用结果。
+- 首次 V3 写入后禁止回滚迁移；旧 V1/V2 表继续保留且不被覆盖。
+- 旧运行只读展示，不能恢复为 V3 运行；新运行全部使用 `researchrun_*`。
+- V1/V2 的现有读取、评估、模型特征和回测接口在 V3 发布后继续可读。
+
+迁移、回滚和中断恢复的具体命令与表结构属于 P4-04，不在 P4-01 执行。
+
+## 后续实现顺序
+
+| 任务 | 本设计对应的实现 |
+|---|---|
+| P4-02 | 把四类来源接入统一输入、候选、证据和来源契约，建立 `mining_v3` 表和来源绑定 |
+| P4-03 | 接入统一审核、审批、共享发布、模型特征和回测读取入口 |
+| P4-04 | 实现 V1/V2 到 V3 的显式迁移、回滚、恢复和旧运行只读兼容 |
+| P4-05 | 完成四类来源端到端、页面、监控、文档和最终交付验收 |
+
+## 验收原则
+
+- 四类来源产生同一受控候选契约。
+- 来源变化不改变候选内容哈希，但改变来源包络和审批证据哈希。
+- 人工批准与原子发布仍是唯一正式入口。
+- 测试段数据不反馈给 Agent，也不用于继续调参。
+- 迁移不覆盖旧运行，正式数据写入没有测试副作用。
