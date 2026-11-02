@@ -343,6 +343,7 @@ from mining.v3_sources import (
     research_report_input_envelope,
     research_run_id,
     source_independent_research_candidate,
+    validated_research_report_provenance,
 )
 from mining.states import (
     CANDIDATE_ACTIVE_STATUSES,
@@ -692,4 +693,5 @@ __all__ = [
     "research_report_input_envelope",
     "research_run_id",
     "source_independent_research_candidate",
+    "validated_research_report_provenance",
 ]

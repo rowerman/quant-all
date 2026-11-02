@@ -48,6 +48,7 @@ from mining.v3_sources import (
     research_report_candidate_source,
     research_report_input_envelope,
     source_independent_research_candidate,
+    validated_research_report_provenance,
 )
 from mining_sandbox.artifacts import PromotionRequest
 
@@ -295,6 +296,19 @@ def test_research_candidate_strips_v2_source_parameters_without_changing_identit
     assert provenance.candidate.candidate_id != restored.candidate_id
     assert source.source_hash == provenance.provenance_hash
     assert source.source_kind == "research_report"
+    envelope = CandidateEnvelope(candidate=restored, source=source)
+    assert (
+        validated_research_report_provenance(provenance, envelope)
+        == provenance
+    )
+    clean = replace(provenance, candidate=base)
+    assert (
+        validated_research_report_provenance(
+            clean,
+            CandidateEnvelope(candidate=base, source=source),
+        )
+        == clean
+    )
 
     mismatched = replace(
         provenance,
@@ -308,6 +322,24 @@ def test_research_candidate_strips_v2_source_parameters_without_changing_identit
     )
     with pytest.raises(MiningContractError, match="provenance"):
         source_independent_research_candidate(mismatched)
+    with pytest.raises(MiningContractError, match="内容哈希"):
+        validated_research_report_provenance(
+            provenance,
+            CandidateEnvelope(
+                candidate=replace(restored, description="被替换的候选"),
+                source=source,
+            ),
+        )
+    other_source = ResearchSourceReference(
+        source_kind="research_report",
+        source_id="v3src_" + "9" * 24,
+        source_hash="9" * 64,
+    )
+    with pytest.raises(MiningContractError, match="来源引用"):
+        validated_research_report_provenance(
+            provenance,
+            CandidateEnvelope(candidate=restored, source=other_source),
+        )
 
 
 def test_evidence_adapter_only_accepts_five_v3_stages():

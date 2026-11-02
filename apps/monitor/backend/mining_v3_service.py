@@ -7,6 +7,10 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from backend.mining_candidate_detail import (
+    evaluation_view,
+    technical_gate_view,
+)
 from backend.mining_search_detail import build_search_run_detail
 from calculate.correlation import available_factors
 from common.paths import (
@@ -59,6 +63,7 @@ from mining.v3_sources import (
     free_exploration_input_envelope,
     hypothesis_input_envelope,
     research_report_input_envelope,
+    validated_research_report_provenance,
 )
 from mining_worker.worker_config import load_worker_config
 from mining_sandbox.artifacts import list_manual_promotions, load_manual_promotion
@@ -478,10 +483,20 @@ class MiningV3WebService:
         except MiningNotFoundError:
             approval = None
         evaluations = [
-            row["evidence"]
+            evaluation_view(row)
             for row in self.runtime_store.list_evaluation_evidence(run_id)
             if row["candidate_id"] == candidate_id
         ]
+        research_source = None
+        if candidate_envelope.source.source_kind == "research_report":
+            provenance = validated_research_report_provenance(
+                self.runtime_store.get_research_candidate(
+                    run_id,
+                    candidate_id,
+                ),
+                candidate_envelope,
+            )
+            research_source = provenance.to_dict()
         return {
             "run": self._run_view(run, envelope),
             "candidate": {
@@ -503,10 +518,7 @@ class MiningV3WebService:
                 },
             },
             "evaluations": evaluations,
-            "technical_gate": next(
-                (item for item in evaluations if item["stage"] == "technical"),
-                None,
-            ),
+            "technical_gate": technical_gate_view(evaluations),
             "holdout_usage": None,
             "approval": approval,
             "review": review,
@@ -514,6 +526,7 @@ class MiningV3WebService:
             "publication": self._publication_view(run, review),
             "publication_batches": self.publication_service.list_batches(run_id),
             "v3_source": candidate_envelope.source.to_dict(),
+            "research_source": research_source,
         }
 
     def decide(self, run_id: str, candidate_id: str, payload: Mapping[str, Any]):

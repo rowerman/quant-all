@@ -6,6 +6,11 @@ import hmac
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from backend.mining_candidate_detail import (
+    evaluation_view,
+    latest_stage,
+    technical_gate_view,
+)
 from mining.contract_evidence import ApprovalDecision
 from mining.errors import (
     ApprovalConflictError,
@@ -16,7 +21,6 @@ from mining.errors import (
 from mining.logging_conf import format_event, get_mining_logger
 from mining.publication_service import MiningPublicationService
 from mining.search_context import FrozenSearchContext
-from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_publication_contracts import publication_context
 from mining.search_scorecard import build_candidate_scorecard
 from mining.snapshot import assert_context_snapshot
@@ -80,7 +84,7 @@ class MiningSearchReviewAdapter:
             candidate_id,
         )
         evaluations = [
-            self._evaluation_view(row)
+            evaluation_view(row)
             for row in self.store.list_evaluation_evidence(
                 run_id,
                 candidate_id,
@@ -99,8 +103,7 @@ class MiningSearchReviewAdapter:
             if snapshot_error is not None
             else ("；".join(blocking_reasons) or None)
         )
-        technical = self._latest_stage(evaluations, "technical")
-        holdout = self._latest_stage(evaluations, "holdout")
+        holdout = latest_stage(evaluations, "holdout")
         candidate = {
             "run_id": record["run_id"],
             "candidate_id": record["candidate_id"],
@@ -115,15 +118,7 @@ class MiningSearchReviewAdapter:
         }
         return {
             "candidate": candidate,
-            "technical_gate": (
-                {
-                    "passed": technical["status"] == "passed",
-                    "rule_version": "mining_search_approval_v1",
-                    "checks": technical["metrics"],
-                }
-                if technical is not None
-                else None
-            ),
+            "technical_gate": technical_gate_view(evaluations),
             "evaluations": evaluations,
             "holdout_usage": (
                 {
@@ -364,40 +359,6 @@ class MiningSearchReviewAdapter:
             error_code=error.code,
             error_message=error_message,
         )
-
-    @staticmethod
-    def _latest_stage(
-        evaluations: list[Mapping[str, Any]],
-        stage: str,
-    ) -> Mapping[str, Any] | None:
-        return next(
-            (
-                item
-                for item in reversed(evaluations)
-                if item["stage"] == stage
-            ),
-            None,
-        )
-
-    @staticmethod
-    def _evaluation_view(row: Mapping[str, Any]) -> dict[str, Any]:
-        """把持久化 V2 证据转换为页面可展示的评估摘要。"""
-
-        evidence = SearchEvaluationEvidence.from_dict(row["evidence"])
-        return {
-            "evaluation_id": row["evaluation_id"],
-            "stage": evidence.stage,
-            "status": evidence.status,
-            "input_hash": evidence.input_hash,
-            "evidence_hash": evidence.evidence_hash,
-            "metrics": evidence.metrics,
-            "warnings": list(evidence.warnings),
-            "error_code": evidence.error_code,
-            "error_message": evidence.error_message,
-            "created_at": evidence.created_at,
-            "started_at": evidence.created_at,
-            "finished_at": evidence.created_at,
-        }
 
     @staticmethod
     def _publication_batch_view(

@@ -21,6 +21,10 @@ from mining.search_progress import progress_for_search
 from mining.storage import MiningStore
 from mining.storage_v3 import MiningV3Store
 from mining.storage_v3_runtime import MiningV3RuntimeStore
+from tests.mining_v3_recovery_support import (
+    build_research_fixture,
+    research_orchestrator,
+)
 
 
 class StubV3Orchestrator:
@@ -233,6 +237,11 @@ def test_v3_candidate_exposes_five_stage_review_and_accepts_decision(
         assert candidate_detail["run"]["engine"] == "v3"
         assert candidate_detail["review"]["eligible"] is True
         assert len(candidate_detail["review"]["evidence"]) == 5
+        assert candidate_detail["technical_gate"] == {
+            "passed": True,
+            "rule_version": "mining_search_approval_v1",
+            "checks": {"rank_ic_mean": 0.03, "rank_ic_ir": 0.4},
+        }
         decided = client.post(
             f"/api/mining/runs/{run_id}/candidates/{candidate.candidate_id}/decision",
             json={
@@ -309,3 +318,58 @@ def test_v3_free_exploration_run_detail_uses_persisted_direction(
     )
     assert run_detail["progress"]["hypotheses"] == 1
     assert run_detail["progress"]["candidates"] == 0
+
+
+def test_v3_research_candidate_returns_validated_provenance(
+    tmp_path: Path,
+):
+    (
+        runtime,
+        contract,
+        request,
+        context,
+        research_input,
+        material_root,
+    ) = build_research_fixture(tmp_path)
+    orchestrator = research_orchestrator(runtime, material_root)
+    run = orchestrator.create_run(
+        request,
+        context,
+        background=False,
+        research_input=research_input,
+    )
+    try:
+        assert orchestrator.execute(run["run_id"])["status"] == "review_ready"
+    finally:
+        orchestrator.close()
+
+    service = MiningV3WebService(
+        contract_store=contract,
+        runtime_store=runtime,
+        orchestrator=StubV3Orchestrator(runtime),
+        snapshot_check=lambda *_args, **_kwargs: None,
+    )
+    v1_store = MiningStore(
+        tmp_path / "factor_mining_v1.duckdb",
+        tmp_path / "v1",
+    )
+    web = MiningWebService(store=v1_store, v3_service=service)
+    app = create_app(mining_service=web)
+    review = next(
+        item for item in contract.list_candidate_reviews(run["run_id"])
+        if item.eligible
+    )
+    with TestClient(app) as client:
+        candidate_detail = client.get(
+            f"/api/mining/runs/{run['run_id']}/candidates/"
+            f"{review.candidate_id}"
+        ).json()
+
+    assert candidate_detail["technical_gate"]["passed"] is True
+    assert candidate_detail["technical_gate"]["rule_version"] == (
+        "mining_search_approval_v1"
+    )
+    source = candidate_detail["research_source"]
+    assert source["material"]["relative_path"] == "report.pdf"
+    assert source["fields"][0]["citations"][0]["page_number"] == 1
+    assert source["provenance_hash"] == candidate_detail["v3_source"]["source_hash"]

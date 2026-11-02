@@ -23,6 +23,7 @@ from mining.v3_contracts import (
     V3_REQUIRED_EVIDENCE_STAGES,
     V3_RESEARCH_SOURCE_SCHEMA_VERSION,
     V3_RUN_ID_PREFIX,
+    CandidateEnvelope,
     EvidenceReference,
     ResearchInputEnvelope,
     ResearchSourceReference,
@@ -254,6 +255,35 @@ def source_independent_research_candidate(
     return replace(provenance.candidate, parameters=parameters)
 
 
+def validated_research_report_provenance(
+    provenance: ResearchCandidateProvenance,
+    envelope: CandidateEnvelope,
+) -> ResearchCandidateProvenance:
+    """核对资料 provenance 与 V3 候选包络的完整绑定。"""
+
+    if not isinstance(provenance, ResearchCandidateProvenance):
+        raise MiningContractError("provenance 必须是 ResearchCandidateProvenance")
+    if not isinstance(envelope, CandidateEnvelope):
+        raise MiningContractError("envelope 必须是 CandidateEnvelope")
+    if envelope.source.source_kind != "research_report":
+        raise MiningContractError("只有资料驱动候选可以返回资料 provenance")
+    parameters = provenance.candidate.parameters
+    source_parameters = {
+        "source_kind",
+        "research_provenance_hash",
+    }
+    if source_parameters & set(parameters):
+        candidate = source_independent_research_candidate(provenance)
+    else:
+        candidate = provenance.candidate
+    if candidate != envelope.candidate:
+        raise MiningContractError("资料候选内容哈希与 V3 候选包络不一致")
+    source = research_report_candidate_source(provenance)
+    if source != envelope.source:
+        raise MiningContractError("资料 provenance 与 V3 来源引用不一致")
+    return provenance
+
+
 def costeer_promotion_hash(promotion: PromotionRequest) -> str:
     """返回人工提升记录的稳定哈希。"""
 
@@ -353,4 +383,5 @@ __all__ = [
     "research_report_input_envelope",
     "research_run_id",
     "source_independent_research_candidate",
+    "validated_research_report_provenance",
 ]
