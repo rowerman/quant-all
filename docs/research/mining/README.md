@@ -19,6 +19,8 @@ M5 默认关闭，只产生人工审核材料。
 后续任务见[根目录进度记录](../../../FACTOR_MINING_PROGRESS.md)。
 P4-01 已冻结 V3 的四类来源、候选与证据绑定、`mining_v3` 存储范围和 V1/V2 兼容策略，
 P4-02 已把四类来源归一为统一输入和候选包络，并建立来源绑定的 `mining_v3` 存储，
+P4-03 已补齐 V3 冻结上下文、五阶段审核、单一来源人工审批、共享原子发布和现有
+因子读取/评估/模型/回测联合验收，
 详见 [V3 统一研究闭环](v3-integration.md)。
 
 ## 启动与停止
@@ -153,11 +155,15 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> mining.search_publication_contracts
                                      只读候选、证据和上下文发布映射
 
-V3 来源统一（P4-02）
+V3 审核与发布（P4-02、P4-03）
   -> mining.v3_contracts            统一输入、来源、证据和候选包络
   -> mining.v3_sources              四类来源适配和稳定来源身份
-  -> mining.storage_v3              mining_v3 输入、来源、候选绑定和证据引用
+  -> mining.v3_review               五阶段审批资格摘要
+  -> mining.storage_v3              mining_v3 输入、上下文、审批、候选状态和事件
+  -> storage_v3_review              单一来源最终审批与候选状态收口
+  -> storage_v3_publication         V3 发布输入、共享批次和失败恢复
   -> storage_v3_schema              新库初始化、版本检查和显式迁移边界
+  -> mining.publication_service     原有整批构建、校验、提交和回滚
 
 沙箱研究（M5，默认关闭）
   -> mining_sandbox.research       有限代码提案和恢复循环
@@ -215,9 +221,9 @@ data/databases/factors.duckdb
 data/databases/quant.duckdb
 ```
 
-候选库包含 V1 `mining` schema 和 V2 `mining_v2` schema。V1 使用 `mining_v1`，
-V2 使用 `mining_v2`；两者相互隔离。V3 使用新的 `mining_v3` schema，当前只允许在
-全新数据库初始化，已有 V1/V2 库必须由后续显式迁移接入。发现未知 schema 版本时直接
+候选库包含 V1 `mining` schema 和 V2 `mining_v2` schema。V3 使用新的 `mining_v3`
+schema，并继续使用共享 `mining.publication*` 正式发布表。当前只允许在全新数据库
+初始化，已有 V1/V2 库必须由后续显式迁移接入。发现未知 schema 版本时直接
 拒绝启动，普通初始化不会静默迁移旧数据。
 
 ## 基本用法

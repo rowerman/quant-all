@@ -118,6 +118,10 @@ V3 新增的事实类别为：
 - `research_input`：统一输入包络和输入哈希。
 - `source_reference`：来源白名单引用。
 - `candidate_source`：候选包络、来源和候选级证据绑定。
+- `run_context`：与输入哈希绑定的完整冻结搜索上下文。
+- `candidate_approval`：单一来源最终人工决定和审批证据哈希。
+- `candidate_state`：审批及共享发布阶段的候选状态。
+- `event`：审批、候选状态和发布审计事件。
 
 正式发布事实不进入 `mining_v3`。共享 `mining.publication*` 使用
 `source_kind=v3_research`，并保留 `researchrun_*` 来源运行 ID、候选 ID、上下文哈希、
@@ -146,6 +150,24 @@ P4-02 已在全新数据库初始化以下表：
 和受控 DSL 候选，不执行沙箱代码。V3 证据适配器只接收技术、开发、选择、完整和测试段
 五个阶段；诊断和稳定性辅助证据仍留在原研究链。
 
+### P4-03 已实现范围
+
+`MiningV3Store` 现可登记完整 `FrozenSearchContext`，并在发布时复用
+`publication_context()` 转换为现有构建器使用的 `FrozenContext`。上下文哈希必须与
+`ResearchInputEnvelope.context_hash` 一致，缺失上下文不能审批或发布。
+
+`V3CandidateReview` 返回候选、来源、五阶段证据、阻断原因、候选包络哈希和审批证据
+哈希。五个阶段必须全部存在且为 `passed`。同一候选可以绑定多个来源，但只能选择一个
+来源形成最终批准或拒绝；最终审批按 `(run_id, candidate_id)` 唯一，其他来源只保留
+审计价值。
+
+`MiningV3Store` 实现现有 `MiningPublicationService` 所需仓储接口。`v3_research`
+批次通过原有构建、全量校验、原子提交和回滚流程写共享 `mining.publication*`；
+候选审批或证据在构建期间变化时，整批中止并收口为 `build_failed`。正式定义清单保留
+`source_kind`、来源上下文、`candidate_envelope_hash`、来源引用哈希和审批证据哈希。
+V3 没有另建因子读取接口，发布结果由现有因子清单、评估、模型特征和回测加载器直接
+读取。
+
 ## 迁移与兼容
 
 - 普通启动不得静默迁移 V1 或 V2。
@@ -164,7 +186,7 @@ P4-02 已在全新数据库初始化以下表：
 | 任务 | 本设计对应的实现 |
 |---|---|
 | P4-02 | 把四类来源接入统一输入、候选、证据和来源契约，建立 `mining_v3` 表和来源绑定 |
-| P4-03 | 接入统一审核、审批、共享发布、模型特征和回测读取入口 |
+| P4-03 | 已接入统一审核、单一来源审批、共享发布和现有下游读取联合验收 |
 | P4-04 | 实现 V1/V2 到 V3 的显式迁移、回滚、恢复和旧运行只读兼容 |
 | P4-05 | 完成四类来源端到端、页面、监控、文档和最终交付验收 |
 

@@ -21,7 +21,10 @@ from mining.errors import (
 )
 from mining.logging_conf import get_mining_logger
 from mining.storage_lock import database_state_lock
+from mining.storage_schema import ensure_schema
 from mining.storage_v2_schema import schema_exists
+from mining.storage_v3_publication import V3PublicationStoreMixin
+from mining.storage_v3_review import V3ReviewStoreMixin
 from mining.storage_v3_schema import (
     ensure_v3_schema,
     initialize_v3_schema,
@@ -34,7 +37,7 @@ from mining.v3_contracts import (
 )
 
 
-class MiningV3Store:
+class MiningV3Store(V3ReviewStoreMixin, V3PublicationStoreMixin):
     """持久化 V3 来源无关候选及独立来源绑定。"""
 
     def __init__(
@@ -52,6 +55,7 @@ class MiningV3Store:
                 with self._connection() as conn:
                     if schema_exists(conn, "mining_v3"):
                         ensure_v3_schema(conn)
+                        ensure_schema(conn)
                     elif schema_exists(conn, "mining_v2") or schema_exists(
                         conn,
                         "mining",
@@ -62,6 +66,7 @@ class MiningV3Store:
                     else:
                         with self._transaction(conn):
                             initialize_v3_schema(conn)
+                            ensure_schema(conn)
             self.data_root.mkdir(parents=True, exist_ok=True)
         except (MiningContractError, MiningMigrationError, MiningStorageError):
             raise

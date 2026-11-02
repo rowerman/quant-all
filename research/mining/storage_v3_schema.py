@@ -72,12 +72,67 @@ V3_DDL = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS mining_v3.run_context (
+        run_id VARCHAR PRIMARY KEY,
+        context_hash VARCHAR NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at VARCHAR NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mining_v3.candidate_approval (
+        approval_id VARCHAR PRIMARY KEY,
+        run_id VARCHAR NOT NULL,
+        candidate_id VARCHAR NOT NULL,
+        source_id VARCHAR NOT NULL,
+        decision VARCHAR NOT NULL,
+        reviewer VARCHAR NOT NULL,
+        note VARCHAR NOT NULL,
+        candidate_content_hash VARCHAR NOT NULL,
+        semantic_hash VARCHAR NOT NULL,
+        context_hash VARCHAR NOT NULL,
+        source_reference_hash VARCHAR NOT NULL,
+        candidate_envelope_hash VARCHAR NOT NULL,
+        evidence_hash VARCHAR NOT NULL,
+        created_at VARCHAR NOT NULL,
+        UNIQUE (run_id, candidate_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mining_v3.candidate_state (
+        run_id VARCHAR NOT NULL,
+        candidate_id VARCHAR NOT NULL,
+        source_id VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        error_code VARCHAR,
+        error_message VARCHAR,
+        updated_at VARCHAR NOT NULL,
+        PRIMARY KEY (run_id, candidate_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mining_v3.event (
+        run_id VARCHAR NOT NULL,
+        sequence BIGINT NOT NULL,
+        event_key VARCHAR NOT NULL,
+        event_type VARCHAR NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at VARCHAR NOT NULL,
+        PRIMARY KEY (run_id, sequence),
+        UNIQUE (run_id, event_key)
+    )
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_mining_v3_candidate_source_candidate
     ON mining_v3.candidate_source(run_id, candidate_id)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_mining_v3_evaluation_candidate
     ON mining_v3.evaluation_evidence(run_id, candidate_id, stage)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_mining_v3_candidate_state_status
+    ON mining_v3.candidate_state(run_id, status)
     """,
 )
 

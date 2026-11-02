@@ -24,7 +24,7 @@ PUBLICATION_BATCH_STATUSES = (
     "rolled_back",
 )
 PUBLICATION_ACTIVE_STATUSES = ("staging", "validating")
-PUBLICATION_SOURCE_KINDS = ("v1", "v2_search")
+PUBLICATION_SOURCE_KINDS = ("v1", "v2_search", "v3_research")
 
 
 @dataclass(frozen=True)

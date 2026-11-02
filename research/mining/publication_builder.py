@@ -94,6 +94,8 @@ def _entry(
             "source_trace_hash",
             "scorecard_hash",
             "approval_evidence_hash",
+            "candidate_envelope_hash",
+            "source_reference_hash",
         ):
             if candidate.get(name) is not None:
                 payload[name] = candidate[name]

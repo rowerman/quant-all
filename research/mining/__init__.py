@@ -321,6 +321,10 @@ from mining.v3_states import (
     V3_RESEARCH_RUN_TERMINAL_STATUSES,
     V3ResearchStateMachine,
 )
+from mining.v3_review import (
+    V3_REVIEW_SCHEMA_VERSION,
+    V3CandidateReview,
+)
 from mining.v3_sources import (
     costeer_candidate_source,
     costeer_input_envelope,
@@ -491,6 +495,8 @@ __all__ = [
     "V3_RESEARCH_RUN_ACTIVE_STATUSES",
     "V3_RESEARCH_RUN_STATUSES",
     "V3_RESEARCH_RUN_TERMINAL_STATUSES",
+    "V3_REVIEW_SCHEMA_VERSION",
+    "V3CandidateReview",
     "V3ResearchStateMachine",
     "CandidateEnvelope",
     "EvidenceReference",

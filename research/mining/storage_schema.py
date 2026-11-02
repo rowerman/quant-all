@@ -156,6 +156,8 @@ DDL = (
         started_at VARCHAR NOT NULL,
         finished_at VARCHAR,
         source_kind VARCHAR NOT NULL DEFAULT 'v1',
+        candidate_envelope_hash VARCHAR,
+        source_reference_hash VARCHAR,
         UNIQUE (run_id, candidate_id, approval_id, attempt)
     )
     """,
@@ -226,6 +228,10 @@ SCHEMA_MIGRATIONS = (
     "source_kind VARCHAR DEFAULT 'v1'",
     "ALTER TABLE mining.publication_batch ADD COLUMN IF NOT EXISTS "
     "source_kind VARCHAR DEFAULT 'v1'",
+    "ALTER TABLE mining.publication ADD COLUMN IF NOT EXISTS "
+    "candidate_envelope_hash VARCHAR",
+    "ALTER TABLE mining.publication ADD COLUMN IF NOT EXISTS "
+    "source_reference_hash VARCHAR",
     "UPDATE mining.publication SET source_kind='v1' WHERE source_kind IS NULL",
     "UPDATE mining.publication_batch SET source_kind='v1' WHERE source_kind IS NULL",
 )

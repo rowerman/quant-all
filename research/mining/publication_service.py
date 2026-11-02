@@ -31,6 +31,7 @@ from mining.publication_contracts import PublicationBatch, new_publication_batch
 from mining.snapshot import DEFAULT_DATA_MANIFEST, assert_context_snapshot
 from mining.storage import MiningStore
 from mining.storage_v2 import MiningV2Store
+from mining.storage_v3 import MiningV3Store
 
 _LOGGER = get_mining_logger("mining.publication")
 
@@ -41,7 +42,7 @@ class MiningPublicationService:
     def __init__(
         self,
         *,
-        store: MiningStore | MiningV2Store | None = None,
+        store: MiningStore | MiningV2Store | MiningV3Store | None = None,
         db_file: Path | str = DB_FILE,
         factor_dir: Path | str = FACTOR_DIR,
         catalog_file: Path | str = FACTOR_DB_FILE,
