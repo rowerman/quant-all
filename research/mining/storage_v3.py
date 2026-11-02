@@ -25,6 +25,7 @@ from mining.storage_schema import ensure_schema
 from mining.storage_v2_schema import schema_exists
 from mining.storage_v3_publication import V3PublicationStoreMixin
 from mining.storage_v3_review import V3ReviewStoreMixin
+from mining.storage_v3_legacy import V3LegacyStoreMixin
 from mining.storage_v3_schema import (
     ensure_v3_schema,
     initialize_v3_schema,
@@ -37,7 +38,11 @@ from mining.v3_contracts import (
 )
 
 
-class MiningV3Store(V3ReviewStoreMixin, V3PublicationStoreMixin):
+class MiningV3Store(
+    V3ReviewStoreMixin,
+    V3PublicationStoreMixin,
+    V3LegacyStoreMixin,
+):
     """持久化 V3 来源无关候选及独立来源绑定。"""
 
     def __init__(

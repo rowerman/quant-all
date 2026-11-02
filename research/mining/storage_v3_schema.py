@@ -123,6 +123,58 @@ V3_DDL = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS mining_v3.migration_source (
+        source_schema VARCHAR PRIMARY KEY,
+        source_schema_version VARCHAR NOT NULL,
+        source_snapshot_hash VARCHAR NOT NULL,
+        context_count BIGINT NOT NULL,
+        run_count BIGINT NOT NULL,
+        candidate_count BIGINT NOT NULL,
+        migrated_at VARCHAR NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mining_v3.legacy_context (
+        source_schema VARCHAR NOT NULL,
+        context_id VARCHAR NOT NULL,
+        context_hash VARCHAR NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at VARCHAR NOT NULL,
+        PRIMARY KEY (source_schema, context_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mining_v3.legacy_run (
+        source_schema VARCHAR NOT NULL,
+        run_id VARCHAR NOT NULL,
+        context_id VARCHAR NOT NULL,
+        idempotency_key VARCHAR NOT NULL,
+        request_hash VARCHAR NOT NULL,
+        input_mode VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        hypothesis TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        created_at VARCHAR NOT NULL,
+        updated_at VARCHAR NOT NULL,
+        PRIMARY KEY (source_schema, run_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mining_v3.legacy_candidate (
+        source_schema VARCHAR NOT NULL,
+        run_id VARCHAR NOT NULL,
+        candidate_id VARCHAR NOT NULL,
+        semantic_hash VARCHAR NOT NULL,
+        content_hash VARCHAR NOT NULL,
+        name VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        definition_json TEXT NOT NULL,
+        created_at VARCHAR NOT NULL,
+        updated_at VARCHAR NOT NULL,
+        PRIMARY KEY (source_schema, run_id, candidate_id)
+    )
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_mining_v3_candidate_source_candidate
     ON mining_v3.candidate_source(run_id, candidate_id)
     """,
@@ -133,6 +185,14 @@ V3_DDL = (
     """
     CREATE INDEX IF NOT EXISTS idx_mining_v3_candidate_state_status
     ON mining_v3.candidate_state(run_id, status)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_mining_v3_legacy_run_source
+    ON mining_v3.legacy_run(source_schema, created_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_mining_v3_legacy_candidate_run
+    ON mining_v3.legacy_candidate(source_schema, run_id)
     """,
 )
 

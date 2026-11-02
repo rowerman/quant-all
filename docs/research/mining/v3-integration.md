@@ -138,6 +138,10 @@ P4-02 已在全新数据库初始化以下表：
 | `mining_v3.source_reference` | 四类来源的白名单身份和哈希 |
 | `mining_v3.candidate_source` | 来源无关候选与一个来源的绑定 |
 | `mining_v3.evaluation_evidence` | 候选来源绑定的五阶段证据引用 |
+| `mining_v3.migration_source` | V1/V2 来源版本、稳定快照哈希和迁移计数 |
+| `mining_v3.legacy_context` | 迁移时固化的旧上下文只读摘要 |
+| `mining_v3.legacy_run` | 迁移时固化的旧运行和输入模式 |
+| `mining_v3.legacy_candidate` | 迁移时固化的旧候选定义和状态 |
 
 `MiningV3Store` 原子登记输入、候选来源和证据，追加证据时保持候选身份不变。同一候选
 可在同一运行中绑定多个来源；同一候选和来源重复写入必须产生相同内容。检测到
@@ -179,7 +183,28 @@ V3 没有另建因子读取接口，发布结果由现有因子清单、评估�
 - 旧运行只读展示，不能恢复为 V3 运行；新运行全部使用 `researchrun_*`。
 - V1/V2 的现有读取、评估、模型特征和回测接口在 V3 发布后继续可读。
 
-迁移、回滚和中断恢复的具体命令与表结构属于 P4-04，不在 P4-01 执行。
+P4-04 已实现以下显式命令：
+
+```bash
+.venv/bin/python -m mining.migrate_to_v3 \
+  --db data/databases/factor_mining.duckdb status
+.venv/bin/python -m mining.migrate_to_v3 \
+  --db data/databases/factor_mining.duckdb migrate
+.venv/bin/python -m mining.migrate_to_v3 \
+  --db data/databases/factor_mining.duckdb rollback
+```
+
+`migrate` 分别计算 `mining_v1` 和 `mining_v2` 的上下文、运行和候选摘要哈希，
+拒绝活动运行，然后在一个事务内创建 V3 表、复制 legacy 快照并写入迁移完成记录。
+失败或进程中断会整体回滚，相同源快照重复执行返回 `reused=true`。旧 schema 后续增加
+运行或改变摘要时，命令拒绝自动合并。
+
+`rollback` 只允许删除由显式迁移创建、且尚无 V3 输入、候选、审批、状态、事件或正式
+发布批次的 `mining_v3` schema。该操作不修改 V1/V2 原表；任何 V3 业务写入后回滚会被
+拒绝。`status` 以只读方式返回来源哈希、计数、源漂移和回滚资格。
+
+完整旧证据、轨迹和评估产物仍从原 V1/V2 表及文件目录读取。V3 legacy 表只保存旧运行
+页面所需的上下文、运行和候选摘要，固定返回 `read_only=true`、`resumable=false`。
 
 ## 后续实现顺序
 
@@ -187,7 +212,7 @@ V3 没有另建因子读取接口，发布结果由现有因子清单、评估�
 |---|---|
 | P4-02 | 把四类来源接入统一输入、候选、证据和来源契约，建立 `mining_v3` 表和来源绑定 |
 | P4-03 | 已接入统一审核、单一来源审批、共享发布和现有下游读取联合验收 |
-| P4-04 | 实现 V1/V2 到 V3 的显式迁移、回滚、恢复和旧运行只读兼容 |
+| P4-04 | 已实现 V1/V2 显式迁移、受限回滚、中断恢复和旧运行只读兼容 |
 | P4-05 | 完成四类来源端到端、页面、监控、文档和最终交付验收 |
 
 ## 验收原则

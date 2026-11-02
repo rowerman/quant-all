@@ -355,3 +355,17 @@ class FreeExplorationError(MiningError):
 
     code = "MINING-161"
     status = 422
+
+
+class V3MigrationConflictError(MiningMigrationError):
+    """V1/V2 源快照或 V3 当前状态不允许执行迁移。"""
+
+    code = "MINING-162"
+    status = 409
+
+
+class V3MigrationRollbackError(MiningMigrationError):
+    """V3 已包含业务事实或来源不可确认，不能回滚迁移。"""
+
+    code = "MINING-163"
+    status = 409

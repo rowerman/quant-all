@@ -20,7 +20,8 @@ M5 默认关闭，只产生人工审核材料。
 P4-01 已冻结 V3 的四类来源、候选与证据绑定、`mining_v3` 存储范围和 V1/V2 兼容策略，
 P4-02 已把四类来源归一为统一输入和候选包络，并建立来源绑定的 `mining_v3` 存储，
 P4-03 已补齐 V3 冻结上下文、五阶段审核、单一来源人工审批、共享原子发布和现有
-因子读取/评估/模型/回测联合验收，
+因子读取/评估/模型/回测联合验收；P4-04 已增加 V1/V2 显式迁移、受限回滚、中断恢复
+和旧运行只读兼容，
 详见 [V3 统一研究闭环](v3-integration.md)。
 
 ## 启动与停止
@@ -163,6 +164,8 @@ V3 审核与发布（P4-02、P4-03）
   -> storage_v3_review              单一来源最终审批与候选状态收口
   -> storage_v3_publication         V3 发布输入、共享批次和失败恢复
   -> storage_v3_schema              新库初始化、版本检查和显式迁移边界
+  -> migration_v1_v2_v3             V1/V2 稳定快照、事务迁移和受限回滚
+  -> storage_v3_legacy              旧运行、上下文和候选只读兼容查询
   -> mining.publication_service     原有整批构建、校验、提交和回滚
 
 沙箱研究（M5，默认关闭）
@@ -222,9 +225,9 @@ data/databases/quant.duckdb
 ```
 
 候选库包含 V1 `mining` schema 和 V2 `mining_v2` schema。V3 使用新的 `mining_v3`
-schema，并继续使用共享 `mining.publication*` 正式发布表。当前只允许在全新数据库
-初始化，已有 V1/V2 库必须由后续显式迁移接入。发现未知 schema 版本时直接
-拒绝启动，普通初始化不会静默迁移旧数据。
+schema，并继续使用共享 `mining.publication*` 正式发布表。已有 V1/V2 库必须使用
+`python -m mining.migrate_to_v3` 显式迁移；普通初始化不会静默迁移旧数据。迁移后
+`mining_v3.legacy_*` 提供旧运行只读摘要，V1/V2 原表保持原格式、不被覆盖。
 
 ## 基本用法
 

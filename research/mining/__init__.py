@@ -93,6 +93,8 @@ from mining.errors import (
     WorkerConfigurationError,
     WorkerResponseError,
     WorkerTimeoutError,
+    V3MigrationConflictError,
+    V3MigrationRollbackError,
 )
 from mining.research_materials import (
     RESEARCH_CLASSIFICATION_KINDS,
@@ -355,6 +357,11 @@ from mining.storage_v2 import MiningV2Store
 from mining.storage_v3 import MiningV3Store
 from mining.storage_v2_trace_states import TURN_STATUSES
 from mining.migration_v1_v2 import migrate_v1_to_v2
+from mining.migration_v1_v2_v3 import (
+    migrate_v1_v2_to_v3,
+    rollback_v3_migration,
+    v3_migration_status,
+)
 from mining.worker_client import (
     HttpWorkerClient,
     MockWorkerClient,
@@ -593,6 +600,8 @@ __all__ = [
     "MiningNotFoundError",
     "MiningPublicationError",
     "MiningMigrationError",
+    "V3MigrationConflictError",
+    "V3MigrationRollbackError",
     "MiningRecoveryError",
     "MiningStateError",
     "MiningStorageError",
@@ -656,6 +665,9 @@ __all__ = [
     "convert_research_factor_drafts",
     "tool_catalog",
     "migrate_v1_to_v2",
+    "migrate_v1_v2_to_v3",
+    "rollback_v3_migration",
+    "v3_migration_status",
     "costeer_candidate_source",
     "costeer_input_envelope",
     "costeer_promotion_hash",
