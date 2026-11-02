@@ -7,8 +7,8 @@ V2 证据驱动搜索、四段时序窗口、尝试台账、受控分析工具�
 当前 M1～M5 均已完成；P2-02 已支持文本型 PDF 解析、金融研报分类和逐文件失败隔离，
 P2-03 已支持带页内原文引用和证据状态的因子字段语义抽取，P2-04 已支持六字段筛查、
 模型辅助变量映射、受控 DSL 转换和跨报告语义去重，P2-05 已接入资料驱动运行、来源
-展示和 V2 审批发布闭环。P3-01 已定义手工假设与自由探索请求模式，但自由探索执行和
-页面入口尚未实现。
+展示和 V2 审批发布闭环。P3-02 已支持在无初始假设时，根据冻结目录生成带机制类别、
+数据依赖、表达复杂度和随机种子的首轮研究方向；自由探索页面入口仍由后续任务实现。
 
 V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用，运行停在
 `review_ready` 后进入人工审核；候选批准、拒绝、整批正式发布和失败重试均已接入页面。
@@ -139,6 +139,8 @@ docker compose --env-file .env -f compose.mining.yaml down
 监测站 Web（V2 实验）
   -> backend.mining_search_service 搜索视图、分析工具和审核证据
   -> mining.search_orchestrator    逐轮搜索、选择、最终评估和测试段
+  -> mining.free_exploration       自由探索首轮机制、字段和复杂度选择
+  -> free_exploration_contracts    方向、种子和生成依据的稳定审计契约
   -> mining.storage_v2             mining_v2 轨迹、尝试、证据和工具审计
   -> storage_v2_publication        V2 发布输入、批次和候选状态事务
   -> mining.search_publication_contracts
@@ -374,6 +376,7 @@ progress = orchestrator.progress(run["run_id"])
 | `MINING-158` | 研报转换批次超过固定资源上限 | 422 |
 | `MINING-159` | 资料运行输入、来源或摘要不符合契约 | 400 |
 | `MINING-160` | 资料运行没有产生可进入 V2 验证的候选 | 422 |
+| `MINING-161` | 自由探索无法从冻结目录生成研究方向 | 422 |
 
 候选评估执行错误使用 `MINING-106`。门禁不通过是正常业务结论，通过
 `TechnicalGate.passed=false` 和逐项 `checks` 表达，不伪装成系统异常。

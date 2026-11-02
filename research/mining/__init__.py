@@ -192,6 +192,9 @@ from mining.orchestration_contracts import (
 from mining.orchestrator import MiningOrchestrator
 from mining.orchestration_support import build_frozen_context
 from mining.search_contracts import (
+    EXPLORATION_SEED_MAX,
+    EXPRESSION_COMPLEXITY_VALUES,
+    FREE_EXPLORATION_SCHEMA_VERSION,
     SEARCH_ACTION_VALUES,
     SEARCH_CONTEXT_SCHEMA_VERSION,
     SEARCH_DIRECTION_VALUES,
@@ -207,6 +210,7 @@ from mining.search_contracts import (
     ExperimentBatch,
     FrozenSearchContext,
     HypothesisCard,
+    ResearchDirection,
     SearchBudget,
     SearchConfig,
     SearchDecision,
@@ -347,6 +351,9 @@ __all__ = [
     "SEARCH_SCHEMA_VERSION",
     "TRIAL_KIND_VALUES",
     "TURN_STATUSES",
+    "EXPLORATION_SEED_MAX",
+    "EXPRESSION_COMPLEXITY_VALUES",
+    "FREE_EXPLORATION_SCHEMA_VERSION",
     "AGENT_ROLE",
     "CONTROLLER_ROLE",
     "DEFAULT_SEARCH_WINDOWS",
@@ -428,6 +435,7 @@ __all__ = [
     "MiningRunRequest",
     "MiningCatalog",
     "OperatorSpec",
+    "ResearchDirection",
     "PublicationAttempt",
     "ResearchDocumentRecord",
     "ResearchCandidateProvenance",

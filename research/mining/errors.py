@@ -348,3 +348,10 @@ class ResearchRunFailure(MiningEvaluationError):
 
     code = "MINING-160"
     status = 422
+
+
+class FreeExplorationError(MiningError):
+    """自由探索无法从冻结目录生成可用研究方向。"""
+
+    code = "MINING-161"
+    status = 422

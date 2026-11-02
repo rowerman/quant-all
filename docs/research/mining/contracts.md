@@ -13,6 +13,7 @@
 | `EvidencePacket` | 开发期指标、失败、相关簇、尝试计数和预算状态 | `created_at` |
 | `SearchDecision` | `refine / branch / stop / promote`、理由和目标假设 | `created_at` |
 | `TrialRecord` | 提出、拒绝、重复、非法、门禁、评估和测试段尝试 | `occurred_at` |
+| `ResearchDirection` | 机制类别、字段依赖、复杂度、种子和生成依据 | 无时间字段 |
 
 `SearchBudget` 冻结默认上限：6 个 turn、3 个假设分支、每分支 3 次修正、每 turn
 4 个候选、每运行 24 个候选、4 个完整评估、连续 2 turn 无改善停止、每 turn
@@ -21,7 +22,9 @@
 `SearchRunRequest` 支持 `hypothesis` 和 `free_exploration` 两种输入模式。未提供
 `input_mode` 的旧请求和旧持久化字典按 `hypothesis` 解析；该模式必须提供 8～4000
 字符假设。`free_exploration` 必须令 `hypothesis=None`，预算和模型配置仍按原契约校验。
-手工假设请求沿用原哈希输入；自由探索显式把模式和空假设纳入请求哈希。
+手工假设请求沿用原哈希输入；自由探索显式把模式和空假设纳入请求哈希。自由探索可选
+提供 `0～2^64-1` 的 `exploration_seed`；未提供时从请求哈希派生有效种子。手工假设
+不得携带该字段。旧自由探索持久化字典缺少种子字段时保持原请求哈希。
 
 `HypothesisCard` 的假设正文为 8～4000 字符，机制最多 1000 字符，可证伪条件
 最多 12 条且每条最多 500 字符。`ExperimentBatch` 每批最多 4 个候选，参数对象最多

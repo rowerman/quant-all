@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from mining.contract_candidates import CandidateDefinition
-from mining.errors import MiningEvaluationError
+from mining.errors import MiningContractError, MiningEvaluationError
+from mining.free_exploration import (
+    direction_from_hypothesis,
+    direction_to_hypothesis,
+    generate_initial_direction,
+)
+from mining.free_exploration_contracts import ResearchDirection
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.search_control import SearchControlState, decide_search_action
 from mining.search_evidence import EvidencePacket
@@ -28,6 +34,8 @@ from mining.search_worker_client_v3 import (
     wait_search_turn_response,
 )
 from mining.errors import WorkerResponseError
+from mining.search_contract_types import FREE_EXPLORATION_INPUT_MODE
+from mining.search_run import SearchRunRequest
 from mining_worker.protocol_v2 import (
     WorkerSearchCandidate,
     WorkerSearchHypothesis,
@@ -40,7 +48,7 @@ class SearchTurnMixin:
 
     def _search(self, run: Mapping[str, Any], context: Any) -> None:
         trace = self.store.get_search_trace(run["run_id"])
-        current = self._current_hypothesis(run, trace)
+        current = self._current_hypothesis(run, trace, context=context)
         while True:
             trace = self.store.get_search_trace(run["run_id"])
             turns = list(trace["turns"])
@@ -462,13 +470,63 @@ class SearchTurnMixin:
         self,
         run: Mapping[str, Any],
         trace: Mapping[str, Any],
+        *,
+        context: Any,
     ) -> HypothesisCard:
         turns = trace["turns"]
-        if not turns:
-            return initial_hypothesis(run)
         if trace["hypotheses"]:
             return HypothesisCard.from_dict(trace["hypotheses"][-1])
-        return initial_hypothesis(run)
+        if turns:
+            raise MiningContractError("V2 turn 存在但缺少对应假设")
+        return self._initial_search_hypothesis(run, context)
+
+    def _initial_search_hypothesis(
+        self,
+        run: Mapping[str, Any],
+        context: Any,
+    ) -> HypothesisCard:
+        """返回手工假设或已冻结的自由探索首轮假设。"""
+
+        request = SearchRunRequest.from_dict(
+            {
+                "idempotency_key": run["idempotency_key"],
+                **run["request"],
+            }
+        )
+        if request.input_mode != FREE_EXPLORATION_INPUT_MODE:
+            return initial_hypothesis(run)
+        event = next(
+            (
+                item
+                for item in reversed(self.store.list_events(run["run_id"]))
+                if item["event_type"] == "free_exploration_direction_planned"
+            ),
+            None,
+        )
+        if event is not None:
+            raw = event["payload"].get("direction")
+            direction = ResearchDirection.from_dict(raw)
+            if (
+                direction.run_id != run["run_id"]
+                or direction.request_hash != request.request_hash
+                or direction.context_hash != context.context_hash
+            ):
+                raise MiningContractError("已保存的自由探索方向与当前运行不一致")
+            return direction_to_hypothesis(direction)
+
+        direction = generate_initial_direction(request, context)
+        self.store.append_event(
+            run["run_id"],
+            event_key="free_exploration_direction_planned",
+            stage="searching",
+            event_type="free_exploration_direction_planned",
+            payload={
+                "direction": direction.to_dict(),
+                "direction_hash": direction.direction_hash,
+                "direction_id": direction.direction_id,
+            },
+        )
+        return direction_to_hypothesis(direction)
 
     def _worker_request(
         self,
@@ -497,6 +555,7 @@ class SearchTurnMixin:
             context.budget.max_candidates_per_run
             - self.store.trial_counts(run["run_id"]).proposed,
         )
+        research_direction = direction_from_hypothesis(current)
         return WorkerSearchRequest(
             request_id=f"{run['run_id']}:search:{turn_index}",
             run_id=run["run_id"],
@@ -523,7 +582,11 @@ class SearchTurnMixin:
                 context.budget.max_candidates_per_turn,
                 remaining,
             ),
-            max_expression_depth=6,
+            max_expression_depth=(
+                research_direction.max_expression_depth
+                if research_direction is not None
+                else 6
+            ),
             excluded_fields=(),
             fields=context.field_catalog,
             operators=context.operator_catalog,

@@ -14,6 +14,7 @@ from mining.contract_types import (
 )
 from mining.errors import MiningContractError
 from mining.search_budget import SearchBudget
+from mining.free_exploration_contracts import EXPLORATION_SEED_MAX
 from mining.search_contract_types import (
     FREE_EXPLORATION_INPUT_MODE,
     HYPOTHESIS_INPUT_MODE,
@@ -35,6 +36,7 @@ class SearchRunRequest:
     llm_profile: str = "default"
     schema_version: str = SEARCH_SCHEMA_VERSION
     input_mode: str = HYPOTHESIS_INPUT_MODE
+    exploration_seed: int | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != SEARCH_SCHEMA_VERSION:
@@ -68,6 +70,19 @@ class SearchRunRequest:
             raise MiningContractError(
                 "llm_profile 只能包含字母、数字、下划线、点和连字符"
             )
+        if self.exploration_seed is not None:
+            if self.input_mode != FREE_EXPLORATION_INPUT_MODE:
+                raise MiningContractError(
+                    "hypothesis 模式不得提供 exploration_seed"
+                )
+            if (
+                isinstance(self.exploration_seed, bool)
+                or not isinstance(self.exploration_seed, int)
+                or not 0 <= self.exploration_seed <= EXPLORATION_SEED_MAX
+            ):
+                raise MiningContractError(
+                    "exploration_seed 必须是 0～2^64-1 的整数"
+                )
 
     def material(self) -> dict[str, Any]:
         """返回参与幂等请求哈希的字段。"""
@@ -80,6 +95,8 @@ class SearchRunRequest:
         }
         if self.input_mode == FREE_EXPLORATION_INPUT_MODE:
             payload["input_mode"] = self.input_mode
+            if self.exploration_seed is not None:
+                payload["exploration_seed"] = self.exploration_seed
         return payload
 
     @property
@@ -106,6 +123,16 @@ class SearchRunRequest:
 
         return self.hypothesis or FREE_EXPLORATION_DISPLAY_LABEL
 
+    @property
+    def effective_exploration_seed(self) -> int:
+        """返回自由探索使用的有效种子。"""
+
+        if self.input_mode != FREE_EXPLORATION_INPUT_MODE:
+            raise MiningContractError("只有自由探索模式具有有效探索种子")
+        if self.exploration_seed is not None:
+            return self.exploration_seed
+        return int(self.request_hash[:16], 16)
+
     @classmethod
     def from_dict(cls, value: Any) -> SearchRunRequest:
         """严格解析请求，并兼容缺少 input_mode 的旧字典。"""
@@ -114,7 +141,7 @@ class SearchRunRequest:
             raise MiningContractError("search_run_request 必须是 JSON 对象")
         expected = set(cls.__dataclass_fields__)
         actual = set(value)
-        missing = expected - actual - {"input_mode"}
+        missing = expected - actual - {"exploration_seed", "input_mode"}
         unknown = actual - expected
         if missing or unknown:
             raise MiningContractError(
@@ -123,6 +150,7 @@ class SearchRunRequest:
             )
         payload = dict(value)
         payload.setdefault("input_mode", HYPOTHESIS_INPUT_MODE)
+        payload.setdefault("exploration_seed", None)
         payload["budget"] = SearchBudget.from_dict(payload["budget"])
         return cls(**payload)
 
@@ -135,4 +163,5 @@ class SearchRunRequest:
             "budget": self.budget.to_dict(),
             "llm_profile": self.llm_profile,
             "schema_version": self.schema_version,
+            "exploration_seed": self.exploration_seed,
         }

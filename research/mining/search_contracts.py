@@ -2,6 +2,14 @@
 
 from mining.search_budget import SearchBudget, TrialCounts
 from mining.search_cards import ExperimentBatch, HypothesisCard
+from mining.free_exploration_contracts import (
+    EXPLORATION_SEED_MAX,
+    EXPLORATION_SEED_SOURCE_VALUES,
+    EXPRESSION_COMPLEXITY_VALUES,
+    EXPRESSION_DEPTH_BY_COMPLEXITY,
+    FREE_EXPLORATION_SCHEMA_VERSION,
+    ResearchDirection,
+)
 from mining.search_contract_types import (
     FREE_EXPLORATION_INPUT_MODE,
     HYPOTHESIS_INPUT_MODE,
@@ -30,7 +38,12 @@ from mining.search_run import SearchRunRequest
 from mining.search_trials import TrialRecord
 
 __all__ = [
+    "EXPLORATION_SEED_MAX",
+    "EXPLORATION_SEED_SOURCE_VALUES",
+    "EXPRESSION_COMPLEXITY_VALUES",
+    "EXPRESSION_DEPTH_BY_COMPLEXITY",
     "FREE_EXPLORATION_INPUT_MODE",
+    "FREE_EXPLORATION_SCHEMA_VERSION",
     "HYPOTHESIS_INPUT_MODE",
     "SEARCH_ACTION_VALUES",
     "SEARCH_CONTEXT_SCHEMA_VERSION",
@@ -47,6 +60,7 @@ __all__ = [
     "EvidencePacket",
     "ExperimentBatch",
     "HypothesisCard",
+    "ResearchDirection",
     "FrozenSearchContext",
     "SearchBudget",
     "SearchConfig",
