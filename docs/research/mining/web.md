@@ -14,6 +14,10 @@ V2 页面展示假设树、轮次决策、尝试台账、选择诊断、稳定�
 并在 `review_ready` 后提供候选详情、批准、拒绝、整批正式发布和失败重试入口。
 V2 发布继续复用现有发布服务，不建立第二套正式因子目录。
 
+`SearchRunRequest` 已在领域层支持自由探索输入，但 P3-01 没有增加页面选项或
+`POST /api/mining/runs` 的 `input_mode` 字段。自由探索的方向生成、页面模式选择、
+预算和停止原因展示由后续 P3 任务实现，当前页面不能提交该模式。
+
 新建入口还支持资料驱动模式。接口为 `POST /api/mining/research-runs`，字段固定为
 `idempotency_key`、`material_path`、`budget` 和 `llm_profile`。`material_path`
 只能是 `data/source/reports` 下的相对文件或目录；绝对路径、`..` 和符号链接会被拒绝。

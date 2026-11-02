@@ -3,9 +3,12 @@
 from mining.search_budget import SearchBudget, TrialCounts
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.search_contract_types import (
+    FREE_EXPLORATION_INPUT_MODE,
+    HYPOTHESIS_INPUT_MODE,
     SEARCH_ACTION_VALUES,
     SEARCH_CONTEXT_SCHEMA_VERSION,
     SEARCH_DIRECTION_VALUES,
+    SEARCH_INPUT_MODE_VALUES,
     SEARCH_SCHEMA_VERSION,
     TRIAL_KIND_VALUES,
 )
@@ -27,9 +30,12 @@ from mining.search_run import SearchRunRequest
 from mining.search_trials import TrialRecord
 
 __all__ = [
+    "FREE_EXPLORATION_INPUT_MODE",
+    "HYPOTHESIS_INPUT_MODE",
     "SEARCH_ACTION_VALUES",
     "SEARCH_CONTEXT_SCHEMA_VERSION",
     "SEARCH_DIRECTION_VALUES",
+    "SEARCH_INPUT_MODE_VALUES",
     "SEARCH_SCHEMA_VERSION",
     "TRIAL_KIND_VALUES",
     "AGENT_ROLE",

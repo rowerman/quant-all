@@ -140,7 +140,7 @@ class V2RunStoreMixin:
                                     request.idempotency_key,
                                     request.request_hash,
                                     "queued",
-                                    request.hypothesis,
+                                    request.display_hypothesis,
                                     canonical_json(request.to_dict()),
                                     None,
                                     created,

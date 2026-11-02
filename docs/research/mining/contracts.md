@@ -18,6 +18,11 @@
 4 个候选、每运行 24 个候选、4 个完整评估、连续 2 turn 无改善停止、每 turn
 4 次工具调用。调用方可以收紧上限，但不能超过这些值。
 
+`SearchRunRequest` 支持 `hypothesis` 和 `free_exploration` 两种输入模式。未提供
+`input_mode` 的旧请求和旧持久化字典按 `hypothesis` 解析；该模式必须提供 8～4000
+字符假设。`free_exploration` 必须令 `hypothesis=None`，预算和模型配置仍按原契约校验。
+手工假设请求沿用原哈希输入；自由探索显式把模式和空假设纳入请求哈希。
+
 `HypothesisCard` 的假设正文为 8～4000 字符，机制最多 1000 字符，可证伪条件
 最多 12 条且每条最多 500 字符。`ExperimentBatch` 每批最多 4 个候选，参数对象最多
 16 KiB；`EvidencePacket` 的总规范化 JSON 不得超过 64 KiB；`TrialRecord` 的扩展

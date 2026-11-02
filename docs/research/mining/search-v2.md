@@ -35,6 +35,18 @@ V3 最终闭环见
 - `ExperimentBatch` 和 `EvidencePacket` 在对象构造时再次校验开发期边界，不能依赖
   上层调用方自觉过滤。
 
+## 输入模式
+
+`SearchRunRequest` 在 P3-01 增加 `hypothesis` 和 `free_exploration` 模式。手工假设
+继续要求 8～4000 字正文；未传模式的调用保持旧行为。自由探索要求显式传入
+`input_mode=free_exploration` 和 `hypothesis=None`，不能同时携带假设。预算、模型
+配置、运行 ID 规则和冻结上下文约束保持不变。
+
+旧请求字典缺少 `input_mode` 时按手工假设解析。自由探索的持久化请求保存
+`input_mode` 与空假设，非空运行摘要字段使用固定展示标签“自由探索”。本轮只完成请求
+契约和安全持久化；初始方向生成、多样性控制、页面入口和可执行自由探索分别由后续
+P3-02～P3-05 完成。
+
 ## Worker v2
 
 Worker v2 使用独立 `mining_worker_v2` 协议和 `/v2/jobs`，只接收开发期证据摘要。

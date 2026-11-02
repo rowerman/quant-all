@@ -12,6 +12,7 @@ from mining.errors import MiningDuplicateError, MiningMigrationError
 from mining.migrate_v1_to_v2 import main as migration_main
 from mining.migration_v1_v2 import migrate_v1_to_v2
 from mining.search_context import FrozenSearchContext
+from mining.search_contracts import FREE_EXPLORATION_INPUT_MODE
 from mining.search_run import SearchRunRequest
 from mining.storage import MiningStore
 from mining.storage_v2 import MiningV2Store
@@ -69,6 +70,33 @@ def test_v2_store_initializes_fresh_database_and_run_is_idempotent(tmp_path: Pat
     changed = SearchRunRequest(
         "search-run-0001",
         "现金流改善可能带来未来超额收益",
+    )
+    with pytest.raises(MiningDuplicateError, match="幂等键"):
+        store.create_run(changed, _v2_context())
+
+
+def test_v2_store_persists_free_exploration_request_without_schema_change(
+    tmp_path: Path,
+):
+    store = MiningV2Store(tmp_path / "factor_mining.duckdb", tmp_path / "data")
+    request = SearchRunRequest(
+        "search-free-0001",
+        None,
+        input_mode=FREE_EXPLORATION_INPUT_MODE,
+    )
+    first = store.create_run(request, _v2_context())
+    second = store.create_run(request, _v2_context())
+    loaded = store.get_run(first["run_id"])
+
+    assert second["reused"] is True
+    assert loaded["hypothesis"] == "自由探索"
+    assert loaded["request"]["input_mode"] == FREE_EXPLORATION_INPUT_MODE
+    assert loaded["request"]["hypothesis"] is None
+    assert store.list_runs()[0]["hypothesis"] == "自由探索"
+
+    changed = SearchRunRequest(
+        "search-free-0001",
+        "相同幂等键切换到手工假设",
     )
     with pytest.raises(MiningDuplicateError, match="幂等键"):
         store.create_run(changed, _v2_context())

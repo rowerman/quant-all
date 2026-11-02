@@ -6,13 +6,17 @@ from dataclasses import replace
 
 import pytest
 
+from mining.contract_types import sha256_json
 from mining.errors import MiningContractError
 from mining.search_contracts import (
     EvidencePacket,
     ExperimentBatch,
+    FREE_EXPLORATION_INPUT_MODE,
+    HYPOTHESIS_INPUT_MODE,
     HypothesisCard,
     SearchBudget,
     SearchDecision,
+    SearchRunRequest,
     TrialCounts,
     TrialRecord,
 )
@@ -128,6 +132,87 @@ def test_search_budget_freezes_defaults_and_rejects_expansion():
         SearchBudget(max_candidates_per_turn=5)
     with pytest.raises(MiningContractError, match="不得超过"):
         SearchBudget(max_candidates_per_turn=4, max_candidates_per_run=3)
+
+
+def test_search_run_request_generates_stable_hashes_for_both_input_modes():
+    hypothesis = SearchRunRequest(
+        "search-mode-0001",
+        "短期反转可能带来开发期超额收益",
+    )
+    explicit = SearchRunRequest(
+        "search-mode-0001",
+        "短期反转可能带来开发期超额收益",
+        input_mode=HYPOTHESIS_INPUT_MODE,
+    )
+    legacy_material = {
+        "schema_version": "mining_v2",
+        "hypothesis": "短期反转可能带来开发期超额收益",
+        "budget": SearchBudget().to_dict(),
+        "llm_profile": "default",
+    }
+    assert hypothesis.request_hash == explicit.request_hash
+    assert hypothesis.request_hash == sha256_json(legacy_material)
+
+    free = SearchRunRequest(
+        "search-mode-0002",
+        None,
+        input_mode=FREE_EXPLORATION_INPUT_MODE,
+    )
+    repeated = SearchRunRequest(
+        "search-mode-0002",
+        None,
+        input_mode=FREE_EXPLORATION_INPUT_MODE,
+    )
+    assert free.request_hash == repeated.request_hash
+    assert free.material() == {
+        **legacy_material,
+        "hypothesis": None,
+        "input_mode": FREE_EXPLORATION_INPUT_MODE,
+    }
+    assert free.request_hash != hypothesis.request_hash
+    assert free.display_hypothesis == "自由探索"
+    assert free.to_dict()["input_mode"] == FREE_EXPLORATION_INPUT_MODE
+
+
+def test_search_run_request_accepts_legacy_dict_and_round_trips_mode():
+    request = SearchRunRequest(
+        "search-mode-0003",
+        "短期反转可能带来开发期超额收益",
+    )
+    legacy = {
+        "idempotency_key": request.idempotency_key,
+        **request.to_dict(),
+    }
+    legacy.pop("input_mode")
+    assert SearchRunRequest.from_dict(legacy) == request
+
+    free = SearchRunRequest(
+        "search-mode-0004",
+        None,
+        input_mode=FREE_EXPLORATION_INPUT_MODE,
+    )
+    payload = {
+        "idempotency_key": free.idempotency_key,
+        **free.to_dict(),
+    }
+    assert SearchRunRequest.from_dict(payload) == free
+    with pytest.raises(MiningContractError, match="未知"):
+        SearchRunRequest.from_dict({**payload, "unexpected": True})
+
+
+def test_search_run_request_rejects_invalid_modes_and_empty_inputs():
+    with pytest.raises(MiningContractError, match="input_mode"):
+        SearchRunRequest("search-mode-0005", None, input_mode="manual")
+    with pytest.raises(MiningContractError, match="hypothesis"):
+        SearchRunRequest("search-mode-0006", None)
+    with pytest.raises(MiningContractError, match="hypothesis"):
+        SearchRunRequest("search-mode-0007", "")
+    with pytest.raises(MiningContractError, match="不得提供"):
+        SearchRunRequest(
+            "search-mode-0008",
+            "自由探索不应同时提供假设",
+            input_mode=FREE_EXPLORATION_INPUT_MODE,
+        )
 
 
 def test_contract_hashes_ignore_only_time_fields():

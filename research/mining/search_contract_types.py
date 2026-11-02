@@ -21,6 +21,9 @@ SEARCH_HOLDOUT_START = "2025-10-16"
 SEARCH_HOLDOUT_END = "2026-10-15"
 SEARCH_ACTION_VALUES = ("refine", "branch", "stop", "promote")
 SEARCH_DIRECTION_VALUES = ("positive", "negative", "non_monotonic")
+SEARCH_INPUT_MODE_VALUES = ("hypothesis", "free_exploration")
+HYPOTHESIS_INPUT_MODE = SEARCH_INPUT_MODE_VALUES[0]
+FREE_EXPLORATION_INPUT_MODE = SEARCH_INPUT_MODE_VALUES[1]
 TRIAL_KIND_VALUES = (
     "proposed",
     "rejected",
