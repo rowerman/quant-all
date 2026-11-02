@@ -520,15 +520,15 @@ class SearchTurnMixin:
                     if next_hypothesis is not None:
                         if direction_from_hypothesis(next_hypothesis) is None:
                             return next_hypothesis
-                        parent = next(
-                            (
-                                HypothesisCard.from_dict(item)
-                                for item in trace["hypotheses"]
-                                if item["hypothesis_id"]
+                        parent = current
+                        for item in trace["hypotheses"]:
+                            candidate = HypothesisCard.from_dict(item)
+                            if (
+                                candidate.hypothesis_id
                                 == next_hypothesis.parent_hypothesis_id
-                            ),
-                            current,
-                        )
+                            ):
+                                parent = candidate
+                                break
                         return self._prepare_free_branch_hypothesis(
                             run=run,
                             context=context,

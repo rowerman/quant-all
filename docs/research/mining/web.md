@@ -23,6 +23,8 @@ V2 发布继续复用现有发布服务，不建立第二套正式因子目录�
 和首轮冻结方向，并展示完整搜索预算、当前消耗与停止原因。自由探索页面明确提示：
 方向、种子和预算在首次 Worker 调用前冻结，选择期、最终研究期和模块测试段不会进入
 Worker。公开页面不展示 Prompt、密钥、工作区路径或原始 Worker 请求。
+V2 运行上下文的公开摘要只返回开发期和目录/预算哈希，不展开选择期、最终研究期或
+模块测试段窗口。
 
 新建入口还支持资料驱动模式。接口为 `POST /api/mining/research-runs`，字段固定为
 `idempotency_key`、`material_path`、`budget` 和 `llm_profile`。`material_path`

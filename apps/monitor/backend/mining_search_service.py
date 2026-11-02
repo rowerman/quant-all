@@ -675,6 +675,8 @@ class MiningSearchWebService:
             }
         )
         is_free = request.input_mode == FREE_EXPLORATION_INPUT_MODE
+        context = run["context"]
+        windows = context.get("windows", {})
         return {
             "run_id": run["run_id"],
             "idempotency_key": run["idempotency_key"],
@@ -697,7 +699,23 @@ class MiningSearchWebService:
             ),
             "created_at": run["created_at"],
             "updated_at": run["updated_at"],
-            "context": run["context"],
+            "context": {
+                "context_id": context.get("context_id"),
+                "context_hash": context.get("context_hash"),
+                "data_version": context.get("data_version"),
+                "data_fingerprint": context.get("data_fingerprint"),
+                "label": context.get("label"),
+                "universe": context.get("universe"),
+                "price_channel": context.get("price_channel"),
+                "development_start": windows.get("development_start"),
+                "development_end": windows.get("development_end"),
+                "llm_profile": context.get("llm_profile"),
+                "llm_model": context.get("llm_model"),
+                "field_catalog_hash": context.get("field_catalog_hash"),
+                "operator_catalog_hash": context.get("operator_catalog_hash"),
+                "budget": context.get("budget"),
+                "created_at": context.get("created_at"),
+            },
             "context_hash": run["context_hash"],
         }
 
