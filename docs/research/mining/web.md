@@ -18,12 +18,13 @@ V2 页面展示假设树、轮次决策、尝试台账、选择诊断、稳定�
 并在 `review_ready` 后提供候选详情、批准、拒绝、整批正式发布和失败重试入口。
 V2 发布继续复用现有发布服务，不建立第二套正式因子目录。
 
-`SearchRunRequest` 支持手工假设和自由探索输入及可选随机种子。新建页可切换手工假设、
-自由探索和资料驱动三种来源；自由探索不要求初始假设，可提供 `0～2^64-1` 的种子，
+`SearchRunRequest` 支持手工假设和自由探索输入及可选随机种子。V3 新建页可切换
+手工假设、自由探索、资料驱动和 CoSTEER 人工提升四种来源；自由探索不要求初始假设，
+可提供 `0～2^64-1` 的种子，
 留空时由请求哈希派生。页面以十进制字符串提交大种子，服务端转换为整数，避免浏览器
 丢失 64 位精度。
 
-运行列表以标签区分三种来源。V2 运行详情返回输入模式、配置种子、有效种子、种子来源
+运行列表以标签区分来源。V3 运行详情返回输入模式、配置种子、有效种子、种子来源
 和首轮冻结方向，并展示完整搜索预算、当前消耗与停止原因。自由探索页面明确提示：
 方向、种子和预算在首次 Worker 调用前冻结，选择期、最终研究期和模块测试段不会进入
 Worker。公开页面不展示 Prompt、密钥、工作区路径或原始 Worker 请求。
@@ -116,7 +117,7 @@ V2 候选详情使用相同的审批请求字段和错误码，但展示
 | 路由 | 内容 |
 |---|---|
 | `#/mining` | 运行列表和新建入口 |
-| `#/mining/new` | 手工假设、自由探索种子或资料相对路径、折叠预算和创建 |
+| `#/mining/new` | 手工假设、自由探索种子、资料相对路径、CoSTEER 提升记录和创建 |
 | `#/mining/{run_id}` | 状态、预算消耗、资料筛选摘要、候选和事件轨迹 |
 | `#/mining/{run_id}/candidate/{candidate_id}` | 定义、研报来源、V1 四阶段或 V2 五阶段证据、审批和整批发布 |
 
@@ -128,9 +129,12 @@ V2 候选详情使用相同的审批请求字段和错误码，但展示
 ```bash
 .venv/bin/python -m pytest -q apps/monitor/backend/tests/test_mining_api.py
 .venv/bin/python -m pytest -q apps/monitor/backend/tests/test_mining_search_api.py
+.venv/bin/python -m pytest -q apps/monitor/backend/tests/test_mining_v3_api.py
+.venv/bin/python -m pytest -q apps/monitor/backend/tests/test_mining_v3_joint_api.py
 .venv/bin/python tools/monitor/mining_check.py
 .venv/bin/python tools/monitor/mining_search_check.py
 .venv/bin/python tools/monitor/mining_research_check.py
+.venv/bin/python tools/monitor/mining_v3_check.py
 ```
 
 浏览器脚本启动临时候选库和确定性 Worker，不访问 DeepSeek，不打开生产模块测试段。
@@ -140,3 +144,5 @@ V2 候选详情使用相同的审批请求字段和错误码，但展示
 `AiRecord/evidence/mining_s8/`。V2 验收脚本完成批准、拒绝、发布失败和重试，截图写入
 `AiRecord/evidence/mining_v2_web/`。资料驱动验收脚本检查资料模式、运行筛选摘要、
 候选页码来源和 390px 布局，截图写入 `AiRecord/evidence/mining_research_web/`。
+V3 验收脚本从真实创建服务生成四类运行并完成审批发布，检查假设树、技术门禁和移动端
+布局，截图写入 `AiRecord/evidence/mining_v3_web/`。
