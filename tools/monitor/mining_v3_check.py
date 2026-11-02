@@ -53,7 +53,7 @@ def _start_server() -> tuple[subprocess.Popen, str]:
         stderr=subprocess.DEVNULL,
     )
     url = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError("V3 浏览器夹具启动失败")
@@ -103,10 +103,15 @@ def check(url: str, output: Path) -> None:
         row = page.locator("#mining-runs a", has_text="CoSTEER").first
         row.click()
         page.wait_for_selector("#search-candidates tbody tr")
-        assert "V3 搜索 researchrun_" in page.locator("main").inner_text()
+        run_text = page.locator("main").inner_text()
+        assert "V3 搜索 researchrun_" in run_text
+        assert "尚未登记假设" not in run_text
+        assert "CoSTEER 人工提升" in run_text
         page.locator("#search-candidates tbody tr").first.locator("a").click()
         page.wait_for_selector("text=V3 来源绑定")
-        assert "审批证据哈希" in page.locator("main").inner_text()
+        candidate_text = page.locator("main").inner_text()
+        assert "审批证据哈希" in candidate_text
+        assert "规则版本 mining_search_approval_v1 · 通过" in candidate_text
         page.screenshot(
             path=str(output / "v3-candidate.png"),
             full_page=True,

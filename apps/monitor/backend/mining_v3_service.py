@@ -756,7 +756,8 @@ class MiningV3WebService:
 
     def _run_view(self, run: Mapping[str, Any], envelope) -> dict[str, Any]:
         request = self.runtime_store.load_run_request(run["run_id"])
-        is_free = request.input_mode == FREE_EXPLORATION_INPUT_MODE
+        input_mode = envelope.input_mode
+        is_free = input_mode == FREE_EXPLORATION_INPUT_MODE
         context = run["context"]
         windows = context.get("windows", {})
         return {
@@ -765,7 +766,7 @@ class MiningV3WebService:
             "status": run["status"],
             "hypothesis": run["hypothesis"],
             "engine": "v3",
-            "input_mode": request.input_mode,
+            "input_mode": input_mode,
             "exploration_seed": request.exploration_seed,
             "effective_exploration_seed": (
                 request.effective_exploration_seed if is_free else None
