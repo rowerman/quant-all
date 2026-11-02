@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from backend.mining_search_detail import build_search_run_detail
 from calculate.correlation import available_factors
 from common.paths import (
     DB_FILE,
@@ -45,7 +46,6 @@ from mining.search_contract_types import (
 )
 from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_orchestrator_v3 import MiningV3SearchOrchestrator
-from mining.search_progress import progress_for_search
 from mining.search_run import SearchRunRequest
 from mining.snapshot import (
     DEFAULT_DATA_MANIFEST,
@@ -398,47 +398,18 @@ class MiningV3WebService:
             return self._legacy_detail(run_id)
         run = self.runtime_store.get_run(run_id)
         envelope = self.contract_store.load_input(run_id)
-        progress = progress_for_search(self.runtime_store, run_id)
-        candidates = []
-        for candidate_id in self._runtime_candidate_ids(run_id):
-            runtime = self.runtime_store.get_candidate(run_id, candidate_id)
-            review = self._review_for_candidate(run_id, candidate_id)
-            candidates.append(
-                {
-                    "candidate_id": candidate_id,
-                    "name": runtime["name"],
-                    "status": review["candidate_status"],
-                    "parent_candidate_id": None,
-                    "hypothesis_id": None,
-                    "batch_id": None,
-                    "missing_fields": [],
-                    "metadata": {},
-                    "attempts": {},
-                    "analysis_count": 0,
-                }
-            )
-        return {
-            "run": {
-                **self._run_view(run, envelope),
-            },
-            "progress": progress.to_dict(),
-            "hypotheses": [],
-            "turns": [],
-            "candidates": candidates,
-            "attempts": progress.trial_counts.to_dict(),
-            "branch_count": 0,
-            "portfolio": None,
-            "multiple_testing": None,
-            "analysis_tools": {"calls": {}, "total_calls": 0, "failed_calls": 0},
-            "research": None,
-            "v3": {
-                "input_mode": envelope.input_mode,
-                "input_hash": envelope.input_hash,
-                "source_hash": envelope.source.source_hash,
-                "source_id": envelope.source.source_id,
-            },
-            "exploration": None,
+        detail = build_search_run_detail(
+            self.runtime_store,
+            run_id,
+            self._run_view(run, envelope),
+        )
+        detail["v3"] = {
+            "input_mode": envelope.input_mode,
+            "input_hash": envelope.input_hash,
+            "source_hash": envelope.source.source_hash,
+            "source_id": envelope.source.source_id,
         }
+        return detail
 
     def run_status(self, run_id: str) -> dict[str, Any]:
         if self.is_legacy_run(run_id):
@@ -698,12 +669,6 @@ class MiningV3WebService:
             "latest_batch": latest,
         }
 
-    def _runtime_candidate_ids(self, run_id: str) -> tuple[str, ...]:
-        return tuple(
-            item["candidate_id"]
-            for item in self.runtime_store.get_search_trace(run_id)["candidates"]
-        )
-
     def _request(self, body: Mapping[str, Any]) -> SearchRunRequest:
         key = self._key(body)
         mode = body.get("input_mode", HYPOTHESIS_INPUT_MODE)
@@ -776,8 +741,9 @@ class MiningV3WebService:
         except ValueError:
             return self.material_root.name
 
-    @staticmethod
-    def _run_view(run: Mapping[str, Any], envelope) -> dict[str, Any]:
+    def _run_view(self, run: Mapping[str, Any], envelope) -> dict[str, Any]:
+        request = self.runtime_store.load_run_request(run["run_id"])
+        is_free = request.input_mode == FREE_EXPLORATION_INPUT_MODE
         context = run["context"]
         windows = context.get("windows", {})
         return {
@@ -786,7 +752,20 @@ class MiningV3WebService:
             "status": run["status"],
             "hypothesis": run["hypothesis"],
             "engine": "v3",
-            "input_mode": envelope.input_mode,
+            "input_mode": request.input_mode,
+            "exploration_seed": request.exploration_seed,
+            "effective_exploration_seed": (
+                request.effective_exploration_seed if is_free else None
+            ),
+            "seed_source": (
+                (
+                    "request"
+                    if request.exploration_seed is not None
+                    else "request_hash"
+                )
+                if is_free
+                else None
+            ),
             "created_at": run["created_at"],
             "updated_at": run["updated_at"],
             "context_hash": run["context_hash"],

@@ -10,6 +10,10 @@ from backend.app import create_app
 from backend.mining_service import MiningWebService
 from backend.mining_v3_service import MiningV3WebService
 from mining.expression_validation import validate_expression
+from mining.free_exploration import (
+    direction_to_hypothesis,
+    generate_initial_direction,
+)
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_orchestrator_support import candidate_payload
@@ -189,6 +193,26 @@ def test_v3_candidate_exposes_five_stage_review_and_accepts_decision(
                     metrics={"rank_ic_mean": 0.03, "rank_ic_ir": 0.4},
                 )
             )
+        turn = runtime.get_search_trace(run_id)["turns"][0]
+        runtime.record_analysis_tool_call(
+            run_id=run_id,
+            turn_index=1,
+            call_index=1,
+            cache_key="a" * 64,
+            context_hash=runtime.load_run_context(run_id).context_hash,
+            turn_request_hash=turn["request_hash"],
+            candidate_hash=candidate.content_hash,
+            tool_name="ic_summary",
+            tool_version="v1",
+            candidate_id=candidate.candidate_id,
+            request_hash="b" * 64,
+            arguments_summary={"window": "development"},
+            status="succeeded",
+            cache_hit=False,
+            duration_ms=1.5,
+            payload={"rank_ic": 0.03},
+            result_hash="c" * 64,
+        )
         for target in (
             "searching",
             "selecting",
@@ -225,3 +249,63 @@ def test_v3_candidate_exposes_five_stage_review_and_accepts_decision(
         )
         assert decided.status_code == 200
         assert decided.json()["approval"]["decision"] == "approved"
+        run_detail = client.get(f"/api/mining/runs/{run_id}").json()
+        assert len(run_detail["hypotheses"]) == 1
+        assert len(run_detail["turns"]) == 1
+        assert run_detail["branch_count"] == 1
+        assert run_detail["turns"][0]["tool_calls"][0]["tool_name"] == "ic_summary"
+        assert run_detail["analysis_tools"]["total_calls"] == 1
+        assert run_detail["candidates"][0]["candidate_id"] == candidate.candidate_id
+        assert run_detail["candidates"][0]["hypothesis_id"] == hypothesis.hypothesis_id
+        assert run_detail["candidates"][0]["analysis_count"] == 1
+        assert run_detail["progress"]["candidates"] == len(run_detail["candidates"])
+
+
+def test_v3_free_exploration_run_detail_uses_persisted_direction(
+    tmp_path: Path,
+):
+    service, runtime, contract = _service(tmp_path)
+    app = create_app(mining_service=service)
+    with TestClient(app) as client:
+        options = client.get("/api/mining/options").json()["search_v3"]
+        detail = client.post(
+            "/api/mining/runs",
+            json={
+                "input_mode": "free_exploration",
+                "exploration_seed": "20261102",
+                "idempotency_key": "web-v3-free-detail-0001",
+                "budget": options["defaults"],
+            },
+        ).json()
+        run_id = detail["run"]["run_id"]
+        request = runtime.load_run_request(run_id)
+        context = contract.load_context(run_id)
+        direction = generate_initial_direction(request, context)
+        hypothesis = direction_to_hypothesis(direction)
+        batch = ExperimentBatch(
+            run_id=run_id,
+            hypothesis_id=hypothesis.hypothesis_id,
+            turn_index=1,
+            branch_id=hypothesis.branch_id,
+            candidate_ids=(),
+            parent_candidate_ids=(),
+            development_start=context.windows.development_start,
+            development_end=context.windows.development_end,
+            input_hash="d" * 64,
+        )
+        runtime.begin_turn(run_id, hypothesis, batch)
+
+        run_detail = client.get(f"/api/mining/runs/{run_id}").json()
+
+    assert run_detail["run"]["exploration_seed"] == 20261102
+    assert run_detail["run"]["effective_exploration_seed"] == 20261102
+    assert run_detail["run"]["seed_source"] == "request"
+    assert run_detail["hypotheses"][0]["statement"] == direction.statement
+    assert run_detail["turns"][0]["turn_index"] == 1
+    assert run_detail["branch_count"] == 1
+    assert (
+        run_detail["exploration"]["initial_direction"]["direction_hash"]
+        == direction.direction_hash
+    )
+    assert run_detail["progress"]["hypotheses"] == 1
+    assert run_detail["progress"]["candidates"] == 0
