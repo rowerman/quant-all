@@ -22,6 +22,10 @@ SEARCH_RUN_ACTIVE_STATUSES = (
     "evaluating",
     "holding_out",
 )
+SEARCH_RUN_RESUMABLE_STATUSES = (
+    "queued",
+    *SEARCH_RUN_ACTIVE_STATUSES,
+)
 SEARCH_RUN_TERMINAL_STATUSES = (
     "review_ready",
     "failed",
@@ -34,7 +38,7 @@ class SearchRunStateMachine:
     """限制 V2 运行只能沿证据链向前推进。"""
 
     _ALLOWED = {
-        "queued": {"searching", "failed", "cancelled", "stale"},
+        "queued": {"searching", "interrupted", "failed", "cancelled", "stale"},
         "searching": {"selecting", "interrupted", "failed", "cancelled", "stale"},
         "selecting": {"evaluating", "interrupted", "failed", "cancelled", "stale"},
         "evaluating": {"holding_out", "interrupted", "failed", "cancelled", "stale"},
@@ -60,7 +64,7 @@ class SearchRunStateMachine:
             raise MiningStateError(f"未知 V2 运行状态：{current!r}")
         if target not in SEARCH_RUN_STATUSES:
             raise MiningStateError(f"未知 V2 运行状态：{target!r}")
-        if current == "interrupted" and target in SEARCH_RUN_ACTIVE_STATUSES:
+        if current == "interrupted" and target in SEARCH_RUN_RESUMABLE_STATUSES:
             if interrupted_from != target:
                 raise MiningStateError(
                     f"中断运行只能恢复到原阶段 {interrupted_from!r}，"

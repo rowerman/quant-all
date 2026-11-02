@@ -152,7 +152,7 @@ class MiningV3WebService:
     def initialize(self) -> None:
         if self._initialized:
             return
-        self.runtime_store.interrupt_active_search_runs()
+        self.runtime_store.interrupt_orphaned_search_runs()
         self.publication_service.initialize()
         self._initialized = True
         _LOGGER.info(
@@ -275,7 +275,12 @@ class MiningV3WebService:
             research_input,
             context_hash=context.context_hash,
         )
-        self.runtime_store.configure_v3_run(request, context, envelope)
+        self.runtime_store.configure_v3_run(
+            request,
+            context,
+            envelope,
+            research_input=research_input,
+        )
         run = self.orchestrator.create_run(
             request,
             context,

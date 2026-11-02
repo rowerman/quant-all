@@ -215,6 +215,12 @@ V3 运行复用 V2 已验证的 Worker 搜索、受控评估、选择期、完�
 运行表使用 `mining_v3.runtime_*`，来源、候选包络、五阶段证据、审批和候选状态继续使用
 同一 schema 的 V3 契约表。V3 运行 ID 固定为 `researchrun_`。
 
+V3 创建运行前会持久化输入包络和冻结上下文；CoSTEER 的人工转写候选另存于
+`mining_v3.runtime_seed_candidate`。服务启动时，遗留 `queued` 和活动阶段统一标记为
+`interrupted`。显式恢复从运行表、输入包络、冻结上下文、资料运行和预置候选重建执行
+状态，重验候选包络及已有审批后再回到原阶段。校验失败返回 `MINING-165` 且不改变运行
+状态；不完整的旧 CoSTEER 运行不会静默降级为普通失败。
+
 | 输入模式 | 创建入口 | 候选产生方式 |
 |---|---|---|
 | `hypothesis` | `POST /api/mining/runs` | Worker 在手工假设下生成受控候选 |

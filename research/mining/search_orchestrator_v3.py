@@ -91,10 +91,16 @@ class MiningV3SearchOrchestrator(MiningSearchOrchestrator):
                 **run["request"],
             }
         )
-        input_envelope = self.store._run_inputs[run["run_id"]]
+        input_envelope = self.store.load_input_envelope(run["run_id"])
         if input_envelope.input_mode != "costeer":
             return super()._search(run, context)
         self._seed_costeer_candidate(run, context, request)
+
+    def resume(self, run_id: str, *, background: bool = True) -> dict[str, Any]:
+        """恢复前重验全部持久化事实，再回到原中断阶段。"""
+
+        self.store.recover_v3_run(run_id)
+        return super().resume(run_id, background=background)
 
     def _seed_costeer_candidate(
         self,

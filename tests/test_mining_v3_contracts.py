@@ -221,6 +221,13 @@ def test_candidate_envelope_rejects_evidence_for_another_candidate():
 
 def test_v3_state_facade_delegates_to_existing_state_machines():
     V3ResearchStateMachine.ensure_run("queued", "searching")
+    V3ResearchStateMachine.ensure_run("queued", "interrupted")
+    V3ResearchStateMachine.ensure_run(
+        "interrupted",
+        "queued",
+        interrupted_from="queued",
+    )
+    assert V3ResearchStateMachine.can_interrupt_run("queued") is True
     V3ResearchStateMachine.ensure_run(
         "interrupted",
         "evaluating",

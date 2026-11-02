@@ -294,6 +294,7 @@ from mining.search_statistical_diagnostics import (
 )
 from mining.search_states import (
     SEARCH_RUN_ACTIVE_STATUSES,
+    SEARCH_RUN_RESUMABLE_STATUSES,
     SEARCH_RUN_STATUSES,
     SEARCH_RUN_TERMINAL_STATUSES,
     SearchRunStateMachine,
@@ -321,6 +322,7 @@ from mining.v3_states import (
     V3_CANDIDATE_TERMINAL_STATUSES,
     V3_PUBLICATION_STATUSES,
     V3_RESEARCH_RUN_ACTIVE_STATUSES,
+    V3_RESEARCH_RUN_RESUMABLE_STATUSES,
     V3_RESEARCH_RUN_STATUSES,
     V3_RESEARCH_RUN_TERMINAL_STATUSES,
     V3ResearchStateMachine,
@@ -357,7 +359,7 @@ from mining.states import (
 from mining.storage import MiningStore
 from mining.storage_v2 import MiningV2Store
 from mining.storage_v3 import MiningV3Store
-from mining.storage_v3_runtime import MiningV3RuntimeStore
+from mining.storage_v3_runtime import MiningV3RuntimeStore, V3RunExecutionState
 from mining.search_orchestrator_v3 import MiningV3SearchOrchestrator
 from mining.storage_v2_trace_states import TURN_STATUSES
 from mining.migration_v1_v2 import migrate_v1_to_v2
@@ -485,6 +487,7 @@ __all__ = [
     "NeweyWestResult",
     "build_multiple_testing_report",
     "SEARCH_RUN_ACTIVE_STATUSES",
+    "SEARCH_RUN_RESUMABLE_STATUSES",
     "SEARCH_RUN_STATUSES",
     "SEARCH_RUN_TERMINAL_STATUSES",
     "SearchRunStateMachine",
@@ -504,6 +507,7 @@ __all__ = [
     "V3_CANDIDATE_TERMINAL_STATUSES",
     "V3_PUBLICATION_STATUSES",
     "V3_RESEARCH_RUN_ACTIVE_STATUSES",
+    "V3_RESEARCH_RUN_RESUMABLE_STATUSES",
     "V3_RESEARCH_RUN_STATUSES",
     "V3_RESEARCH_RUN_TERMINAL_STATUSES",
     "V3_REVIEW_SCHEMA_VERSION",
@@ -643,6 +647,7 @@ __all__ = [
     "MiningV2Store",
     "MiningV3Store",
     "MiningV3RuntimeStore",
+    "V3RunExecutionState",
     "MiningV3SearchOrchestrator",
     "MiningProgress",
     "MiningOrchestrator",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from mining.search_states import (
     SEARCH_RUN_ACTIVE_STATUSES,
+    SEARCH_RUN_RESUMABLE_STATUSES,
     SEARCH_RUN_STATUSES,
     SEARCH_RUN_TERMINAL_STATUSES,
     SearchRunStateMachine,
@@ -19,6 +20,7 @@ from mining.states import (
 
 V3_RESEARCH_RUN_STATUSES = SEARCH_RUN_STATUSES
 V3_RESEARCH_RUN_ACTIVE_STATUSES = SEARCH_RUN_ACTIVE_STATUSES
+V3_RESEARCH_RUN_RESUMABLE_STATUSES = SEARCH_RUN_RESUMABLE_STATUSES
 V3_RESEARCH_RUN_TERMINAL_STATUSES = SEARCH_RUN_TERMINAL_STATUSES
 V3_CANDIDATE_STATUSES = CANDIDATE_STATUSES
 V3_CANDIDATE_ACTIVE_STATUSES = CANDIDATE_ACTIVE_STATUSES
@@ -48,7 +50,7 @@ class V3ResearchStateMachine:
     def can_interrupt_run(status: str) -> bool:
         """判断 V3 研究运行能否中断。"""
 
-        return SearchRunStateMachine.can_interrupt(status)
+        return status in SEARCH_RUN_RESUMABLE_STATUSES
 
     @staticmethod
     def ensure_candidate(
@@ -78,6 +80,7 @@ __all__ = [
     "V3_CANDIDATE_TERMINAL_STATUSES",
     "V3_PUBLICATION_STATUSES",
     "V3_RESEARCH_RUN_ACTIVE_STATUSES",
+    "V3_RESEARCH_RUN_RESUMABLE_STATUSES",
     "V3_RESEARCH_RUN_STATUSES",
     "V3_RESEARCH_RUN_TERMINAL_STATUSES",
     "V3ResearchStateMachine",
