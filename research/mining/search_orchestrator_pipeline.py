@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from calculate import open_source
 from mining.contract_candidates import CandidateDefinition
 from mining.evaluation_contract import load_quality_policy
+from mining.errors import MiningStateError
 from mining.search_evaluation_adapter import (
     evaluate_final,
     evaluate_holdout,
@@ -339,18 +340,20 @@ class SearchPipelineMixin(SearchStabilityMixin, SearchStatisticsMixin):
 
     def _holdout(self, run: Mapping[str, Any], context: Any) -> None:
         trace = self.store.get_search_trace(run["run_id"])
-        finalists = [
-            item["candidate_id"]
-            for item in trace["candidates"]
-            if item["status"] == "evaluated"
-        ]
         events = {
             item["event_key"]: item
             for item in self.store.list_events(run["run_id"])
         }
         claim = events.get("holdout_claimed")
-        last_turn = trace["turns"][-1]
         if claim is None:
+            finalists = [
+                item["candidate_id"]
+                for item in trace["candidates"]
+                if item["status"] == "evaluated"
+            ]
+            if not finalists:
+                raise MiningStateError("测试段缺少可冻结的最终研究候选")
+            last_turn = trace["turns"][-1]
             self.store.record_trial(
                 trial_record(
                     run_id=run["run_id"],
@@ -371,36 +374,88 @@ class SearchPipelineMixin(SearchStabilityMixin, SearchStatisticsMixin):
                 payload={"candidate_ids": finalists},
             )
         else:
-            claimed = list(claim["payload"].get("candidate_ids", []))
-            if claimed != finalists:
-                raise RuntimeError("模块测试段已由不同候选批次领取")
+            finalists = list(claim["payload"].get("candidate_ids", []))
+            if not finalists or len(finalists) != len(set(finalists)):
+                raise MiningStateError("测试段冻结候选批次无效")
+
+        evidence_by_candidate: dict[str, dict[str, Any]] = {}
+        for row in self.store.list_evaluation_evidence(
+            run["run_id"],
+            stage="holdout",
+        ):
+            evidence = row["evidence"]
+            candidate_id = str(evidence["candidate_id"])
+            if candidate_id in evidence_by_candidate:
+                raise MiningStateError(
+                    f"候选 {candidate_id} 存在多个模块测试段证据"
+                )
+            evidence_by_candidate[candidate_id] = evidence
+        unexpected_evidence = set(evidence_by_candidate) - set(finalists)
+        if unexpected_evidence:
+            raise MiningStateError("模块测试段包含冻结批次外的候选证据")
 
         reviewed: list[str] = []
         for candidate_id in finalists:
             item = self.store.get_candidate(run["run_id"], candidate_id)
-            if item["status"] != "evaluated":
-                continue
-            self.store.transition_candidate(
-                run["run_id"],
-                candidate_id,
-                "holdout_running",
-            )
-            candidate = candidate_from_v2_record(item)
-            result = self._holdout_evaluator(
-                run_id=run["run_id"],
-                candidate=candidate,
-                context=context,
-                stage_root=self.store.candidate_dir(
+            status = item["status"]
+            if status == "evaluated":
+                self.store.transition_candidate(
                     run["run_id"],
                     candidate_id,
+                    "holdout_running",
                 )
-                / "holdout",
+                status = "holdout_running"
+            elif status not in {"holdout_running", "review_ready", "holdout_failed"}:
+                raise MiningStateError(
+                    f"候选 {candidate_id} 无法从 {status} 恢复模块测试段"
+                )
+
+            evidence = evidence_by_candidate.get(candidate_id)
+            target = (
+                "review_ready"
+                if evidence is not None and evidence["status"] == "passed"
+                else "holdout_failed"
             )
-            self.store.record_evaluation_evidence(
-                evaluation_evidence(result.report, stage="holdout")
-            )
+            if status == "review_ready" and target != "review_ready":
+                raise MiningStateError(
+                    f"候选 {candidate_id} 的测试段状态与证据不一致"
+                )
+            if status == "holdout_failed" and target != "holdout_failed":
+                raise MiningStateError(
+                    f"候选 {candidate_id} 的测试段状态与证据不一致"
+                )
+            if status in {"review_ready", "holdout_failed"}:
+                if evidence is None:
+                    raise MiningStateError(
+                        f"候选 {candidate_id} 缺少模块测试段证据"
+                    )
+                if status == "review_ready":
+                    reviewed.append(candidate_id)
+                continue
+
+            if evidence is None:
+                candidate = candidate_from_v2_record(item)
+                result = self._holdout_evaluator(
+                    run_id=run["run_id"],
+                    candidate=candidate,
+                    context=context,
+                    stage_root=self.store.candidate_dir(
+                        run["run_id"],
+                        candidate_id,
+                    )
+                    / "holdout",
+                )
+                evidence = evaluation_evidence(
+                    result.report,
+                    stage="holdout",
+                )
+                self.store.record_evaluation_evidence(evidence)
+                target = (
+                    "review_ready"
+                    if evidence.status == "passed"
+                    else "holdout_failed"
+                )
             source = self._candidate_source(trace, candidate_id)
-            target = "review_ready" if result.passed else "holdout_failed"
             self.store.transition_candidate(
                 run["run_id"],
                 candidate_id,
@@ -408,15 +463,15 @@ class SearchPipelineMixin(SearchStabilityMixin, SearchStatisticsMixin):
                 trial=trial_record(
                     run_id=run["run_id"],
                     trial_key=f"holdout-{candidate_id}",
-                    kind="evaluated" if result.passed else "rejected",
+                    kind="evaluated" if target == "review_ready" else "rejected",
                     turn_index=source["turn_index"],
                     hypothesis_id=source["hypothesis_id"],
                     batch_id=source["batch_id"],
                     candidate_id=candidate_id,
-                    reason_code=None if result.passed else "MINING-106",
+                    reason_code=None if target == "review_ready" else "MINING-106",
                 ),
             )
-            if result.passed:
+            if target == "review_ready":
                 reviewed.append(candidate_id)
         self.store.transition_search_run(
             run["run_id"],

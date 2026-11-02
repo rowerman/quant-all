@@ -103,6 +103,8 @@ def open_runtime(
 def search_orchestrator(
     runtime: MiningV3RuntimeStore,
     worker,
+    *,
+    holdout_evaluator=None,
 ) -> MiningV3SearchOrchestrator:
     """构造使用确定性搜索组件的 V3 编排器。"""
 
@@ -113,7 +115,7 @@ def search_orchestrator(
         development_evaluator=FakeDevelopmentEvaluator(),
         selection_evaluator=FakeSelectionEvaluator(),
         final_evaluator=SearchFakeFinalEvaluator(),
-        holdout_evaluator=SearchFakeHoldoutEvaluator(),
+        holdout_evaluator=holdout_evaluator or SearchFakeHoldoutEvaluator(),
         portfolio_selector=FakePortfolioSelector(),
         snapshot_check=lambda *_args, **_kwargs: None,
     )
@@ -124,6 +126,7 @@ def research_orchestrator(
     material_root: Path,
     *,
     interrupting: bool = False,
+    holdout_evaluator=None,
 ) -> MiningV3SearchOrchestrator:
     """构造资料驱动恢复测试使用的 V3 编排器。"""
 
@@ -139,7 +142,7 @@ def research_orchestrator(
         ),
         selection_evaluator=FakeEvaluator(),
         final_evaluator=FakeFinalEvaluator(),
-        holdout_evaluator=FakeHoldoutEvaluator(),
+        holdout_evaluator=holdout_evaluator or FakeHoldoutEvaluator(),
         portfolio_selector=FakePortfolio(),
         snapshot_check=lambda *_args, **_kwargs: None,
     )
