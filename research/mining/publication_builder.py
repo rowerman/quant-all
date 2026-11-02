@@ -114,28 +114,54 @@ def _write_year_files(
 
     family_root.mkdir(parents=True)
     combined = family_root / "_combined.parquet"
-    query = family_query(specs, spine_start=start, spine_end=end, db="src")
+    trusted_keys = family_root / "_keys.parquet"
+    query = family_query(
+        specs,
+        spine_start=start,
+        spine_end=end,
+        db="src",
+        include_row_id=True,
+    )
     escaped = str(combined).replace("'", "''")
     conn.execute(
         f"COPY ({query}) TO '{escaped}' "
+        "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 200000)"
+    )
+    keys_path = str(trusted_keys).replace("'", "''")
+    conn.execute(
+        "COPY ("
+        "SELECT row_number() OVER (ORDER BY stock_code, trade_date) AS row_id, "
+        "stock_code, trade_date FROM src.md.daily_hfq "
+        f"WHERE trade_date BETWEEN DATE '{start}' AND DATE '{end}'"
+        f") TO '{keys_path}' "
         "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 200000)"
     )
     years = [
         int(row[0])
         for row in conn.execute(
             "SELECT DISTINCT year(trade_date) FROM read_parquet(?) ORDER BY 1",
-            [str(combined)],
+            [str(trusted_keys)],
         ).fetchall()
     ]
+    factor_columns = ", ".join(
+        f"factor_values.{spec.name} AS {spec.name}" for spec in specs
+    )
     for year in years:
         target = family_root / f"year={year}" / "part.parquet"
         target.parent.mkdir()
         conn.execute(
-            f"COPY (SELECT * FROM read_parquet('{escaped}') "
-            f"WHERE year(trade_date)={year}) TO '{str(target).replace(chr(39), chr(39) * 2)}' "
+            f"COPY (SELECT keys.stock_code, keys.trade_date, {factor_columns} "
+            f"FROM (SELECT * FROM read_parquet('{keys_path}') "
+            f"WHERE year(trade_date)={year}) keys JOIN ("
+            f"SELECT row_id, {', '.join(spec.name for spec in specs)} "
+            f"FROM read_parquet('{escaped}') WHERE year(trade_date)={year}"
+            ") factor_values USING (row_id) "
+            "ORDER BY keys.trade_date, keys.stock_code) "
+            f"TO '{str(target).replace(chr(39), chr(39) * 2)}' "
             "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 200000)"
         )
     combined.unlink()
+    trusted_keys.unlink()
 
 
 def _coverage_rows(
@@ -261,7 +287,7 @@ def prepare_publication(
         sorted(previous_specs + new_specs, key=lambda spec: spec.name)
     )
     family_root = staging_root / MINED_FAMILY
-    conn = duckdb.connect()
+    conn = duckdb.connect(config={"threads": 1})
     try:
         conn.execute(f"ATTACH '{str(db_file).replace(chr(39), chr(39) * 2)}' AS src (READ_ONLY)")
         _write_year_files(

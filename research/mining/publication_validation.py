@@ -64,28 +64,33 @@ def validate_full_tree(
     )
     if key_count:
         raise PublicationValidationError(f"正式因子主键重复 {key_count} 组")
-    row_diff = int(
+    source_key_count = int(
         conn.execute(
-            f"""
-            SELECT count(*) FROM (
-                (SELECT stock_code, trade_date
-                 FROM read_parquet('{glob}', hive_partitioning=1)
-                 EXCEPT ALL
-                 SELECT stock_code, trade_date FROM src.md.daily_hfq
-                 WHERE trade_date BETWEEN ? AND ?)
-                UNION ALL
-                (SELECT stock_code, trade_date FROM src.md.daily_hfq
-                 WHERE trade_date BETWEEN ? AND ?
-                 EXCEPT ALL
-                 SELECT stock_code, trade_date
-                 FROM read_parquet('{glob}', hive_partitioning=1))
-            )
-            """,
-            [start, end, start, end],
+            "SELECT count(*) FROM ("
+            "SELECT stock_code, trade_date FROM src.md.daily_hfq "
+            "WHERE trade_date BETWEEN ? AND ? "
+            "GROUP BY 1, 2 HAVING count(*) > 1)",
+            [start, end],
         ).fetchone()[0]
     )
-    if row_diff:
-        raise PublicationValidationError(f"正式因子与行情键集差异 {row_diff} 行")
+    if source_key_count:
+        raise PublicationValidationError(
+            f"行情基准主键重复 {source_key_count} 组"
+        )
+    source_signature = conn.execute(
+        "SELECT count(*), bit_xor(hash(stock_code, trade_date))::VARCHAR "
+        "FROM src.md.daily_hfq WHERE trade_date BETWEEN ? AND ?",
+        [start, end],
+    ).fetchone()
+    output_signature = conn.execute(
+        "SELECT count(*), bit_xor(hash(stock_code, trade_date))::VARCHAR "
+        f"FROM read_parquet('{glob}', hive_partitioning=1)"
+    ).fetchone()
+    if tuple(source_signature) != tuple(output_signature):
+        raise PublicationValidationError(
+            "正式因子与行情键集差异："
+            f"行情 {tuple(source_signature)}，正式因子 {tuple(output_signature)}"
+        )
 
     descriptions = conn.execute(
         f"DESCRIBE SELECT * FROM read_parquet('{_quoted(files[0])}')"

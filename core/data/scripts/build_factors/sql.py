@@ -113,6 +113,7 @@ def family_query(
     spine_start: str,
     spine_end: str,
     db: str = DEFAULT_DB_ALIAS,
+    include_row_id: bool = False,
 ) -> str:
     """把一族的因子拼成一条查询。
 
@@ -121,6 +122,7 @@ def family_query(
         spine_start: 输出行集起始日（含）。
         spine_end: 输出行集截止日（含），也是因子计算的截止日。
         db: 主库在连接里的别名。
+        include_row_id: 为正式发布保留稳定行号，便于写盘后用可信行情键回填。
     """
     specs = list(specs)
     if not specs:
@@ -135,8 +137,13 @@ def family_query(
     )
     source_join = " ".join(join_clause(key) for key in source_keys)
 
+    row_id = (
+        ", row_number() OVER (ORDER BY stock_code, trade_date) AS row_id"
+        if include_row_id
+        else ""
+    )
     ctes = [
-        "spine AS (SELECT stock_code, trade_date FROM "
+        f"spine AS (SELECT stock_code, trade_date{row_id} FROM "
         f"{db}.md.daily_hfq WHERE trade_date BETWEEN {date_literal(spine_start)} "
         f"AND {date_literal(spine_end)})"
     ]
@@ -156,6 +163,8 @@ def family_query(
         finals.append((final, spec))
 
     columns = ["spine.stock_code", "spine.trade_date"]
+    if include_row_id:
+        columns.append("spine.row_id")
     columns.extend(f"{alias}.{spec.name}" for alias, spec in finals)
     joins = " ".join(f"LEFT JOIN {alias} USING (stock_code, trade_date)" for alias, _ in finals)
     return (

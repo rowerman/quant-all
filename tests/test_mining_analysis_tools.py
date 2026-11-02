@@ -50,7 +50,10 @@ from mining_worker.protocol_v3 import (
 
 
 def _fixture(tmp_path: Path):
-    store = MiningV2Store(tmp_path / "mining.duckdb", tmp_path / "data")
+    store = MiningV2Store(
+        tmp_path / "factor_mining.duckdb",
+        tmp_path / "data",
+    )
     context = FrozenSearchContext(
         data_fingerprint="a" * 64,
         field_catalog=(

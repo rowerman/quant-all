@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 import os
+import subprocess
+import sys
 
 import duckdb
 import pandas as pd
@@ -341,6 +343,26 @@ def test_published_mined_factor_is_atomic_and_readable(tmp_path: Path):
 
     if not DB_FILE.exists() or not FACTOR_DB_FILE.exists():
         pytest.skip("需要真实行情库和因子目录库")
+    if os.environ.get("MINING_PUBLICATION_CHILD") != "1":
+        env = dict(os.environ)
+        env["MINING_PUBLICATION_CHILD"] = "1"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                f"{Path(__file__).resolve()}::"
+                "test_published_mined_factor_is_atomic_and_readable",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return
     factor_dir = tmp_path / "factors"
     factor_dir.mkdir()
     catalog_file = tmp_path / "factors.duckdb"
