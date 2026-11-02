@@ -8,7 +8,8 @@ V2 证据驱动搜索、四段时序窗口、尝试台账、受控分析工具�
 P2-03 已支持带页内原文引用和证据状态的因子字段语义抽取，P2-04 已支持六字段筛查、
 模型辅助变量映射、受控 DSL 转换和跨报告语义去重，P2-05 已接入资料驱动运行、来源
 展示和 V2 审批发布闭环。P3-02 已支持在无初始假设时，根据冻结目录生成带机制类别、
-数据依赖、表达复杂度和随机种子的首轮研究方向；自由探索页面入口仍由后续任务实现。
+数据依赖、表达复杂度和随机种子的首轮研究方向；P3-03 已增加方向池、结构化语义去重、
+可恢复分支规划和冻结预算控制。自由探索页面入口仍由后续任务实现。
 
 V1 仍是默认生产链路。V2 通过 `MINING_SEARCH_V2_ENABLED=true` 启用，运行停在
 `review_ready` 后进入人工审核；候选批准、拒绝、整批正式发布和失败重试均已接入页面。
@@ -141,6 +142,7 @@ docker compose --env-file .env -f compose.mining.yaml down
   -> mining.search_orchestrator    逐轮搜索、选择、最终评估和测试段
   -> mining.free_exploration       自由探索首轮机制、字段和复杂度选择
   -> free_exploration_contracts    方向、种子和生成依据的稳定审计契约
+  -> free_exploration_pool         方向多样性、语义判重和可恢复分支规划
   -> mining.storage_v2             mining_v2 轨迹、尝试、证据和工具审计
   -> storage_v2_publication        V2 发布输入、批次和候选状态事务
   -> mining.search_publication_contracts

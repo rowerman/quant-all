@@ -3,6 +3,7 @@
 from mining.search_budget import SearchBudget, TrialCounts
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.free_exploration_contracts import (
+    DIRECTION_SEMANTIC_SCHEMA_VERSION,
     EXPLORATION_SEED_MAX,
     EXPLORATION_SEED_SOURCE_VALUES,
     EXPRESSION_COMPLEXITY_VALUES,
@@ -38,6 +39,7 @@ from mining.search_run import SearchRunRequest
 from mining.search_trials import TrialRecord
 
 __all__ = [
+    "DIRECTION_SEMANTIC_SCHEMA_VERSION",
     "EXPLORATION_SEED_MAX",
     "EXPLORATION_SEED_SOURCE_VALUES",
     "EXPRESSION_COMPLEXITY_VALUES",

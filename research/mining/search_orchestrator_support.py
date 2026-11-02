@@ -41,6 +41,7 @@ def next_hypothesis(
     expected_direction: str,
     falsification_criteria: tuple[str, ...],
     parent_hypothesis_id: str,
+    metadata: Mapping[str, Any] | None = None,
 ) -> HypothesisCard:
     """把 Worker 建议转换成主服务确认的下一假设卡。"""
 
@@ -53,7 +54,7 @@ def next_hypothesis(
         expected_direction=expected_direction,
         falsification_criteria=falsification_criteria,
         parent_hypothesis_id=parent_hypothesis_id,
-        metadata={"source": "worker"},
+        metadata=dict(metadata or {"source": "worker"}),
     )
 
 

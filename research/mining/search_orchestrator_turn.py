@@ -12,6 +12,7 @@ from mining.free_exploration import (
     generate_initial_direction,
 )
 from mining.free_exploration_contracts import ResearchDirection
+from mining.free_exploration_pool import plan_next_branch_direction
 from mining.search_cards import ExperimentBatch, HypothesisCard
 from mining.search_control import SearchControlState, decide_search_action
 from mining.search_evidence import EvidencePacket
@@ -386,25 +387,51 @@ class SearchTurnMixin:
                 )
                 return
 
-            if normalized.next_hypothesis is None:
-                raise MiningEvaluationError("控制器要求继续搜索但缺少下一假设")
             next_branch = current.branch_id
             if result.decision.action == "branch":
                 next_branch = f"branch-{branch_count + 1:04d}"
             turn_number = turn_index + 1
-            current = next_hypothesis(
-                run_id=run["run_id"],
-                turn_index=turn_number,
-                branch_id=next_branch,
-                statement=normalized.next_hypothesis.statement,
-                mechanism=normalized.next_hypothesis.mechanism,
-                expected_direction=normalized.next_hypothesis.expected_direction,
-                falsification_criteria=(
-                    normalized.next_hypothesis.falsification_criteria
-                ),
-                parent_hypothesis_id=current.hypothesis_id,
-            )
-            self.store.prepare_hypothesis(current)
+            request = self._run_request(run)
+            if (
+                result.decision.action == "branch"
+                and request.input_mode == FREE_EXPLORATION_INPUT_MODE
+            ):
+                current = self._prepare_free_branch_hypothesis(
+                    run=run,
+                    context=context,
+                    current=current,
+                    decision_turn=turn_index,
+                    next_turn=turn_number,
+                    next_branch=next_branch,
+                )
+            else:
+                if normalized.next_hypothesis is None:
+                    raise MiningEvaluationError("控制器要求继续搜索但缺少下一假设")
+                metadata = {"source": "worker"}
+                if request.input_mode == FREE_EXPLORATION_INPUT_MODE:
+                    direction = direction_from_hypothesis(current)
+                    if direction is not None:
+                        metadata = {
+                            "source": "free_exploration_refine",
+                            "direction_role": "refine",
+                            "research_direction": direction.to_dict(),
+                        }
+                current = next_hypothesis(
+                    run_id=run["run_id"],
+                    turn_index=turn_number,
+                    branch_id=next_branch,
+                    statement=normalized.next_hypothesis.statement,
+                    mechanism=normalized.next_hypothesis.mechanism,
+                    expected_direction=(
+                        normalized.next_hypothesis.expected_direction
+                    ),
+                    falsification_criteria=(
+                        normalized.next_hypothesis.falsification_criteria
+                    ),
+                    parent_hypothesis_id=current.hypothesis_id,
+                    metadata=metadata,
+                )
+                self.store.prepare_hypothesis(current)
             self.store.append_event(
                 run["run_id"],
                 event_key=f"turn_{turn_index}_next_hypothesis",
@@ -475,10 +502,178 @@ class SearchTurnMixin:
     ) -> HypothesisCard:
         turns = trace["turns"]
         if trace["hypotheses"]:
-            return HypothesisCard.from_dict(trace["hypotheses"][-1])
+            current = HypothesisCard.from_dict(trace["hypotheses"][-1])
+            decisions = trace["decisions"]
+            if decisions and decisions[-1]["action"] == "branch":
+                decision_turn = int(decisions[-1]["turn_index"])
+                next_turn = decision_turn + 1
+                request = self._run_request(run)
+                if request.input_mode == FREE_EXPLORATION_INPUT_MODE:
+                    next_hypothesis = next(
+                        (
+                            HypothesisCard.from_dict(item)
+                            for item in trace["hypotheses"]
+                            if int(item["turn_index"]) == next_turn
+                        ),
+                        None,
+                    )
+                    if next_hypothesis is not None:
+                        if direction_from_hypothesis(next_hypothesis) is None:
+                            return next_hypothesis
+                        parent = next(
+                            (
+                                HypothesisCard.from_dict(item)
+                                for item in trace["hypotheses"]
+                                if item["hypothesis_id"]
+                                == next_hypothesis.parent_hypothesis_id
+                            ),
+                            current,
+                        )
+                        return self._prepare_free_branch_hypothesis(
+                            run=run,
+                            context=context,
+                            current=parent,
+                            decision_turn=decision_turn,
+                            next_turn=next_turn,
+                            next_branch=next_hypothesis.branch_id,
+                        )
+                    branch_ids = {
+                        str(item["branch_id"])
+                        for item in trace["hypotheses"]
+                    }
+                    return self._prepare_free_branch_hypothesis(
+                        run=run,
+                        context=context,
+                        current=current,
+                        decision_turn=decision_turn,
+                        next_turn=next_turn,
+                        next_branch=f"branch-{len(branch_ids) + 1:04d}",
+                    )
+            return current
         if turns:
             raise MiningContractError("V2 turn 存在但缺少对应假设")
         return self._initial_search_hypothesis(run, context)
+
+    @staticmethod
+    def _run_request(run: Mapping[str, Any]) -> SearchRunRequest:
+        """从持久化运行恢复搜索请求。"""
+
+        return SearchRunRequest.from_dict(
+            {
+                "idempotency_key": run["idempotency_key"],
+                **run["request"],
+            }
+        )
+
+    def _prepare_free_branch_hypothesis(
+        self,
+        *,
+        run: Mapping[str, Any],
+        context: Any,
+        current: HypothesisCard,
+        decision_turn: int,
+        next_turn: int,
+        next_branch: str,
+    ) -> HypothesisCard:
+        """规划、记录并冻结一个自由探索分支方向。"""
+
+        request = self._run_request(run)
+        trace = self.store.get_search_trace(run["run_id"])
+        prior_hypotheses = [
+            item
+            for item in trace["hypotheses"]
+            if int(item["turn_index"]) < next_turn
+        ]
+        plan = plan_next_branch_direction(
+            request,
+            context,
+            prior_hypotheses,
+        )
+        existing = next(
+            (
+                HypothesisCard.from_dict(item)
+                for item in trace["hypotheses"]
+                if int(item["turn_index"]) == next_turn
+            ),
+            None,
+        )
+        if existing is not None:
+            existing_direction = direction_from_hypothesis(existing)
+            if (
+                existing.branch_id != next_branch
+                or existing_direction is None
+                or existing_direction.direction_hash
+                != plan.direction.direction_hash
+            ):
+                raise MiningContractError(
+                    "已保存的自由探索分支与重建计划不一致"
+                )
+        for duplicate in plan.duplicate_attempts:
+            semantic_hash = duplicate.direction.semantic_hash
+            self.store.record_trial(
+                trial_record(
+                    run_id=run["run_id"],
+                    trial_key=(
+                        f"direction-duplicate-{next_turn}-"
+                        f"{semantic_hash[:24]}"
+                    ),
+                    kind="duplicate",
+                    turn_index=decision_turn,
+                    hypothesis_id=current.hypothesis_id,
+                    batch_id=None,
+                    candidate_id=None,
+                    reason_code="semantic_duplicate",
+                    payload={
+                        "attempt_kind": "research_direction",
+                        "target_turn": next_turn,
+                        "semantic_hash": semantic_hash,
+                        "duplicate_of_direction_id": (
+                            duplicate.duplicate_of_direction_id
+                        ),
+                        "mechanism_category": (
+                            duplicate.direction.mechanism_category
+                        ),
+                    },
+                )
+            )
+        hypothesis = (
+            existing
+            if existing is not None
+            else direction_to_hypothesis(
+                plan.direction,
+                turn_index=next_turn,
+                branch_id=next_branch,
+                parent_hypothesis_id=current.hypothesis_id,
+                direction_role="branch",
+            )
+        )
+        self.store.prepare_hypothesis(hypothesis)
+        self.store.append_event(
+            run["run_id"],
+            event_key=f"turn_{decision_turn}_free_branch_direction_planned",
+            stage="searching",
+            event_type="free_exploration_direction_planned",
+            payload={
+                "direction": plan.direction.to_dict(),
+                "direction_hash": plan.direction.direction_hash,
+                "direction_id": plan.direction.direction_id,
+                "semantic_hash": plan.direction.semantic_hash,
+                "pool_hash": plan.pool_hash,
+                "plan_hash": plan.plan_hash,
+                "duplicate_attempts": [
+                    {
+                        "semantic_hash": item.direction.semantic_hash,
+                        "duplicate_of_direction_id": (
+                            item.duplicate_of_direction_id
+                        ),
+                    }
+                    for item in plan.duplicate_attempts
+                ],
+                "target_turn": next_turn,
+                "branch_id": next_branch,
+            },
+        )
+        return hypothesis
 
     def _initial_search_hypothesis(
         self,
@@ -487,12 +682,7 @@ class SearchTurnMixin:
     ) -> HypothesisCard:
         """返回手工假设或已冻结的自由探索首轮假设。"""
 
-        request = SearchRunRequest.from_dict(
-            {
-                "idempotency_key": run["idempotency_key"],
-                **run["request"],
-            }
-        )
+        request = self._run_request(run)
         if request.input_mode != FREE_EXPLORATION_INPUT_MODE:
             return initial_hypothesis(run)
         event = next(

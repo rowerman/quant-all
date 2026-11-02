@@ -16,6 +16,7 @@ from mining.search_contract_types import (
 )
 
 FREE_EXPLORATION_SCHEMA_VERSION = "mining_free_exploration_v1"
+DIRECTION_SEMANTIC_SCHEMA_VERSION = "mining_free_exploration_semantic_v1"
 EXPRESSION_COMPLEXITY_VALUES = ("simple", "intermediate", "compound")
 EXPRESSION_DEPTH_BY_COMPLEXITY = {
     "simple": 2,
@@ -184,6 +185,23 @@ class ResearchDirection:
             "profile_hash": self.profile_hash,
         }
 
+    def semantic_material(self) -> dict[str, Any]:
+        """返回用于判断研究方向语义重复的稳定输入。"""
+
+        return {
+            "schema_version": DIRECTION_SEMANTIC_SCHEMA_VERSION,
+            "mechanism_category": self.mechanism_category,
+            "data_dependencies": sorted(self.data_dependencies),
+            "expected_direction": self.expected_direction,
+            "expression_complexity": self.expression_complexity,
+        }
+
+    @property
+    def semantic_hash(self) -> str:
+        """返回忽略措辞、种子和展示哈希的方向语义哈希。"""
+
+        return sha256_json(self.semantic_material())
+
     @property
     def direction_hash(self) -> str:
         """返回方向内容哈希。"""
@@ -237,6 +255,7 @@ class ResearchDirection:
 
 
 __all__ = [
+    "DIRECTION_SEMANTIC_SCHEMA_VERSION",
     "EXPLORATION_SEED_MAX",
     "EXPLORATION_SEED_SOURCE_VALUES",
     "EXPRESSION_COMPLEXITY_VALUES",

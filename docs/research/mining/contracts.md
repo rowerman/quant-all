@@ -13,7 +13,7 @@
 | `EvidencePacket` | 开发期指标、失败、相关簇、尝试计数和预算状态 | `created_at` |
 | `SearchDecision` | `refine / branch / stop / promote`、理由和目标假设 | `created_at` |
 | `TrialRecord` | 提出、拒绝、重复、非法、门禁、评估和测试段尝试 | `occurred_at` |
-| `ResearchDirection` | 机制类别、字段依赖、复杂度、种子和生成依据 | 无时间字段 |
+| `ResearchDirection` | 机制类别、字段依赖、复杂度、种子、生成依据和语义哈希 | 无时间字段 |
 
 `SearchBudget` 冻结默认上限：6 个 turn、3 个假设分支、每分支 3 次修正、每 turn
 4 个候选、每运行 24 个候选、4 个完整评估、连续 2 turn 无改善停止、每 turn
@@ -30,6 +30,12 @@
 最多 12 条且每条最多 500 字符。`ExperimentBatch` 每批最多 4 个候选，参数对象最多
 16 KiB；`EvidencePacket` 的总规范化 JSON 不得超过 64 KiB；`TrialRecord` 的扩展
 载荷不得超过 16 KiB。所有对象由 `mining.search_contracts` 统一导出。
+
+自由探索方向另有一个结构化语义哈希，只覆盖机制类别、排序后的数据依赖、预期方向和
+表达复杂度。措辞、随机种子、运行信息及方向内容哈希不参与判重，因此同一冻结机制和
+字段组合不能通过改写假设文本重复进入分支。分支规划来自冻结方向池，规划结果保存池
+哈希、选中方向、跳过的重复方向及稳定计划哈希；重复方向写入 `duplicate` 尝试，
+不会创建新的假设、批次或候选。
 
 V2 上下文把时间拆为开发期、选择期、最终研究期和模块测试段，具体日期和角色可见性见
 [V2 搜索轨迹基础](search-v2.md)。实验批次和证据包只允许使用开发期，Agent 脱敏上下文

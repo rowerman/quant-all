@@ -192,6 +192,7 @@ from mining.orchestration_contracts import (
 from mining.orchestrator import MiningOrchestrator
 from mining.orchestration_support import build_frozen_context
 from mining.search_contracts import (
+    DIRECTION_SEMANTIC_SCHEMA_VERSION,
     EXPLORATION_SEED_MAX,
     EXPRESSION_COMPLEXITY_VALUES,
     FREE_EXPLORATION_SCHEMA_VERSION,
@@ -220,6 +221,13 @@ from mining.search_contracts import (
     TrialRecord,
     ensure_agent_visible,
     load_search_config,
+)
+from mining.free_exploration_pool import (
+    BranchDirectionPlan,
+    DuplicateDirectionAttempt,
+    FREE_EXPLORATION_POOL_SCHEMA_VERSION,
+    build_direction_pool,
+    plan_next_branch_direction,
 )
 from mining.search_evidence_builder import (
     DevelopmentCandidateEvidence,
@@ -353,7 +361,9 @@ __all__ = [
     "TURN_STATUSES",
     "EXPLORATION_SEED_MAX",
     "EXPRESSION_COMPLEXITY_VALUES",
+    "DIRECTION_SEMANTIC_SCHEMA_VERSION",
     "FREE_EXPLORATION_SCHEMA_VERSION",
+    "FREE_EXPLORATION_POOL_SCHEMA_VERSION",
     "AGENT_ROLE",
     "CONTROLLER_ROLE",
     "DEFAULT_SEARCH_WINDOWS",
@@ -365,6 +375,7 @@ __all__ = [
     "AnalysisToolGateway",
     "AnalysisToolRequest",
     "AnalysisToolResult",
+    "BranchDirectionPlan",
     "CatalogValidation",
     "CandidateEvaluationInput",
     "CandidateEvaluationResult",
@@ -377,6 +388,7 @@ __all__ = [
     "CatalogDriftError",
     "CandidateDefinition",
     "CompiledExpression",
+    "DuplicateDirectionAttempt",
     "EvaluationReport",
     "DevelopmentCandidateEvidence",
     "build_development_evidence",
@@ -480,6 +492,7 @@ __all__ = [
     "evaluate_full_candidate",
     "evaluate_holdout_candidate",
     "build_frozen_context",
+    "build_direction_pool",
     "build_research_material_manifest",
     "classify_research_material",
     "discover_research_material_paths",
@@ -492,6 +505,7 @@ __all__ = [
     "parse_research_material_target",
     "parse_research_materials",
     "prepare_research_run",
+    "plan_next_branch_direction",
     "redact_research_material_text",
     "research_pages_text_sha256",
     "resolve_research_file",
