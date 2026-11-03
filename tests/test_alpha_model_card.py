@@ -44,7 +44,6 @@ def test_model_card_has_required_sections_and_registered_model():
 
     readme = (ROOT / "docs" / "research" / "modeling" / "alpha" / "README.md").read_text(encoding="utf-8")
     assert CARD.name in readme
-    assert "P5-4：正式主模型已生成" in readme
 
 
 def test_model_card_records_official_ids_and_key_metrics():

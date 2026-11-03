@@ -13,6 +13,8 @@ lightgbm==4.7.0
 vectorbt==0.28.5
 tushare==1.4.29
 requests==2.34.2
+six==1.17.0
+plotly==5.24.1
 fastapi==0.141.1
 starlette==1.6.0
 uvicorn==0.53.0
