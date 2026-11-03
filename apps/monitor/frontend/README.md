@@ -13,6 +13,17 @@
 | mining_candidate | 候选公式、依赖、门禁、四阶段图表、审批和整批发布 | 图表复用 renderMetric；页面不能自行判定审批或发布资格 |
 | mining_api | 挖掘 JSON 请求、可续传 SSE 和状态文案 | 事件按 sequence 去重，断流不得触发取消 |
 
+## 视觉规范
+
+全站使用原生 CSS 实现 Stripe 浅色风格，不引入前端框架或外链资源。主色为
+`#635bff`，标题使用 `#0a2540`，页面背景使用带 40px 网格的 `#f6f9fc`。
+卡片使用白色表面、12px 圆角和多层阴影；按钮为胶囊形并提供内侧高光、悬浮上移和
+按下下沉；代码块使用深蓝背景。
+
+修改样式时须保留现有路由、表单 name、关键 ID/class 和图表容器，不能改变 SSE、
+图表数据或审批逻辑。所有动效使用 `ease-out`，并保留 `prefers-reduced-motion` 兜底；
+不要在卡片内再创建视觉卡片，也不要用颜色作为状态的唯一表达。
+
 回测相关页面新增 `#/backtest/new` 和 `#/backtest/compare?run_ids=...`；完整路由包括
 `#/factors`、`#/factor/MOM_20`、`#/compare`、`#/backtest`、`#/backtest/new`、
 `#/backtest/compare`、`#/backtest/{run_id}`。

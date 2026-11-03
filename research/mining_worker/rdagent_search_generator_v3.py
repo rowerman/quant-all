@@ -43,6 +43,18 @@ def _prompt(request: WorkerSearchTurnRequest) -> tuple[str, str]:
             '"candidates":[],"usage":{}}}。refine 或 branch 必须提供下一假设和至少'
             "一个受控 DSL 候选；不得输出 SQL、Python、路径或非开发期信息。"
         )
+    system += (
+        "最终 response 顶层只能包含 schema_version、decision、next_hypothesis、"
+        "candidates、usage；decision 对象只能包含 action 和 reason；"
+        "next_hypothesis 必须与 decision 同级，不得放入 decision；"
+        "next_hypothesis 只能包含 statement、mechanism、expected_direction、"
+        "falsification_criteria、parent_hypothesis_id；"
+        "expected_direction 只能是 positive、negative 或 non_monotonic；"
+        "falsification_criteria 必须是字符串数组。"
+        "candidate 只能包含 expression、mechanism、description、direction、steps；"
+        "direction 只能是 -1 或 1；steps 必须是字符串数组。"
+        "不得输出其他字段。"
+    )
     user = json.dumps(
         {
             "phase": request.phase,

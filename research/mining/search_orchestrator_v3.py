@@ -13,6 +13,7 @@ from mining.search_orchestrator_support import (
     trial_record,
 )
 from mining.search_run import SearchRunRequest
+from mining.search_worker_client_v3 import HttpSearchTurnWorkerClient
 from mining.storage_v3_runtime import MiningV3RuntimeStore
 
 
@@ -47,6 +48,15 @@ class MiningV3SearchOrchestrator(MiningSearchOrchestrator):
         if background and run["status"] == "queued":
             self._schedule(run["run_id"])
         return run
+
+    def _worker(self):
+        """返回 V3 搜索协议客户端，没有显式注入时按环境延迟创建。"""
+
+        if self._worker_client_value is None:
+            self._worker_client_value = (
+                HttpSearchTurnWorkerClient.from_environment()
+            )
+        return self._worker_client_value
 
     def _prepare_research_run(self, research_input: Any, context: Any) -> Any:
         """资料候选保持来源无关身份，来源由 V3 包络表达。"""

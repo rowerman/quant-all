@@ -29,6 +29,11 @@ async function route(){
   const version=++routeVersion;controller?.abort();controller=null;disposeCharts();disposeMining();
   const hash=location.hash||'#/factors';
   document.body.classList.toggle('mining-page',hash==='#/mining'||hash.startsWith('#/mining/'));
+  const activeRoute=hash.startsWith('#/mining')?'#/mining':hash.startsWith('#/backtest')?'#/backtest':hash==='#/compare'?'#/compare':'#/factors';
+  document.querySelectorAll('.site-header nav a').forEach(link=>{
+    if(link.getAttribute('href')===activeRoute)link.setAttribute('aria-current','page');
+    else link.removeAttribute('aria-current');
+  });
   window.scrollTo(0,0);
   try{
     if(hash==='#/mining'||hash.startsWith('#/mining/')){

@@ -218,6 +218,9 @@ def test_candidate_quick_evaluation_creates_only_quick_report():
         assert evaluation.quick is not None
         assert evaluation.quick.status == "passed"
         assert evaluation.quick.metrics["rows"] > 0
+        assert evaluation.quick.metrics["coverage"] == pytest.approx(
+            evaluation.technical.metrics["values"]["coverage"]
+        )
         assert evaluation.quick.metrics["elapsed_ms"] >= 0
         assert evaluation.technical.metrics["elapsed_ms"] >= 0
         assert evaluation.full is None

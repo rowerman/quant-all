@@ -11,6 +11,10 @@ bash tools/monitor/serve.sh
 缺接口依赖时按 `apps/monitor/backend/README.md` 安装。可用 MONITOR_PYTHON 指定解释器，
 MONITOR_PORT 修改端口；监听地址固定127.0.0.1，必须单worker运行。
 
+前端统一使用原生 HTML/JS、CSS 和本地 ECharts，不依赖 Node 构建或外部 CDN。视觉层采用
+Stripe 浅色规范：`#635bff` 主色、40px 网格背景、白色多层阴影卡片、胶囊按钮和深色
+代码块。样式改动必须保留现有路由、表单字段、关键选择器、图表数据和 SSE 行为。
+
 ```mermaid
 flowchart LR
   UI[frontend 展示] --> API[backend 接口与调度]

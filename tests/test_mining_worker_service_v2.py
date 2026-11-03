@@ -21,6 +21,7 @@ from mining_worker.protocol_v3 import (
     WorkerSearchTurnRequest,
     WorkerSearchTurnResponse,
 )
+from mining_worker.rdagent_search_generator_v3 import _prompt
 from mining_worker.service import create_app
 
 TOKEN = "v" * 48
@@ -268,6 +269,30 @@ def test_v3_job_returns_tool_batch_without_v1_or_v2_fallback(tmp_path: Path):
     assert payload["status"] == "succeeded"
     assert payload["result"]["kind"] == "tool_batch"
     assert payload["result"]["tool_calls"][0]["tool_name"] == "lookup_fields"
+
+
+def test_v3_prompt_keeps_hypothesis_outside_decision():
+    request = WorkerSearchTurnRequest(
+        request_id="search-round-1.tools",
+        phase="discover",
+        continuation_index=0,
+        base_request=_request(),
+        tool_catalog=(
+            {
+                "name": "lookup_fields",
+                "version": "1",
+                "description": "字段查询",
+                "required_arguments": ["query"],
+                "optional_arguments": ["limit"],
+                "maximum_result_bytes": 65536,
+            },
+        ),
+    )
+    system, _user = _prompt(request)
+    assert "decision 对象只能包含 action 和 reason" in system
+    assert "next_hypothesis 必须与 decision 同级" in system
+    assert "expected_direction 只能是 positive、negative 或 non_monotonic" in system
+    assert "direction 只能是 -1 或 1" in system
 
 
 def test_v4_code_job_returns_strict_qlib_proposal(tmp_path: Path):

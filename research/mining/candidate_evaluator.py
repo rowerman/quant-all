@@ -343,6 +343,7 @@ def evaluate_candidate(
         evaluation_input, materialized.factor_view, policy
     )
     quick_metrics["rows"] = technical.metrics["values"]["rows"]
+    quick_metrics["coverage"] = technical.metrics["values"]["coverage"]
     quick_payload = {"metrics": quick_metrics, "stage": "quick"}
     artifact_path, artifact_sha = write_evaluation_artifact(
         Path(evaluation_input.candidate_root) / "evaluations" / "quick.json",

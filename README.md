@@ -315,7 +315,11 @@ print(history.head())
 监测站同时提供因子评估、自动挖掘审核和回测页面：
 
 ```bash
+# V1 默认入口
 bash tools/monitor/serve.sh
+
+# V3 自动因子挖掘入口
+bash tools/monitor/serve_v3.sh
 ```
 
 打开 http://127.0.0.1:8800：
@@ -361,20 +365,34 @@ DeepSeek Key 只进入 Worker 容器，不传给监测站。
 
 ```bash
 cd /home/hanwen/quant
-export MINING_WORKER_URL=http://127.0.0.1:8790
-bash tools/monitor/serve.sh
+bash tools/monitor/serve_v3.sh
 ```
 
 打开 http://127.0.0.1:8800/#/mining，提交研究假设并等待候选进入人工审核。
+该脚本默认连接 `http://127.0.0.1:8790`；Worker 在其他地址时可显式覆盖：
+
+```bash
+MINING_WORKER_URL=http://127.0.0.1:8790 bash tools/monitor/serve_v3.sh
+```
+
+需要回退到 V1 时停止 V3 服务并运行 `bash tools/monitor/serve.sh`。不要删除已有的
+`data/databases/factor_mining.duckdb`，V3 运行和审计记录仍用于追溯。
 
 默认使用 V1 生产编排。需要启用在开发期、选择期、最终研究期和模块测试段之间隔离的
 证据驱动搜索时，可设置 `MINING_SEARCH_V2_ENABLED=true`。V2 在 `review_ready` 后
 可从页面审批、整批正式发布和重试失败批次；M5 代码研究沙箱默认关闭，只产生人工
 审核材料。
 
-需要统一手工假设、自由探索、资料驱动和 CoSTEER 人工提升时，可设置
-`MINING_SEARCH_V3_ENABLED=true`。V3 优先于 V2 的新建入口；已有 V1/V2 运行保持
-只读兼容，旧候选库仍须先执行显式 V3 迁移。
+`serve_v3.sh` 固定启用 V3 并关闭 V2 新运行入口，供手工假设、自由探索、资料驱动和
+CoSTEER 人工提升使用。候选库不存在时首次启动直接初始化 V3；已有 V1/V2 候选库时，
+先执行显式迁移：
+
+```bash
+.venv/bin/python -m mining.migrate_to_v3 \
+  --db data/databases/factor_mining.duckdb status
+.venv/bin/python -m mining.migrate_to_v3 \
+  --db data/databases/factor_mining.duckdb migrate
+```
 
 运行流程：
 

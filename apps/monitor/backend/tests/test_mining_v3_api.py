@@ -192,6 +192,27 @@ def _prepare_v3_review_candidate(
     return hypothesis, candidate
 
 
+def test_v3_service_defaults_to_tool_aware_search(tmp_path: Path):
+    contract = MiningV3Store(
+        tmp_path / "factor_mining.duckdb",
+        tmp_path / "v3",
+    )
+    runtime = MiningV3RuntimeStore(
+        tmp_path / "factor_mining.duckdb",
+        tmp_path / "v3",
+        contract_store=contract,
+    )
+    service = MiningV3WebService(
+        contract_store=contract,
+        runtime_store=runtime,
+        snapshot_check=lambda *_args, **_kwargs: None,
+    )
+    try:
+        assert service.orchestrator.analysis_tool_gateway is not None
+    finally:
+        service.close()
+
+
 def test_v3_api_options_create_list_and_monitoring(tmp_path: Path):
     service, _runtime, contract = _service(tmp_path)
     app = create_app(mining_service=service)

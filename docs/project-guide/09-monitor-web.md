@@ -75,11 +75,21 @@ flowchart LR
 ### 3.1 启动命令
 
 ```bash
+# V1 默认入口
 bash tools/monitor/serve.sh
+
+# V3 自动因子挖掘入口
+bash tools/monitor/serve_v3.sh
 ```
 
 [serve.sh](../../tools/monitor/serve.sh) 先切换仓库根目录，设置仓库根和
 `apps/monitor` 的导入路径，再执行预检，最后以 `--workers 1` 启动 Uvicorn。
+[serve_v3.sh](../../tools/monitor/serve_v3.sh) 设置 V3 开关、关闭 V2 新运行入口，
+并为 `MINING_WORKER_URL` 提供本地默认值后转交 `serve.sh`。
+
+候选库不存在时，V3 首次启动会直接创建 `mining_v3` schema。已有 V1/V2 候选库时，
+必须先执行 `mining.migrate_to_v3` 的 `status` 和 `migrate` 命令。回退到 V1 时使用
+`serve.sh`，不要删除候选库，否则会丢失 V3 运行、审批和审计记录。
 
 | 环境变量 | 默认值 | 作用 |
 |---|---|---|
@@ -629,6 +639,7 @@ logs/apps/monitor/<module_with_underscores>/
 | 工具 | 用途 | 副作用与边界 |
 |---|---|---|
 | [serve.sh](../../tools/monitor/serve.sh) | 生产式本地启动和预检 | 启动真实服务 |
+| [serve_v3.sh](../../tools/monitor/serve_v3.sh) | 以 V3 自动挖掘入口启动并转交预检 | 设置 V3/Worker 环境，启动真实服务 |
 | [benchmark.py](../../tools/monitor/benchmark.py) | 真实计算的耗时、RSS 和事件量 | 只打印结果，不写正式数据 |
 | [stress.py](../../tools/monitor/stress.py) | 双任务、取消和慢消费者验收 | 默认向 `AiRecord/benchmarks/V11` 追加证据 |
 | [browser_check.py](../../tools/monitor/browser_check.py) | 因子列表、详情、对比、取消和窄屏 | 需要 Playwright；对真实因子计算 |

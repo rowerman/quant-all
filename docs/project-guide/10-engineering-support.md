@@ -231,6 +231,8 @@ Worker：
 
 - `tools/monitor/serve.sh` 不自动 `source .env`。自动挖掘前必须在启动终端显式
   `export MINING_WORKER_URL=...`；Tushare 变量只在取数代码调用 `load_env_file()` 时加载。
+- `tools/monitor/serve_v3.sh` 固定启用 V3、关闭 V2 新运行入口，并把
+  `MINING_WORKER_URL` 默认设为 `http://127.0.0.1:8790`；显式设置的同名环境变量优先。
 - `docker compose --env-file .env` 用 `.env` 做 Compose 插值，但只有 Compose 文件中显式
   列出的变量会进入容器。Key 不会因此进入监测站进程。
 
@@ -259,6 +261,7 @@ Worker：
 | 模型 | `python -m scripts.build_alpha.predict` | 重放指定模型预测 |
 | 回测 | `python -m backtest` | 执行真实账本回测 |
 | 监测站 | `bash tools/monitor/serve.sh` | 预检并启动本地 Web |
+| 监测站 | `bash tools/monitor/serve_v3.sh` | 预检并启动 V3 自动挖掘入口 |
 | Worker | `docker compose ... up -d --build` | 构建并启动 RD-Agent Worker |
 
 `fetch_all` 和清洗入口不是标准 `argparse` 子命令，不能用统一的 `--help` 推断全部动作；
@@ -614,12 +617,13 @@ docker compose --env-file .env -f compose.mining.yaml down
 ### 9.3 启动监测站
 
 ```bash
-export MINING_WORKER_URL=http://127.0.0.1:8790
-bash tools/monitor/serve.sh
+bash tools/monitor/serve_v3.sh
 ```
 
-启动脚本先运行预检，再以单 Uvicorn worker 启动。不要依靠多个 Uvicorn worker 提升并发：
-原生计算锁、调度器和本地文件状态按单进程设计。
+V3 脚本默认连接 `http://127.0.0.1:8790`，固定关闭 V2 新运行入口。需要回退 V1 时改用
+`bash tools/monitor/serve.sh`，不要删除已有候选库。启动脚本先运行预检，再以单 Uvicorn
+worker 启动。不要依靠多个 Uvicorn worker 提升并发：原生计算锁、调度器和本地文件状态
+按单进程设计。
 
 ## 10. 运维与验收工具
 
@@ -631,6 +635,7 @@ bash tools/monitor/serve.sh
 | 工具 | 主要副作用 | 前置条件与边界 |
 |---|---|---|
 | `tools/monitor/serve.sh` | 启动服务并写日志 | 需要主库、因子目录库、前端资源；单 worker |
+| `tools/monitor/serve_v3.sh` | 启动 V3 服务并写日志 | 设置 V3/Worker 环境后转交 `serve.sh`；单 worker |
 | `backend.preflight` | 只读 | 检查依赖、核心文件和可评估因子 |
 | `browser_check.py` | 写截图 | 需要监测站和 Chromium；会执行短区间评估 |
 | `benchmark.py` | 只打印 JSON | 读取正式因子和主库，可能计算完整 IC |

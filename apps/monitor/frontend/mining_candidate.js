@@ -35,7 +35,7 @@ function renderStageSections(container, events) {
   }
   for (const [stage, payload] of entries) {
     const section = document.createElement('section');
-    section.className = 'card candidate-stage';
+    section.className = 'candidate-stage';
     section.innerHTML = `<h3>${esc(stageLabels[stage] || stage)}</h3>`;
     const metrics = payload.metrics || {};
     if (!Object.keys(metrics).length) {

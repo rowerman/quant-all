@@ -22,6 +22,7 @@ from common.paths import (
     PROJECT_ROOT,
     RESEARCH_MATERIALS_DIR,
 )
+from mining.analysis_tool_gateway import AnalysisToolGateway
 from mining.catalog import load_catalog
 from mining.contract_evidence import ApprovalDecision
 from mining.errors import (
@@ -130,6 +131,9 @@ class MiningV3WebService:
         self.runtime_store.contract_store = self.contract_store
         self.orchestrator = orchestrator or MiningV3SearchOrchestrator(
             store=self.runtime_store,
+            analysis_tool_gateway=AnalysisToolGateway(
+                store=self.runtime_store,
+            ),
             db_file=db_file,
             factor_dir=factor_dir,
             manifest_file=manifest_file,

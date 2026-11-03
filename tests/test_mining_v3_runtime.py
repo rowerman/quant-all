@@ -10,6 +10,7 @@ from mining.search_context import FrozenSearchContext
 from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_orchestrator_support import candidate_payload
 from mining.search_run import SearchRunRequest
+from mining.search_worker_client_v3 import HttpSearchTurnWorkerClient
 from mining.storage_v3 import MiningV3Store
 from mining.storage_v3_runtime import MiningV3RuntimeStore
 from mining.v3_sources import hypothesis_input_envelope
@@ -25,6 +26,21 @@ from tests.test_mining_search_orchestrator import (
     FakeSelectionEvaluator,
     SequenceWorker,
 )
+
+
+def test_v3_orchestrator_defaults_to_search_turn_worker(
+    tmp_path: Path,
+    monkeypatch,
+):
+    token_path = tmp_path / "worker-token"
+    token_path.write_text("a" * 64, encoding="utf-8")
+    monkeypatch.setenv("MINING_WORKER_URL", "http://127.0.0.1:8790")
+    monkeypatch.setenv("MINING_WORKER_TOKEN_FILE", str(token_path))
+    orchestrator = MiningV3SearchOrchestrator(store=object())
+    try:
+        assert isinstance(orchestrator._worker(), HttpSearchTurnWorkerClient)
+    finally:
+        orchestrator.close()
 
 
 def test_v3_runtime_uses_researchrun_and_syncs_contract_evidence(tmp_path: Path):
