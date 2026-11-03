@@ -82,7 +82,7 @@ class V2SearchControlMixin:
             with database_state_lock(self.db_path):
                 with self._connection() as conn:
                     with self._transaction(conn):
-                        run = self._require_run_conn(conn, run_id)
+                        self._require_run_conn(conn, run_id)
                         control = self._ensure_run_control_conn(conn, run_id)
                         previous = control["status"]
                         if previous == target:
@@ -158,7 +158,7 @@ class V2SearchControlMixin:
         with database_state_lock(self.db_path):
             with self._connection() as conn:
                 with self._transaction(conn):
-                    run = self._require_run_conn(conn, run_id)
+                    self._require_run_conn(conn, run_id)
                     control = self._ensure_run_control_conn(conn, run_id)
                     if control["status"] not in SEARCH_RUN_ACTIVE_STATUSES:
                         return {

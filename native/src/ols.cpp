@@ -148,7 +148,6 @@ void run_group(
 
     const double degrees = static_cast<double>(size - rank);
     const double sigma2 = output_residual.squaredNorm() / degrees;
-    const Eigen::Index rank_index = static_cast<Eigen::Index>(rank);
     Eigen::JacobiSVD<Eigen::MatrixXd> covariance_svd(
         reduced,
         Eigen::ComputeThinV

@@ -16,7 +16,7 @@ gbbq 辅助文件补齐配股与送转条款。所有原始产物分片落盘并
 | 接口覆盖差异 | `stk_limit` 服务端只有 2007-01-04 之后的数据（4805/6488 天）；其余三个接口 6488 天全覆盖 |
 
 全量拉取与清洗入库的具体命令、失败门槛、诊断脚本见 `docs/core/ops/v5_runbook.md`；
-指数相关数据的自查用 `tools/v5/audit_indexes.py`（检查日线空洞、停编指数、成分权重覆盖与归一命中率）。
+指数相关数据的自查用 `tools/data_audit/audit_indexes.py`（检查日线空洞、停编指数、成分权重覆盖与归一命中率）。
 
 ## 模块划分
 
@@ -104,7 +104,7 @@ Tushare 没有完整结构化字段，因此公司行动以 gbbq 类别 1 为主
 
 gbbq 固定到提交 `d16be984…`，文件 SHA-256 必须等于 `0ca271a5…`。Tushare 分红表
 用于补缺和交叉校验；两边都缺失时，只有总股本与复权因子同日按相同比例变化才用
-`source=share_count` 兜底。冲突和未解释跳变见 `tools/v5/audit_corporate_actions.py`。
+`source=share_count` 兜底。冲突和未解释跳变见 `tools/data_audit/audit_corporate_actions.py`。
 
 只补行业数据的命令：
 

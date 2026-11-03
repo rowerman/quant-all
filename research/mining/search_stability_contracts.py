@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from statistics import median
-from typing import Any, Mapping
+from typing import Any
 
 from mining.contract_candidates import CandidateDefinition
 from mining.contract_types import sha256_json

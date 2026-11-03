@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from typing import Any
 
 import duckdb
 
@@ -15,7 +15,6 @@ from mining.errors import (
     MiningStorageError,
 )
 from mining.research_run_contracts import (
-    RESEARCH_RUN_STATUSES,
     ResearchCandidateProvenance,
     ResearchRunInput,
     ResearchRunSummary,

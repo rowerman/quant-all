@@ -14,7 +14,10 @@ def _pins(path: Path) -> dict[str, str]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
+        if "==" not in line:
+            continue
         name, pinned = line.split("==", 1)
+        pinned = pinned.removesuffix("\\").strip()
         pins[name.lower()] = pinned
     return pins
 

@@ -276,8 +276,8 @@ def _discover_models(root: Path) -> list[tuple[Path, dict]]:
     return discovered
 
 
-def rebuild_registry(root: Path | None = None) -> dict:
-    """扫描全部模型，完整校验后原子重建模型索引。"""
+def rebuild_registry(root: Path | None = None, *, write: bool = True) -> dict:
+    """扫描全部模型并校验；默认原子重建索引，``write=False`` 时只预览。"""
 
     output_root = _registry_root(root)
     discovered = _discover_models(output_root)
@@ -315,11 +315,14 @@ def rebuild_registry(root: Path | None = None) -> dict:
         "run_link_count": int(run_link_count),
         "models": records,
     }
-    try:
-        write_json(output_root / REGISTRY_FILENAME, payload)
-    except OSError as error:
-        raise AlphaRegistryError(f"无法写入模型索引：{output_root}") from error
-    logger.info("模型索引重建完成：%d 个模型", len(records))
+    if write:
+        try:
+            write_json(output_root / REGISTRY_FILENAME, payload)
+        except OSError as error:
+            raise AlphaRegistryError(f"无法写入模型索引：{output_root}") from error
+        logger.info("模型索引重建完成：%d 个模型", len(records))
+    else:
+        logger.info("模型索引校验完成（未写入）：%d 个模型", len(records))
     return payload
 
 

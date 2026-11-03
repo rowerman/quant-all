@@ -2,7 +2,7 @@
 # V5 后段串联：清洗 -> 建库 -> 自检（取数与 extra 已完成时用这个）
 #
 # 用法：
-#   bash tools/v5/run_clean_build.sh
+#   bash tools/data_audit/run_clean_build.sh
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

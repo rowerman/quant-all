@@ -34,13 +34,12 @@
 - 让 Worker 读取行情库、候选库或正式因子目录。
 - 用模块测试段结果再次提示 Worker、重排候选或训练第二个模型。
 
-截至 2026-11-02，S2～S9 和 M1～M5 已交付。V135 复核了路线图 34 项，M1～M5
-均保持完成。V1 继续作为默认生产链路；V2 需设置 `MINING_SEARCH_V2_ENABLED=true`，
+V1 继续作为兼容入口；V2 需设置 `MINING_SEARCH_V2_ENABLED=true`，
 V3 需设置 `MINING_SEARCH_V3_ENABLED=true` 并优先于 V2 的新建入口，
 运行在 `review_ready` 后可从页面审批、整批发布和重试失败批次；M5 默认关闭，产物
 只能人工提升。资料驱动已支持文本型 PDF 解析、金融研报分类、逐文件失败隔离、字段抽取、
-受控 DSL 转换和来源展示；自由探索与 V3 四来源集成已完成。最终状态见
-[根目录进度记录](../../FACTOR_MINING_PROGRESS.md)。
+受控 DSL 转换和来源展示；自由探索与 V3 四来源集成已完成。当前入口见
+[自动因子挖掘模块说明](../research/mining/README.md)。
 
 当前冻结数据版本为 `tushare_fullA_20000104_20261015`。字段目录包含 95 个字段声明，
 其中 84 个允许进入表达式；另有 34 个冻结算子。目录 schema 为 `mining_catalog_v1`，

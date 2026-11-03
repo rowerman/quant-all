@@ -14,7 +14,7 @@ from mining.search_worker_client import (
     normalize_search_response,
 )
 from mining_worker.protocol import WorkerJobView, WorkerProtocolError
-from mining_worker.protocol_v2 import WorkerSearchRequest, WorkerSearchResponse
+from mining_worker.protocol_v2 import WorkerSearchRequest
 from mining_worker.protocol_v3 import (
     WorkerSearchTurnRequest,
     WorkerSearchTurnResponse,

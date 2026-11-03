@@ -14,7 +14,7 @@ import pandas as pd
 
 import factors
 from alpha.config import DEFAULT_CONTRACT, MODEL_DATA_DIR
-from alpha.errors import AlphaConfigError, AlphaDataError
+from alpha.errors import AlphaConfigError
 from backtest.chunked import run_chunked
 from backtest.providers import provider_metadata
 from backtest.snapshot import build_data_snapshot

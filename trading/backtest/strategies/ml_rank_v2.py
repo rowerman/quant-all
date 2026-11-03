@@ -10,7 +10,7 @@ import pandas as pd
 from alpha.errors import AlphaError
 from alpha.evaluation_plan import current_model_ids
 from alpha.portfolio import smooth_rank_scores
-from alpha.predict import load_predictions, model_artifact_snapshot
+from alpha.predict import load_predictions
 from backtest.data import MarketData
 from backtest.errors import DataAlignmentError, SpecError
 from backtest.providers import register_provider

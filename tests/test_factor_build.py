@@ -4,7 +4,6 @@
 """
 
 import duckdb
-import pandas as pd
 import pytest
 
 from scripts.build_factors import build as build_module

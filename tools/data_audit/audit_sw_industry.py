@@ -1,9 +1,9 @@
 """只读审计申万历史行业覆盖和分类版本切换。
 
 用法：
-    .venv/bin/python tools/v5/audit_sw_industry.py
-    .venv/bin/python tools/v5/audit_sw_industry.py --start 2016-01-01 --end 2026-10-15
-    .venv/bin/python tools/v5/audit_sw_industry.py --json
+    .venv/bin/python tools/data_audit/audit_sw_industry.py
+    .venv/bin/python tools/data_audit/audit_sw_industry.py --start 2016-01-01 --end 2026-10-15
+    .venv/bin/python tools/data_audit/audit_sw_industry.py --json
 
 2016~2026 的硬验收区间内，只要存在有行情但无有效行业的股票日，退出码就是 1。
 """

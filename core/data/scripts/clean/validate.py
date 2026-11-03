@@ -8,7 +8,7 @@ from __future__ import annotations
 import duckdb
 import pandas as pd
 
-from scripts.config import CLEAN_DIR, LIMIT_EPS, RET_TOLERANCE
+from scripts.config import CLEAN_DIR, RET_TOLERANCE
 from scripts.logging_conf import get_logger
 
 logger = get_logger("clean.validate")
@@ -151,7 +151,7 @@ def limit_checks(conn: duckdb.DuckDBPyConnection) -> dict:
         conn: DuckDB 连接。
     """
     over = conn.execute(
-        f"""
+        """
         SELECT count(*) FROM daily
         WHERE is_price_limit_applicable AND close IS NOT NULL
           AND (close > limit_up + 0.011 OR close < limit_down - 0.011)

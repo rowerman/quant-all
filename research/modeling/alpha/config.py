@@ -12,6 +12,7 @@ from common.paths import FACTOR_DB_FILE
 from common.paths import FACTOR_DIR
 from common.paths import LOGS_DIR
 from common.paths import MODEL_DATA_DIR
+from common.paths import CONFIG_DIR
 from common.paths import PROJECT_ROOT
 from alpha.errors import AlphaConfigError
 from alpha.errors import AlphaDataError
@@ -23,6 +24,7 @@ ACCEPTANCE_RUNS_DIR = RUNS_DIR / "acceptance"
 EVALUATION_RUNS_DIR = RUNS_DIR / "evaluation"
 FINAL_HOLDOUT_RUNS_DIR = RUNS_DIR / "final_holdout"
 LOG_DIR = LOGS_DIR / "research" / "modeling"
+ALPHA_CONFIG_DIR = CONFIG_DIR / "alpha"
 
 
 def _iso_date(value: str, name: str) -> str:

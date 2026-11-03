@@ -6,16 +6,34 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+_INSTALL_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = _SOURCE_ROOT if (_SOURCE_ROOT / "pyproject.toml").is_file() else Path.cwd()
 
-CONFIG_DIR = PROJECT_ROOT / "configs"
+
+def _data_dir() -> Path:
+    """解析数据根目录；相对路径以项目根目录为基准。"""
+
+    configured = os.environ.get("QUANT_DATA_DIR", "").strip()
+    if not configured:
+        return PROJECT_ROOT / "data"
+    target = Path(configured).expanduser()
+    return target if target.is_absolute() else PROJECT_ROOT / target
+
+
+CONFIG_DIR = (
+    PROJECT_ROOT / "configs"
+    if (PROJECT_ROOT / "configs").is_dir()
+    else _INSTALL_ROOT / "configs"
+)
 DOCS_DIR = PROJECT_ROOT / "docs"
 LOGS_DIR = PROJECT_ROOT / "logs"
 EVIDENCE_DIR = PROJECT_ROOT / "AiRecord" / "evidence"
 
-DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR = _data_dir()
 SOURCE_DIR = DATA_DIR / "source"
 TUSHARE_DIR = SOURCE_DIR / "tushare"
 CLEAN_DIR = DATA_DIR / "clean"

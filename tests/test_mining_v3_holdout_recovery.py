@@ -28,12 +28,7 @@ from tests.test_mining_research_run import (
     FakeSearchWorker,
 )
 from tests.test_mining_search_orchestrator import (
-    FakeDevelopmentEvaluator,
-    FakeFinalEvaluator as SearchFakeFinalEvaluator,
     FakeHoldoutEvaluator as SearchFakeHoldoutEvaluator,
-    FakeMaterializer as SearchFakeMaterializer,
-    FakePortfolioSelector,
-    FakeSelectionEvaluator,
     SequenceWorker,
 )
 

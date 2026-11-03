@@ -39,7 +39,6 @@ from mining.v3_contracts import (
     ResearchSourceReference,
 )
 from mining.v3_sources import (
-    costeer_candidate_source,
     costeer_input_envelope,
     evidence_reference_from_search,
     free_exploration_candidate_source,

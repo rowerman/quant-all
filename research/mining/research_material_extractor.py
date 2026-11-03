@@ -8,7 +8,7 @@ import json
 import time
 from typing import Protocol
 
-from mining.contract_types import sha256_json, text
+from mining.contract_types import text
 from mining.errors import (
     MiningContractError,
     ResearchExtractionContractError,

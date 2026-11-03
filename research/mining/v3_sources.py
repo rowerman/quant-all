@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
 
 from mining.contract_candidates import CandidateDefinition
 from mining.contract_types import identifier, sha256_json, stable_id

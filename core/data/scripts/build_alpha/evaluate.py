@@ -17,7 +17,7 @@ from alpha.ensemble import combine_rank_predictions
 from alpha.errors import AlphaArtifactError
 from alpha.evaluate import evaluate_score_frame, p2_decision
 from alpha.logging_conf import get_logger
-from alpha.predict import load_model_manifest, load_prediction_parts, load_predictions
+from alpha.predict import load_prediction_parts, load_predictions
 from scripts.build_alpha.baselines import BASELINE_IDS, scores_for_baseline
 from scripts.build_alpha.weekly_sim import simulate_score_frame, yearly_summary
 

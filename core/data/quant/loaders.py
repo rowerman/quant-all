@@ -10,7 +10,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from quant.db import DEFAULT_DB, get_conn
+from quant.db import get_conn
 from quant.schema import (
     ADJUST_MODES,
     DAILY_COLUMNS,

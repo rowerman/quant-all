@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 
 from alpha.errors import AlphaModelError
 from alpha.modeling.contracts import ModelBackend

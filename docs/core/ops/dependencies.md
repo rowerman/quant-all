@@ -2,8 +2,9 @@
 
 ## 文件
 
-- `requirements.txt`：项目直接运行、测试和 C++ 源码构建依赖，全部使用精确版本。
-- `requirements.lock`：当前虚拟环境的完整 `pip freeze`，包含所有传递依赖。
+- `requirements.txt`：项目运行时直接依赖，全部使用精确版本。
+- `requirements.lock`：由 `uv pip compile --generate-hashes` 生成的完整运行时锁。
+- `pyproject.toml`：测试和静态检查依赖位于 `dev` extra。
 
 两份文件都必须同步更新。只升级一个包时，先改直接依赖版本，再在干净环境中重建
 `requirements.lock`，不要手工删除锁文件里的传递依赖。
@@ -12,7 +13,8 @@
 
 ```bash
 cd /home/hanwen/quant
-.venv/bin/pip install -r requirements.lock
+.venv/bin/pip install --require-hashes -r requirements.lock
+.venv/bin/pip install -e ".[dev]"
 .venv/bin/pip check
 ```
 

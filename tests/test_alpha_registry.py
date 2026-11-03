@@ -501,7 +501,10 @@ def test_registry_cli_rebuilds_index(tmp_path: Path, capsys):
 def test_formal_models_are_registered_with_verified_artifacts():
     """四个模型可通过完整产物校验并登记。"""
 
-    payload = rebuild_registry(MODEL_DATA_DIR)
+    index_path = MODEL_DATA_DIR / "index.json"
+    before = index_path.stat().st_mtime_ns
+    payload = rebuild_registry(MODEL_DATA_DIR, write=False)
+    assert index_path.stat().st_mtime_ns == before
     by_id = {item["model_id"]: item for item in payload["models"]}
     expected_files = {
         "ridge_label_rank_aaff2cb2fbcf": 1,

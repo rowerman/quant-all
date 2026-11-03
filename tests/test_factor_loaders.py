@@ -1,6 +1,5 @@
 """因子读取接口的单元测试。"""
 
-import duckdb
 import pytest
 
 import quant

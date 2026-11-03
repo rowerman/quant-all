@@ -4,7 +4,6 @@ import pandas as pd
 import pytest
 
 from alpha.split import (
-    Fold,
     SplitConfig,
     build_folds,
     fold_masks,

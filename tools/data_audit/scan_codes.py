@@ -1,7 +1,7 @@
 """只读诊断：扫描原始分片与参考表里无法归一化的股票代码。
 
 用法：
-    .venv/bin/python tools/v5/scan_codes.py
+    .venv/bin/python tools/data_audit/scan_codes.py
 """
 
 import sys

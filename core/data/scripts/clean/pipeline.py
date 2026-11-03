@@ -16,7 +16,6 @@ import pandas as pd
 
 from scripts.clean import adjust, io, lifecycle, limits, manifest, sources, validate
 from scripts.config import CLEAN_DIR, DAILY_DIR, EARLIEST_START, ensure_dirs
-from scripts.errors import DataReadError
 from scripts.logging_conf import get_logger
 
 logger = get_logger("clean.pipeline")
@@ -82,8 +81,6 @@ def process_year(year: int, start: str, last: str, carry_close: dict[str, float]
     high = panel.arrays["high"]
     low = panel.arrays["low"]
     change = panel.arrays["change"]
-    factor = panel.arrays["factor"]
-    official_pre_close = panel.arrays["pre_close_tushare"]
 
     status = lifecycle.build_status(dates, reference, close)
     panel.put("status_code", status)

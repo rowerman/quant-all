@@ -1,7 +1,7 @@
 """只读诊断：查清 T 前缀历史遗留代码（如 T00018.SH / T600018.SH）的归属。
 
 用法：
-    .venv/bin/python tools/v5/probe_legacy_code.py
+    .venv/bin/python tools/data_audit/probe_legacy_code.py
 """
 
 from pathlib import Path

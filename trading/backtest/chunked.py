@@ -27,7 +27,6 @@ from backtest.config import (
 )
 from backtest.data import (
     MarketData,
-    PRICE_ADJUST,
     load_benchmark,
     load_writeoff_candidates,
     load_market_data,

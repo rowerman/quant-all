@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from scripts.build_alpha.backtest_accept import (
     acceptance_scope,

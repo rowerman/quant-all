@@ -16,13 +16,12 @@ from mining.contract_requests import FrozenContext
 from mining.contract_types import FULL_FACTOR_START, utc_now_iso
 from mining.errors import (
     PublicationConflictError,
-    PublicationValidationError,
 )
 from mining.expression_validation import validate_expression
 from mining.publication_commit import (
     StagedPublication,
-    commit_publication,
-    rollback_publication,
+    commit_publication as commit_publication,
+    rollback_publication as rollback_publication,
     tree_hash,
     write_json,
 )

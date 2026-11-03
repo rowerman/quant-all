@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import time
 from typing import Any, Callable
 
-import numpy as np
 import pandas as pd
 
 from scripts.clean import adjust, io, lifecycle, limits, pipeline, sources

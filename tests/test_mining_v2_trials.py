@@ -9,7 +9,6 @@ import pytest
 from mining.errors import (
     MiningDuplicateError,
     MiningStateError,
-    MiningStorageError,
 )
 from mining.search_budget import SearchBudget
 from mining.search_context import FrozenSearchContext

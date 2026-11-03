@@ -18,17 +18,15 @@
 from __future__ import annotations
 
 import sys
-import time
 
 import pandas as pd
 
-from scripts.config import EXTRA_DIR, ensure_dirs
+from scripts.config import ensure_dirs
 from scripts.errors import SourceError
 from scripts.logging_conf import get_logger
 from scripts.sources import tushare_src
 from scripts.sources import core_resources
 from scripts.sources import gbbq
-from scripts.sources.cache import write_frame
 
 logger = get_logger("sources.fetch_all")
 

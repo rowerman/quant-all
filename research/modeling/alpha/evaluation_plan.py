@@ -9,7 +9,7 @@ from typing import Mapping
 
 import numpy as np
 
-from alpha.config import PROJECT_ROOT
+from alpha.config import ALPHA_CONFIG_DIR
 from alpha.errors import AlphaEvaluationError
 from alpha.risk import RiskGatePolicy
 
@@ -17,7 +17,7 @@ EVALUATION_PLAN_SCHEMA_VERSION = "alpha_model_evaluation_plan_v3"
 V2_EVALUATION_PLAN_SCHEMA_VERSION = "alpha_model_evaluation_plan_v2"
 LEGACY_EVALUATION_PLAN_SCHEMA_VERSION = "alpha_model_evaluation_plan_v1"
 DEFAULT_CURRENT_PLAN = (
-    PROJECT_ROOT / "configs" / "alpha" / "final_holdout_2024_2026.json"
+    ALPHA_CONFIG_DIR / "final_holdout_2024_2026.json"
 )
 DEFAULT_SELECTION_METRICS = (
     "annual_return",

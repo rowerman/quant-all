@@ -139,13 +139,13 @@ PYTHONPATH=/tmp/monitor-browser-deps PLAYWRIGHT_BROWSERS_PATH=/tmp/monitor-brows
 
 ## 申万行业覆盖自检
 
-`tools/v5/audit_sw_industry.py` 只读 `data/databases/quant.duckdb`，按年份统计有行情但无有效行业、
+`tools/data_audit/audit_sw_industry.py` 只读 `data/databases/quant.duckdb`，按年份统计有行情但无有效行业、
 SW2014/SW2021 分段数、carry-forward 和上市日前向补全段数；2016~2026 已分类股票缺失不为 0 时
 退出码为 1，尚无任何申万记录的新股单独列为 unclassified：
 
 ```bash
-.venv/bin/python tools/v5/audit_sw_industry.py --start 2016-01-01 --end 2026-10-15
-.venv/bin/python tools/v5/audit_sw_industry.py --json
+.venv/bin/python tools/data_audit/audit_sw_industry.py --start 2016-01-01 --end 2026-10-15
+.venv/bin/python tools/data_audit/audit_sw_industry.py --json
 ```
 
-原始分片和空响应审计用 `tools/v5/audit_core_resources.py`。
+原始分片和空响应审计用 `tools/data_audit/audit_core_resources.py`。

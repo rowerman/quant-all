@@ -1,5 +1,5 @@
-# 回测、取数、计算与 Web 服务的直接依赖。
-# 完整传递依赖见 requirements.lock。
+# 回测、取数、计算与 Web 服务的运行时依赖。
+# 测试和静态检查依赖使用 `pip install -e ".[dev]"`。
 numpy==2.2.6
 pandas==2.3.3
 pyarrow==25.0.1
@@ -16,12 +16,3 @@ requests==2.34.2
 fastapi==0.141.1
 starlette==1.6.0
 uvicorn==0.53.0
-plotly==5.24.1
-httpx==0.28.1
-pytest==9.1.1
-
-# C++20 源码构建、wheel 和性能验证工具。
-scikit_build_core==1.1.1
-pybind11==3.1.0
-cmake==4.4.4
-ninja==1.13.2

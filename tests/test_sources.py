@@ -1,6 +1,5 @@
 """Tushare 落地数据解析的单元测试。"""
 
-import pandas as pd
 
 from scripts.clean import sources
 from scripts.sources import tushare_src

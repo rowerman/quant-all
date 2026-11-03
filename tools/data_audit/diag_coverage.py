@@ -1,7 +1,7 @@
 """只读诊断：各接口分片的交易日覆盖与起止日期。
 
 用法：
-    .venv/bin/python tools/v5/diag_coverage.py
+    .venv/bin/python tools/data_audit/diag_coverage.py
 """
 
 from pathlib import Path

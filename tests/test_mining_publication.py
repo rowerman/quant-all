@@ -352,6 +352,8 @@ def test_published_mined_factor_is_atomic_and_readable(tmp_path: Path):
                 "-m",
                 "pytest",
                 "-q",
+                    "-m",
+                    "",
                 f"{Path(__file__).resolve()}::"
                 "test_published_mined_factor_is_atomic_and_readable",
             ],

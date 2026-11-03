@@ -22,7 +22,6 @@ from tests.mining_v3_fixtures import (
     approved_v3_run,
     make_v3_candidate_review_ready,
     v3_candidate_envelope,
-    v3_context,
 )
 
 

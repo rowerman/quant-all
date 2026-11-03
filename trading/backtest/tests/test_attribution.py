@@ -1,6 +1,5 @@
 """成本、换手和行业暴露归因口径。"""
 
-import numpy as np
 import pandas as pd
 import pytest
 

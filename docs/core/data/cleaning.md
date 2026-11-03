@@ -86,7 +86,7 @@ C++ 替换，累计替换模块数保持 14。解析出的 Python 数据准备�
   这类日子 Tushare 的 `change` 与 `adj_factor` 本身就是两种口径，不是实现缺陷，
   逐条可在 `data/clean/anomalies.parquet` 里按 `stock_code + trade_date` 定位
   （异常表与 A2/A3/A4 校验使用同一比较口径，四类条数与校验值逐条相等，
-  可用 `tools/v5/audit_checks.py` 自查）。
+  可用 `tools/data_audit/audit_checks.py` 自查）。
 - **A4 / A6 / A7** 见 `data/clean/manifest.json`；**A5** 对应 `year_stats` 里的规则/官方涨停价一致率
   （2000~2006 无官方数据不参与比较；2007 年 98.09% 最低，2008 年 99.55%，
   2009~2025 年 99.73%~99.97%，2026 年（至 9-28）99.04%）。

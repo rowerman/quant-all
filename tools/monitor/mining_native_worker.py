@@ -27,7 +27,7 @@ from mining.catalog import load_catalog
 from mining.contract_requests import MiningConstraints
 from mining.evaluation_correlation import CandidateCorrelationCache
 from mining.evaluation_contract import load_quality_policy
-from mining.evaluation_gates import _sample_dates, _target_correlation
+from mining.evaluation_gates import _target_correlation
 from mining.expression_validation import validate_expression
 from tools.monitor.baseline_contract import (
     atomic_write_json,
@@ -313,12 +313,6 @@ def run_worker(
     target = resolve_factor("LN_MV", FACTOR_DIR)
     conn = open_source(DB_FILE)
     try:
-        dates = _sample_dates(
-            conn,
-            START,
-            END,
-            policy.correlation_sample_days,
-        )
         cache = CandidateCorrelationCache(FACTOR_DIR)
         correlation_runs = []
         correlation_result = None

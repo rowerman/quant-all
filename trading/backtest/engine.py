@@ -33,8 +33,6 @@ from backtest.allocation import (
     ALLOCATION_STAT_KEYS,
     cash_carry,
     cash_retry_filled,
-    execution_budget,
-    execution_cash,
     execution_price,
     extend_carry,
     opening_budget,

@@ -49,7 +49,7 @@ P2-2B 已按用户决定跳过，不猜测入账；若回测在事件退市日�
 
 ```bash
 .venv/bin/python -m scripts.build_db.corporate_actions
-.venv/bin/python tools/v5/audit_corporate_actions.py
+.venv/bin/python tools/data_audit/audit_corporate_actions.py
 ```
 
 首次使用先运行 `.venv/bin/python -m scripts.sources.fetch_all gbbq`。下载器固定提交和

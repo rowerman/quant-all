@@ -7,7 +7,7 @@ VectorBT 只适合处理普通买卖，无法表达 A 股现金分红、送转�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 

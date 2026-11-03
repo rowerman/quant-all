@@ -58,6 +58,8 @@ def test_public_packages_remain_importable(module_name):
     assert importlib.import_module(module_name)
 
 
+@pytest.mark.integration
+@pytest.mark.real_data
 def test_canonical_data_paths_exist():
     """公共路径入口指向迁移后的真实数据产物。"""
 

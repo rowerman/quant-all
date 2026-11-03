@@ -10,8 +10,6 @@ import pandas as pd
 from alpha.errors import AlphaError
 from alpha.evaluation_plan import current_model_ids
 from alpha.lifecycle import (
-    DEFAULT_FALLBACK_MODEL_ID,
-    DEFAULT_PRIMARY_MODEL_ID,
     load_model_lifecycle,
 )
 from alpha.portfolio import smooth_rank_scores

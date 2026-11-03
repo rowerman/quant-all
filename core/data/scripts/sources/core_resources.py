@@ -567,7 +567,6 @@ def sw_repair_candidates(
     )
     if stamps.empty:
         return []
-    stamp_values = stamps.to_numpy(dtype="datetime64[ns]")
     switch = pd.Timestamp(switch_date)
 
     basic = pd.read_parquet(TUSHARE_DIR / "stock_basic_all.parquet")

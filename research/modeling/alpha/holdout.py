@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from alpha.config import PROJECT_ROOT, RUNS_DIR
+from alpha.config import ALPHA_CONFIG_DIR, RUNS_DIR
 from alpha.errors import AlphaConfigError
 
 HOLDOUT_WINDOWS_SCHEMA_VERSION = "alpha_holdout_windows_v1"
 DEFAULT_HOLDOUT_WINDOWS_PATH = (
-    PROJECT_ROOT / "configs" / "alpha" / "holdout_windows.json"
+    ALPHA_CONFIG_DIR / "holdout_windows.json"
 )
 LEGACY_HOLDOUT_WINDOW_ID = "holdout_2024_2026"
 FUTURE_HOLDOUT_WINDOW_ID = "holdout_2026_2027"

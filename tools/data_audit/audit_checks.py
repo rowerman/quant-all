@@ -1,7 +1,7 @@
 """只读诊断：把 manifest 里非零的校验指标拆开看，判断是口径问题还是数据问题。
 
 用法：
-    .venv/bin/python tools/v5/audit_checks.py
+    .venv/bin/python tools/data_audit/audit_checks.py
 """
 
 import json

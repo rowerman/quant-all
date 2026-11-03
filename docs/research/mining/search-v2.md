@@ -9,8 +9,7 @@ V2 窗口、预算和角色配置位于 `configs/mining/search.json`。
 `approved/rejected` 状态由 `MiningV2Store` 保存；监测站候选页提供批准、拒绝和整批
 正式发布入口，失败批次可由页面重试。P0 已完成后，V2 发布因子可被现有因子读取、
 评估、模型特征和回测解析，运行与候选的恢复、并发和快照失效边界均有联合验收。
-V3 最终闭环见
-[根目录进度记录](../../../FACTOR_MINING_PROGRESS.md)。
+V3 最终闭环见[V3 统一研究闭环](v3-integration.md)。
 
 ## 分层窗口
 

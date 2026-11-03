@@ -9,7 +9,7 @@ from typing import Mapping, Sequence
 
 import pandas as pd
 
-from alpha.artifacts import MODEL_SCHEMA_VERSION_V2, write_json
+from alpha.artifacts import MODEL_SCHEMA_VERSION_V2
 from alpha.config import MODEL_DATA_DIR
 from alpha.modeling.contracts import TrainingSpec
 from alpha.split import Fold

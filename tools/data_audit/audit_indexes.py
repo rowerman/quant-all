@@ -1,7 +1,7 @@
 """指数相关数据的只读自检。
 
 用法：
-    .venv/bin/python tools/v5/audit_indexes.py
+    .venv/bin/python tools/data_audit/audit_indexes.py
 
 检查项：指数日线与交易日历的对齐情况、停编指数清单、成分权重的期数与归一命中率。
 """

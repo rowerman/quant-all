@@ -9,7 +9,6 @@ from __future__ import annotations
 import functools
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from quant.codes import normalize_code, normalize_codes as shared_normalize_codes

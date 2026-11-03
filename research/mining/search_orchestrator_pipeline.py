@@ -10,12 +10,6 @@ from calculate import open_source
 from mining.contract_candidates import CandidateDefinition
 from mining.evaluation_contract import load_quality_policy
 from mining.errors import MiningStateError
-from mining.search_evaluation_adapter import (
-    evaluate_final,
-    evaluate_holdout,
-    evaluate_selection,
-)
-from mining.search_portfolio import select_portfolio_finalists
 from mining.search_selection_diagnostics import (
     SELECTION_DIAGNOSTICS_STAGE,
     CandidateCorrelationReport,

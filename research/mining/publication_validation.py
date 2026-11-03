@@ -6,7 +6,6 @@ from pathlib import Path
 
 import duckdb
 
-from factors.published import MINED_FAMILY
 from factors.registry import FactorSpec
 from mining.errors import PublicationValidationError
 from scripts.build_factors.sql import family_query
@@ -156,7 +155,6 @@ def validate_no_lookahead(
     errors: dict[str, float] = {}
     for cutoff in selected:
         query = family_query(specs, spine_start=str(cutoff), spine_end=str(cutoff))
-        selected_columns = ", ".join(f"f.{spec.name}" for spec in specs)
         for spec in specs:
             row = conn.execute(
                 f"""

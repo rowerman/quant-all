@@ -13,7 +13,6 @@ from mining.search_control import SearchControlState, decide_search_action
 from mining.search_orchestrator_support import (
     batch_input_hash,
     candidate_payload,
-    merge_evidence,
     trial_record,
 )
 

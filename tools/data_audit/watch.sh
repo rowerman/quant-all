@@ -2,7 +2,7 @@
 # 只读看板：串联日志 + 最新模块日志
 #
 # 用法：
-#   bash tools/v5/watch.sh
+#   bash tools/data_audit/watch.sh
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

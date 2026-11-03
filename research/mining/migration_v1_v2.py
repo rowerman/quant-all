@@ -8,8 +8,8 @@ from typing import Any
 import duckdb
 
 from common.paths import MINING_DB_FILE
-from mining.contract_types import canonical_json, sha256_json, utc_now_iso
-from mining.errors import MiningMigrationError, MiningStorageError
+from mining.contract_types import sha256_json, utc_now_iso
+from mining.errors import MiningMigrationError
 from mining.logging_conf import format_event, get_mining_logger
 from mining.states import RUN_ACTIVE_STATUSES
 from mining.storage_lock import database_state_lock

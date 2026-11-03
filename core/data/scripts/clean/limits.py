@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 
 from scripts.config import LIMIT_EPS
-from scripts.errors import LimitRuleError
 from scripts.logging_conf import get_logger
 
 logger = get_logger("clean.limits")

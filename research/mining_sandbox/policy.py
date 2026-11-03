@@ -10,7 +10,7 @@ import re
 from typing import Any, Mapping
 
 from common.paths import MINING_SANDBOX_CONFIG_FILE, PROJECT_ROOT
-from mining.contract_types import canonical_json, sha256_json, text
+from mining.contract_types import sha256_json, text
 from mining.search_contract_types import bounded_integer, strict_fields
 from mining_sandbox.errors import SandboxPolicyError
 

@@ -100,7 +100,7 @@ class PlanRankProvider:
         ):
             raise DataAlignmentError("plan_rank 评估状态或 ID 不一致")
         plan = EvaluationPlan.from_dict(manifest.get("plan") or {})
-        candidate = plan.by_name(candidate_name)
+        plan.by_name(candidate_name)
         relative = f"scores/{candidate_name}.parquet"
         score_path = folder / relative
         declared = (manifest.get("files") or {}).get(relative)

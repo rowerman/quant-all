@@ -7,7 +7,6 @@ from pathlib import Path
 from threading import Lock, Thread, get_ident
 from typing import Any, Callable, Mapping, Sequence
 
-from calculate.correlation import available_factors
 from common.paths import (
     DB_FILE,
     FACTOR_DB_FILE,
@@ -15,11 +14,9 @@ from common.paths import (
     MINING_DATA_DIR,
 )
 from mining.contract_requests import FrozenContext
-from mining.contract_types import utc_now_iso
 from mining.errors import (
     MiningContractError,
     PublicationConflictError,
-    SnapshotStaleError,
 )
 from mining.logging_conf import format_event, get_mining_logger
 from mining.publication_builder import (
@@ -151,7 +148,7 @@ class MiningPublicationService:
             attempt=attempt,
             source_kind=inputs.source_kind,
         )
-        saved = self.store.start_publication_batch(batch)
+        self.store.start_publication_batch(batch)
         if background:
             thread = Thread(
                 target=self._execute,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import numpy as np
 import pandas as pd
 
 from alpha.artifacts import validate_dev_range
@@ -362,9 +361,6 @@ def evaluate_lifecycle(
         )
     )
 
-    observable_rank_ic = pd.to_numeric(
-        work["rolling_deployed_rank_ic"], errors="coerce"
-    ).shift(1)
     state = "normal"
     warning_run = 0
     alert_run = 0

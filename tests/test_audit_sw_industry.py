@@ -2,7 +2,7 @@
 
 import duckdb
 
-from tools.v5 import audit_sw_industry
+from tools.data_audit import audit_sw_industry
 
 
 def test_audit_reports_missing_and_carry_forward(tmp_path):

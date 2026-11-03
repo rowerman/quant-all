@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mining_worker.protocol import WorkerCandidateDraft, WorkerProtocolError
+from mining_worker.protocol import WorkerProtocolError
 from mining_worker.protocol_v2 import (
     WorkerDecisionProposal,
     WorkerSearchCandidate,

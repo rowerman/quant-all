@@ -7,7 +7,6 @@ from pathlib import Path
 
 from mining.contract_evidence import ApprovalDecision
 from mining.expression_validation import validate_expression
-from mining.research_run_contracts import ResearchRunInput
 from mining.search_context import FrozenSearchContext
 from mining.search_orchestrator_v3 import MiningV3SearchOrchestrator
 from mining.search_run import SearchRunRequest

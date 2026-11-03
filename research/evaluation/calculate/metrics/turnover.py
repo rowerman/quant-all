@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
 
 from calculate.binning import AUTOCORR_LAGS, bin_turnover, factor_autocorrelation
 from calculate.metrics.base import Metric, register_metric

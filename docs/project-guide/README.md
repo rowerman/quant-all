@@ -132,10 +132,8 @@ Tushare 分片
 | `data/databases/factor_mining.duckdb` | 挖掘运行、候选、事件和审批状态 |
 | `data/databases/backtest.duckdb` | 策略版本、运行、日结果、成交和持仓 |
 | `logs/` | 按业务域和模块分目录的结构化日志 |
-| `AiRecord/` | 计划、变更、差异、进度和证据；已纳入 Git 的记录随仓库提交 |
 
 `data/` 和 `logs/` 在 Git 忽略范围内，不能把其中的数据文件当成代码交付物。
-`AiRecord/` 的文档和证据用于项目追溯；新增文件是否需要跟踪以当前 Git 状态为准。
 
 ## 核心模块调用链
 

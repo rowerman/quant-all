@@ -23,7 +23,6 @@ from mining.free_exploration import (
 )
 from mining.research_extraction_contracts import (
     RESEARCH_EXTRACTION_PROMPT_VERSION,
-    RESEARCH_EXTRACTION_RULE_VERSION,
     ResearchExtractionCitation,
     ResearchFieldClaim,
 )

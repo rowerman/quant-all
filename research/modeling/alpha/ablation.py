@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping
 
-import numpy as np
 import pandas as pd
 
 from alpha.errors import AlphaModelError

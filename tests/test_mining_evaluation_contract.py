@@ -72,7 +72,6 @@ def test_candidate_materialization_rejects_formal_factor_directory():
     """候选根目录不能位于正式因子目录内。"""
 
     candidate = _candidate()
-    request = MiningRunRequest("evaluation-path-001", "测试候选目录隔离")
     with pytest.raises(MiningEvaluationError, match="正式因子目录"):
         materialize_candidate(
             candidate,

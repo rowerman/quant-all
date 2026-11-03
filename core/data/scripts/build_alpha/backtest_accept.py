@@ -12,7 +12,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from alpha.config import ACCEPTANCE_RUNS_DIR, DEFAULT_CONTRACT, MODEL_DATA_DIR
+from alpha.config import ACCEPTANCE_RUNS_DIR, DEFAULT_CONTRACT
 from alpha.errors import AlphaConfigError
 from alpha.evaluation_plan import load_current_plan
 from alpha.logging_conf import get_logger

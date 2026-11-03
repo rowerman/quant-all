@@ -25,7 +25,6 @@ from mining_worker.protocol_code import (
 from mining_worker.protocol import (
     WorkerGenerateRequest,
     WorkerGenerationResponse,
-    WorkerJobView,
     WorkerProtocolError,
 )
 from mining_worker.protocol_v2 import WorkerSearchRequest, WorkerSearchResponse

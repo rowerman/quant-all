@@ -1,7 +1,6 @@
 """严格 T+1 订单守卫。"""
 
 import pandas as pd
-import pytest
 
 from backtest.t1 import cap_sells_to_prior_holdings
 

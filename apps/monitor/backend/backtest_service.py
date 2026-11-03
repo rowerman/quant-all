@@ -18,7 +18,7 @@ from backtest import (
 )
 from backtest.config import CHUNK_CELL_BUDGET, MAX_CHUNKS, MAX_PANEL_CELLS, MAX_TRADE_DAYS
 from backtest.coverage import benchmark_coverages, default_run_end, market_coverage, validate_window
-from backtest.costs import CostSpec, cost_model_summary
+from backtest.costs import cost_model_summary
 from backtest.errors import BacktestError
 from backtest.pipeline import effective_spec
 from backtest.providers import (

@@ -5,11 +5,9 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 

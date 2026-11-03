@@ -272,7 +272,7 @@ def _fallback_candidates(
     """
 
     before = len(materialized)
-    for item, _validated, _computation in pending:
+    for item, _validated, _plan in pending:
         try:
             candidate = materialize_candidate(
                 item.candidate,

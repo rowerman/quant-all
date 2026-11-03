@@ -11,7 +11,6 @@ from typing import BinaryIO
 from pypdf import PdfReader
 from pypdf.errors import FileNotDecryptedError, PyPdfError
 
-from mining.contract_types import utc_now_iso
 from mining.errors import (
     ResearchMaterialContractError,
     ResearchMaterialParseError,

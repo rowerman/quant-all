@@ -49,7 +49,6 @@ from mining.search_contract_types import (
     FREE_EXPLORATION_INPUT_MODE,
     HYPOTHESIS_INPUT_MODE,
 )
-from mining.search_evaluation_evidence import SearchEvaluationEvidence
 from mining.search_orchestrator_v3 import MiningV3SearchOrchestrator
 from mining.search_run import SearchRunRequest
 from mining.snapshot import (
@@ -67,7 +66,7 @@ from mining.v3_sources import (
     validated_research_report_provenance,
 )
 from mining_worker.worker_config import load_worker_config
-from mining_sandbox.artifacts import list_manual_promotions, load_manual_promotion
+from mining_sandbox.artifacts import list_manual_promotions
 from mining_sandbox.policy import load_sandbox_policy
 
 _LOGGER = get_mining_logger("mining.v3.web")

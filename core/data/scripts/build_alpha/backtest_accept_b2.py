@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from alpha.artifacts import file_sha256
-from alpha.config import ACCEPTANCE_RUNS_DIR, DEFAULT_CONTRACT, MODEL_DATA_DIR
+from alpha.config import ACCEPTANCE_RUNS_DIR
 from alpha.errors import AlphaConfigError
 from alpha.logging_conf import get_logger
 from alpha.predict import load_predictions

@@ -7,7 +7,7 @@ import pytest
 
 from scripts.errors import SourceError
 from scripts.sources import core_resources as core
-from tools.v5 import audit_core_resources
+from tools.data_audit import audit_core_resources
 
 
 def test_quarter_periods_stop_at_cutoff():

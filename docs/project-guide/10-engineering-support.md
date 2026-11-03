@@ -32,16 +32,16 @@
 - 保证外部 Tushare、模型供应商或 Docker 镜像仓库随时可用。
 - 把所有实验产物变成 Git 内容；大数据库、日志和证据仍留在本地。
 
-以 2026-10-26 的当前工作区为例：
+以 2026-11-03 的当前工作区为例：
 
 | 项目 | 当前状态 |
 |---|---|
 | 主项目 Python | `3.12.3`，`pyproject.toml` 要求 `>=3.12` |
 | Worker Python | `3.11`，使用固定 digest 的 Debian slim 镜像 |
-| 主依赖 | `requirements.txt` 列出直接依赖，`requirements.lock` 锁定完整环境 |
+| 主依赖 | `requirements.txt` 列出运行时依赖，`requirements.lock` 带哈希锁定完整环境 |
 | Worker 依赖 | `research/mining_worker/requirements.lock` 带包哈希 |
-| pytest 收集 | 124 个测试文件，1,134 个用例 |
-| 测试根目录 | `tests` 593、评估 111、回测 351、监测后端 79 个用例 |
+| pytest 收集 | 1,800 余个用例；默认快速层约 500 个 |
+| 测试分层 | 单元、集成、真实数据、原生、Docker、端到端、慢测试 |
 | 本地数据 | `data/databases/quant.duckdb` 存在，`data/factors` 有 297 个族年文件 |
 | 当前环境检查 | `pip check` 无损坏依赖，Compose 配置可通过 `docker compose config` 解析 |
 
@@ -132,7 +132,8 @@ IC/RankIC、多周期衰减、增量 IC、风格暴露、OLS 和分位图/换手
 - [requirements.lock](../../requirements.lock) 是完整环境的精确版本快照。
 - [tests/test_dependencies.py](../../tests/test_dependencies.py) 校验直接依赖、锁文件和
   当前安装版本三者一致。
-- `requirements.lock` 当前不是带哈希的 `uv` 锁文件，因此固定的是版本，不是包文件内容。
+- `requirements.lock` 由 `uv pip compile --generate-hashes` 生成，安装时使用
+  `--require-hashes`。
 
 Worker：
 
@@ -299,17 +300,23 @@ Worker：
 | `trading/backtest/tests/` | 351 | 信号、订单、账本、成本、快照、提供者和存储 |
 | `apps/monitor/backend/tests/` | 79 | API、SSE、调度、取消、并发和错误映射 |
 
-当前没有自定义 pytest marker；按范围执行使用目录或 node ID，不用 `-m real` 等不存在的
-标签。收集全部用例：
+自定义 marker 和默认快速层定义在 `pyproject.toml` 与根 `conftest.py`。默认
+`pytest` 排除真实数据、原生扩展、Docker、浏览器、网络和付费测试。收集全部用例：
 
 ```bash
 .venv/bin/python -m pytest --collect-only -q
 ```
 
-全量运行：
+默认快速层：
 
 ```bash
 .venv/bin/python -m pytest -q
+```
+
+完整非付费测试：
+
+```bash
+make test-full
 ```
 
 项目规则是：全量测试大部分通过、只修改少数失败相关内容后，只复跑相关目录、文件或节点，

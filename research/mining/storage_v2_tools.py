@@ -13,7 +13,7 @@ from mining.errors import (
     MiningDuplicateError,
     MiningStorageError,
 )
-from mining.search_contract_types import bounded_integer, hash_text, strict_fields
+from mining.search_contract_types import bounded_integer, hash_text
 from mining.storage_lock import database_state_lock
 
 

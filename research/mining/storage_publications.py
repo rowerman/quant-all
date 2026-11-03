@@ -10,7 +10,6 @@ from mining.contracts import canonical_json
 from mining.errors import (
     ApprovalConflictError,
     MiningNotFoundError,
-    MiningStateError,
     PublicationConflictError,
 )
 from mining.logging_conf import format_event

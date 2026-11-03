@@ -13,7 +13,6 @@ from calculate import (
     EvalParams,
     build_panel,
     evaluate_context,
-    resolve_factor,
 )
 from calculate.config import DB_FILE
 from mining import CandidateEvaluationInput, FrozenContext, MiningRunRequest, evaluate_candidate, validate_expression

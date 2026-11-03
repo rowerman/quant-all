@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import time
 
 import calculate
-from calculate.config import DB_FILE, FACTOR_DIR
+from calculate.config import FACTOR_DIR
 from calculate.correlation import available_factors
 from calculate.errors import EvalParamError, EvalPanelError
 from calculate.metrics import resolve_options

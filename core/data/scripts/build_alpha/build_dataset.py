@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 
-from alpha.config import MODEL_DATA_DIR
 from alpha.dataset import DatasetSpec, build_dataset
 from alpha.logging_conf import get_logger
 

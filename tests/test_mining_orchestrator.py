@@ -498,11 +498,6 @@ def test_cancel_is_atomic_for_run_and_candidate(tmp_path: Path):
     orchestrator = MiningOrchestrator(store=store, worker=worker)
     from mining.worker_client import generate_worker_candidates
 
-    request = MiningRunRequest(
-        "orchestrator-test-0001",
-        "短期反转可能带来未来五日超额收益",
-        constraints=_constraints(),
-    )
     from mining.orchestration_support import (
         build_worker_request,
         context_from_run,

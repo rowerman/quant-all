@@ -1,7 +1,6 @@
 """HTTP/SSE协议测试与真实库轻量集成。"""
 
 import json
-from dataclasses import replace
 from threading import Event
 
 import pytest

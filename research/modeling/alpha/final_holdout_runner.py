@@ -8,7 +8,6 @@ from pathlib import Path
 import pandas as pd
 
 from alpha.artifacts import file_sha256
-from alpha.config import MODEL_DATA_DIR
 from alpha.errors import AlphaFinalHoldoutError
 from alpha.final_holdout_artifacts import (
     FINAL_HOLDOUT_ROOT,

@@ -12,11 +12,11 @@ from typing import Iterable
 import pandas as pd
 
 from alpha.artifacts import file_sha256
-from alpha.config import ACCEPTANCE_RUNS_DIR, DEFAULT_CONTRACT, MODEL_DATA_DIR
+from alpha.config import ACCEPTANCE_RUNS_DIR, DEFAULT_CONTRACT
 from alpha.errors import AlphaConfigError
 from alpha.evaluation_plan import current_model_ids
 from alpha.logging_conf import get_logger
-from alpha.predict import load_model_manifest, load_predictions
+from alpha.predict import load_predictions
 from backtest.chunked import run_chunked
 from backtest.providers import validate_strategy_provider
 from backtest.specs import (

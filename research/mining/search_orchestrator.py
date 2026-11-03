@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 from common.paths import DB_FILE, FACTOR_DIR
 from mining.analysis_tool_gateway import AnalysisToolGateway

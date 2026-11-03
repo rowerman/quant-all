@@ -20,7 +20,7 @@ from calculate.normalize import (
     winsorize_by_day,
     zscore_by_day,
 )
-from kernels import KernelBackendError, get_backend
+from kernels import KernelBackendError
 from kernels.backend import group_codes
 from kernels.native import CppKernelBackend
 

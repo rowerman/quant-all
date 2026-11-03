@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
-import numpy as np
 import pandas as pd
 
 from alpha.artifacts import file_sha256, prediction_sha256, write_json
@@ -25,7 +24,7 @@ from alpha.evaluate import (
 from alpha.evaluation_plan import EvaluationCandidate, EvaluationPlan
 from alpha.exposure import compute_portfolio_exposure
 from alpha.portfolio import HoldingPolicy, smooth_rank_scores
-from alpha.predict import load_model_manifest, load_predictions
+from alpha.predict import load_predictions
 from alpha.risk import RiskGatePolicy, evaluate_risk_gate
 from common.paths import PROJECT_ROOT
 from scripts.build_alpha.baselines import scores_for_baseline

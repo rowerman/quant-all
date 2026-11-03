@@ -12,7 +12,6 @@ from mining.contract_types import canonical_json, sha256_json
 from mining.errors import CandidateError, CatalogDriftError
 from mining.expression_ast import (
     BinaryNode,
-    CallNode,
     ExpressionNode,
     FieldNode,
     NumberNode,

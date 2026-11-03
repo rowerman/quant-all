@@ -337,7 +337,7 @@ def iter_run(
         if result is None:
             raise BacktestError("回测没有产出结果")
         store.finish_run(run_id, result)
-    except RunCancelled as error:
+    except RunCancelled:
         store.cancel_run(run_id)
         raise
     except BacktestError as error:
