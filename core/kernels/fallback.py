@@ -1,0 +1,353 @@
+"""统一批量核的 Python/NumPy 回退实现。"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from calculate.correlation import _daily_spearman
+from calculate.daily import _daily_pearson, rank_pct_by_day
+from calculate.exposure import _daily_regression
+from calculate.normalize import (
+    _winsorize_by_day_numpy,
+    _winsorize_zscore_by_day_numpy,
+    _zscore_by_day_numpy,
+)
+from kernels.backend import (
+    BinReturnsResult,
+    BinTurnoverResult,
+    DailyOlsResult,
+    FloatArray,
+    IntArray,
+    group_codes,
+    validate_minimum,
+    validate_codes,
+    validate_float_array,
+    validate_n_mad,
+    validate_offsets,
+    validate_target_index,
+)
+from kernels.errors import KernelArrayError
+from kernels.preprocess import winsorize_quantile, zscore_population
+
+
+class PythonKernelBackend:
+    """直接复用现有评估实现的可靠回退后端。"""
+
+    name = "python"
+
+    def daily_rank_pct(self, values: FloatArray, group_offsets: IntArray) -> FloatArray:
+        """按组计算平均名次分位；参数 values 与 group_offsets 已满足接口契约。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        return rank_pct_by_day(group_codes(offsets), array)
+
+    def daily_winsorize_mad(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """按组调用现有 MAD 去极值；参数 n_mad 为裁剪倍数。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        return _winsorize_by_day_numpy(
+            group_codes(offsets),
+            array,
+            n_mad=validate_n_mad(n_mad),
+        )
+
+    def daily_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """按组调用现有 pandas z-score；参数与统一协议一致。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        return _zscore_by_day_numpy(group_codes(offsets), array)
+
+    def daily_winsorize_zscore(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """按组调用现有 pandas 串联标准化；参数与统一协议一致。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        return _winsorize_zscore_by_day_numpy(
+            group_codes(offsets),
+            array,
+            n_mad=validate_n_mad(n_mad),
+        )
+
+    def daily_winsorize_zscore_columns(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        n_mad: float = 3.0,
+    ) -> FloatArray:
+        """逐列复用现有融合标准化实现；参数与统一协议一致。"""
+
+        matrix = validate_float_array(values, "values", ndim=2)
+        offsets = validate_offsets(group_offsets, matrix.shape[0])
+        multiplier = validate_n_mad(n_mad)
+        return np.column_stack([
+            self.daily_winsorize_zscore(
+                np.ascontiguousarray(matrix[:, column]),
+                offsets,
+                multiplier,
+            )
+            for column in range(matrix.shape[1])
+        ])
+
+    def daily_winsorize_quantile(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        lower_quantile: float = 0.01,
+        upper_quantile: float = 0.99,
+    ) -> FloatArray:
+        """按组调用 pandas 分位裁剪金标准。"""
+
+        from kernels.backend import validate_quantiles
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        lower, upper = validate_quantiles(lower_quantile, upper_quantile)
+        return winsorize_quantile(array, offsets, lower, upper)
+
+    def daily_zscore_population(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+    ) -> FloatArray:
+        """按组调用 pandas 总体标准差 z-score 金标准。"""
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        return zscore_population(array, offsets)
+
+    def daily_pearson(
+        self,
+        left: FloatArray,
+        right: FloatArray,
+        group_offsets: IntArray,
+        min_n: int = 5,
+    ) -> tuple[FloatArray, IntArray]:
+        """按组过滤非有限配对后计算 Pearson；参数为两列、边界和最小样本。"""
+
+        left_values = validate_float_array(left, "left", ndim=1)
+        right_values = validate_float_array(right, "right", ndim=1)
+        if left_values.shape != right_values.shape:
+            raise KernelArrayError("left 与 right 形状必须一致")
+        offsets = validate_offsets(group_offsets, left_values.size)
+        minimum = validate_minimum(min_n, name="min_n", minimum=2)
+        group_count = offsets.size - 1
+        codes = group_codes(offsets)
+        finite = np.isfinite(left_values) & np.isfinite(right_values)
+        finite_codes = codes[finite]
+        correlation = np.full(group_count, np.nan, dtype=np.float64)
+        count = np.bincount(finite_codes, minlength=group_count).astype(np.int64)
+        if finite_codes.size:
+            values, _ = _daily_pearson(
+                finite_codes,
+                left_values[finite],
+                right_values[finite],
+                minimum,
+            )
+            positions = np.unique(finite_codes)
+            correlation[positions] = values[positions]
+        return correlation, count
+
+    def pairwise_spearman(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        min_n: int = 5,
+        target_index: int | None = None,
+    ) -> tuple[FloatArray, IntArray]:
+        """按组调用现有 Spearman，并补齐有效配对数。"""
+
+        array = validate_float_array(values, "values", ndim=2)
+        offsets = validate_offsets(group_offsets, array.shape[0])
+        minimum = validate_minimum(min_n, name="min_n", minimum=5)
+        target = validate_target_index(target_index, array.shape[1])
+        group_count = offsets.size - 1
+        columns = array.shape[1]
+        correlation = np.full(
+            (group_count, columns, columns),
+            np.nan,
+            dtype=np.float64,
+        )
+        count = np.zeros((group_count, columns, columns), dtype=np.int64)
+        for group in range(group_count):
+            start, end = int(offsets[group]), int(offsets[group + 1])
+            finite = np.isfinite(array[start:end])
+            group_count_values = finite.T.astype(np.int64) @ finite.astype(np.int64)
+            if target is None:
+                count[group] = group_count_values
+            else:
+                count[group, target] = group_count_values[target]
+                count[group, :, target] = group_count_values[:, target]
+            if end > start:
+                matrix = _daily_spearman(
+                    np.ascontiguousarray(array[start:end]),
+                    target_index=target,
+                )
+                if minimum > 5:
+                    count_mask = count[group] if target is None else count[group, target]
+                    if target is None:
+                        matrix[count_mask < minimum] = np.nan
+                    else:
+                        invalid = count_mask < minimum
+                        matrix[target, invalid] = np.nan
+                        matrix[invalid, target] = np.nan
+                correlation[group] = matrix
+        return correlation, count
+
+    def daily_ols(
+        self,
+        design: FloatArray,
+        response: FloatArray,
+        group_offsets: IntArray,
+        min_rows: int = 30,
+    ) -> DailyOlsResult:
+        """按组调用现有截面 OLS；参数为设计矩阵、响应、边界和最少行数。"""
+
+        design_values = validate_float_array(design, "design", ndim=2)
+        response_values = validate_float_array(response, "response", ndim=1)
+        if design_values.shape[0] != response_values.size:
+            raise KernelArrayError("design 行数必须与 response 长度一致")
+        offsets = validate_offsets(group_offsets, response_values.size)
+        minimum = validate_minimum(min_rows, name="min_rows", minimum=1)
+        codes = group_codes(offsets)
+        result = _daily_regression(
+            codes,
+            offsets.size - 1,
+            design_values,
+            response_values,
+            np.arange(response_values.size, dtype=np.int64),
+            min_rows=minimum,
+        )
+        return {
+            "days": np.asarray(result["days"], dtype=np.int64),
+            "coefficients": np.asarray(result["coefficients"], dtype=np.float64),
+            "t_stats": np.asarray(result["t_stats"], dtype=np.float64),
+            "r2": np.asarray(result["r2"], dtype=np.float64),
+            "rows": np.asarray(result["rows"], dtype=np.int64),
+            "residual_rows": np.asarray(
+                result["residual_rows"],
+                dtype=np.int64,
+            ),
+            "residual_values": np.asarray(
+                result["residual_values"],
+                dtype=np.float64,
+            ),
+            "skipped": int(result["skipped"]),
+            "skip_insufficient_rows": int(
+                result["skip_insufficient_rows"]
+            ),
+            "skip_invalid_response": int(
+                result["skip_invalid_response"]
+            ),
+            "skip_rank_deficient": int(
+                result["skip_rank_deficient"]
+            ),
+            "active": np.asarray(result["active"], dtype=np.bool_),
+        }
+
+    def daily_quantile_bins(
+        self,
+        values: FloatArray,
+        group_offsets: IntArray,
+        quantiles: int,
+    ) -> IntArray:
+        """按组调用 pandas 平均名次分位组金标准。"""
+
+        from calculate.binning import _quantile_bins_from_arrays
+
+        array = validate_float_array(values, "values", ndim=1)
+        offsets = validate_offsets(group_offsets, array.size)
+        count = validate_minimum(quantiles, name="quantiles", minimum=2)
+        return _quantile_bins_from_arrays(
+            group_codes(offsets),
+            array,
+            count,
+        )
+
+    def bin_returns_multi(
+        self,
+        values: FloatArray,
+        day_codes: IntArray,
+        bin_codes: IntArray,
+        weights: FloatArray,
+        day_count: int,
+        bin_count: int,
+    ) -> BinReturnsResult:
+        """用现有 NumPy bincount 语义计算多标签分位收益。"""
+
+        from calculate.binning import _bin_returns_multi_arrays
+
+        matrix = validate_float_array(values, "values", ndim=2)
+        days = validate_minimum(day_count, name="day_count", minimum=1)
+        bins = validate_minimum(bin_count, name="bin_count", minimum=1)
+        day_values = validate_codes(
+            day_codes,
+            "day_codes",
+            length=matrix.shape[0],
+            maximum=days,
+        )
+        bin_values = validate_codes(
+            bin_codes,
+            "bin_codes",
+            length=matrix.shape[0],
+            maximum=bins,
+        )
+        weight_values = validate_float_array(weights, "weights", ndim=1)
+        if weight_values.size != matrix.shape[0]:
+            raise KernelArrayError("weights 长度必须与 values 行数一致")
+        returns, pools = _bin_returns_multi_arrays(
+            matrix,
+            day_values,
+            bin_values,
+            weight_values,
+            days,
+            bins,
+        )
+        return {"returns": returns, "pools": pools}
+
+    def bin_turnover(
+        self,
+        values: FloatArray,
+        quantiles: int,
+    ) -> BinTurnoverResult:
+        """用现有 NumPy 语义计算全池与各分位换手。"""
+
+        from calculate.binning import _bin_turnover_arrays
+
+        matrix = validate_float_array(values, "values", ndim=2)
+        count = validate_minimum(quantiles, name="quantiles", minimum=1)
+        per_bin, overall = _bin_turnover_arrays(matrix, count)
+        return {"per_bin": per_bin, "overall": overall}
+
+    def daily_row_spearman(
+        self,
+        left: FloatArray,
+        right: FloatArray,
+        min_n: int = 5,
+    ) -> tuple[FloatArray, IntArray]:
+        """用现有 pandas 逐行排名语义计算 Spearman。"""
+
+        from calculate.binning import _row_spearman_arrays
+
+        left_values = validate_float_array(left, "left", ndim=2)
+        right_values = validate_float_array(right, "right", ndim=2)
+        if left_values.shape != right_values.shape:
+            raise KernelArrayError("left 与 right 形状必须一致")
+        minimum = validate_minimum(min_n, name="min_n", minimum=2)
+        return _row_spearman_arrays(left_values, right_values, minimum)

@@ -1,0 +1,120 @@
+[build-system]
+requires = [
+  "scikit-build-core[setuptools]==1.1.1",
+  "pybind11==3.1.0",
+  "cmake==4.4.4",
+  "ninja==1.13.2",
+]
+build-backend = "scikit_build_core.setuptools.build_meta"
+
+[project]
+name = "ashare-quant-research"
+version = "1.0.0"
+description = "A 股数据、因子、模型、评估、回测与监测综合项目"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+keywords = ["quantitative-finance", "a-share", "factor-research", "backtesting"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Financial :: Investment",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+[project.urls]
+Homepage = "https://github.com/rowerman/quant-all"
+Documentation = "https://github.com/rowerman/quant-all/tree/main/docs"
+Issues = "https://github.com/rowerman/quant-all/issues"
+
+[project.optional-dependencies]
+dev = [
+  "Flask==3.1.3",
+  "httpx==0.28.1",
+  "pytest==9.1.1",
+  "ruff==0.17.3",
+]
+
+[tool.setuptools]
+packages = [
+  "common",
+  "quant",
+  "factors",
+  "kernels",
+  "scripts",
+  "scripts.build_alpha",
+  "scripts.build_db",
+  "scripts.build_factors",
+  "scripts.clean",
+  "scripts.sources",
+  "alpha",
+  "alpha.modeling",
+  "alpha.modeling.backends",
+  "calculate",
+  "calculate.metrics",
+  "backtest",
+  "backtest.strategies",
+  "backend",
+  "mining",
+  "mining_sandbox",
+  "mining_worker",
+  "frontend",
+  "frontend.vendor",
+  "configs",
+  "configs.alpha",
+  "configs.mining",
+]
+package-dir = {common = "core/common", quant = "core/data/quant", scripts = "core/data/scripts", factors = "core/factors", kernels = "core/kernels", alpha = "research/modeling/alpha", calculate = "research/evaluation/calculate", backtest = "trading/backtest", backend = "apps/monitor/backend", mining = "research/mining", mining_sandbox = "research/mining_sandbox", mining_worker = "research/mining_worker", frontend = "apps/monitor/frontend"}
+
+[tool.setuptools.package-data]
+frontend = ["*.html", "*.js", "*.css", "vendor/*.js"]
+configs = ["alpha/*.json", "mining/*.json"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.scikit-build]
+minimum-version = "1.1"
+cmake.source-dir = "native"
+editable.mode = "inplace"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["build", "native/third_party"]
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
+"core/data/scripts/config.py" = ["F401"]
+"research/evaluation/calculate/config.py" = ["F401"]
+"research/modeling/alpha/config.py" = ["F401"]
+"trading/backtest/config.py" = ["F401"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers -m 'not integration and not e2e and not real_data and not native and not docker and not browser and not network and not paid and not slow'"
+testpaths = [
+  "tests",
+  "research/evaluation/calculate/tests",
+  "trading/backtest/tests",
+  "apps/monitor/backend/tests",
+]
+markers = [
+  "integration: requires real data, native build, Docker, or cross-module resources",
+  "e2e: full browser, service, or worker flow",
+  "real_data: requires a real local market or factor database",
+  "native: requires the compiled quant_native extension",
+  "docker: requires a running Docker daemon or image",
+  "browser: requires Playwright or a browser runtime",
+  "network: calls an external network service",
+  "paid: may call a paid model or data API",
+  "slow: takes several seconds or longer and is not part of the fast unit tier",
+]
+

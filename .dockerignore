@@ -1,0 +1,13 @@
+*
+!research/
+!research/mining_worker/
+!research/mining_worker/**
+!research/mining_sandbox/
+!research/mining_sandbox/**
+!core/
+!core/common/
+!core/common/__init__.py
+!core/common/logging_conf.py
+!configs/
+!configs/mining/
+!configs/mining/worker.json

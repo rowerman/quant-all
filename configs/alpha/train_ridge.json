@@ -1,0 +1,20 @@
+{
+  "backend": "linear",
+  "model_type": "ridge",
+  "config": {
+    "model_type": "ridge",
+    "alpha_grid": [0.1, 1, 10, 100],
+    "l1_ratio": 0.1,
+    "seed": 0
+  },
+  "target": "label_rank",
+  "top_n": 30,
+  "quantiles": 10,
+  "preprocess": {
+    "method": "rank",
+    "missing_indicator": true,
+    "winsorize": false,
+    "neutralize": [],
+    "clip_z": 5.0
+  }
+}

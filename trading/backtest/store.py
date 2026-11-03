@@ -1,0 +1,717 @@
+"""策略版本和回测结果的 DuckDB 持久化。"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from dataclasses import replace
+import fcntl
+import json
+from pathlib import Path
+import uuid
+
+import duckdb
+import pandas as pd
+
+from backtest.builtin import BUILTINS
+from backtest.config import DEFAULT_BACKTEST_DB
+from backtest.engine import BacktestResult
+from backtest.errors import (
+    BacktestError,
+    RunConflictError,
+    RunNotFoundError,
+    SnapshotConflictError,
+)
+from backtest.metrics import summarize
+from backtest.providers import (
+    provider_snapshot_metadata,
+    validate_strategy_provider,
+)
+from backtest.specs import BacktestParams, StrategySpec
+
+RESULT_TABLES = (
+    "daily",
+    "position",
+    "order",
+    "rejection",
+    "target_weight",
+    "holding",
+    "liquidation",
+    "allocation",
+    "corporate_action",
+    "industry_exposure",
+)
+
+
+def benchmark_code(value) -> str | None:
+    """从运行元数据里的基准信息取出指数代码。"""
+    if isinstance(value, dict):
+        return value.get("code")
+    return value
+
+
+class BacktestStore:
+    """管理策略不可变版本和回测运行产物。"""
+
+    def __init__(self, path: Path | str = DEFAULT_BACKTEST_DB):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+
+    def _connect(self):
+        return duckdb.connect(str(self.path))
+
+    @contextmanager
+    def _run_state_lock(self):
+        """串行化同一回测库的运行状态迁移，避免并发写同一行。"""
+        lock_path = self.path.with_name(f"{self.path.name}.state.lock")
+        with lock_path.open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @staticmethod
+    def _ensure_schema(conn) -> None:
+        """创建策略和回测结果表。"""
+        conn.execute("CREATE SCHEMA IF NOT EXISTS strategy")
+        # 数据库文件默认名也是 backtest，DuckDB 会把它作为 catalog 名，
+        # 因此使用 bt 避免 `backtest.run` 的 catalog/schema 歧义。
+        conn.execute("CREATE SCHEMA IF NOT EXISTS bt")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS strategy.definition (
+                strategy_id VARCHAR PRIMARY KEY,
+                name VARCHAR,
+                current_version INTEGER,
+                description VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS strategy.version (
+                strategy_id VARCHAR,
+                version INTEGER,
+                config_json VARCHAR,
+                config_hash VARCHAR,
+                created_at TIMESTAMP,
+                PRIMARY KEY(strategy_id, version)
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS bt.run (
+                run_id VARCHAR PRIMARY KEY,
+                strategy_id VARCHAR,
+                strategy_version INTEGER,
+                start_date DATE,
+                end_date DATE,
+                init_cash DOUBLE,
+                status VARCHAR,
+                metadata_json VARCHAR,
+                error_message VARCHAR,
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP,
+                universe VARCHAR,
+                benchmark VARCHAR,
+                snapshot_id VARCHAR
+            )"""
+        )
+        # 老库没有这两列：股票池与基准原来只在 metadata_json 里，SQL 里筛不了
+        conn.execute("ALTER TABLE bt.run ADD COLUMN IF NOT EXISTS universe VARCHAR")
+        conn.execute("ALTER TABLE bt.run ADD COLUMN IF NOT EXISTS benchmark VARCHAR")
+        conn.execute("ALTER TABLE bt.run ADD COLUMN IF NOT EXISTS snapshot_id VARCHAR")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS bt.input_snapshot (
+                snapshot_id VARCHAR PRIMARY KEY,
+                schema_version VARCHAR,
+                created_at TIMESTAMP,
+                start_date DATE,
+                end_date DATE,
+                universe VARCHAR,
+                benchmark VARCHAR,
+                payload_json VARCHAR
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS bt.provider_revision (
+                provider_name VARCHAR,
+                provider_version VARCHAR,
+                source_sha256 VARCHAR,
+                module VARCHAR,
+                required_factors VARCHAR,
+                first_seen_at TIMESTAMP,
+                PRIMARY KEY(provider_name, provider_version, source_sha256)
+            )"""
+        )
+        for table in RESULT_TABLES:
+            conn.execute(f"CREATE TABLE IF NOT EXISTS bt.{table} (run_id VARCHAR)")
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+
+    @staticmethod
+    @contextmanager
+    def _transaction(conn):
+        """把一组 DuckDB 写操作包成显式事务。"""
+        conn.begin()
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+
+    @staticmethod
+    def _insert_version(conn, strategy_id: str, spec: StrategySpec, description: str, now: datetime) -> int:
+        """写入策略第一版，返回版本号。"""
+        conn.execute(
+            "INSERT INTO strategy.definition VALUES (?, ?, ?, ?, ?, ?)",
+            [strategy_id, spec.name, spec.version, description, now, now],
+        )
+        conn.execute(
+            "INSERT INTO strategy.version VALUES (?, ?, ?, ?, ?)",
+            [strategy_id, spec.version, spec.to_json(), spec.config_hash, now],
+        )
+        return spec.version
+
+    @staticmethod
+    def _provider_revision(spec: StrategySpec) -> dict | None:
+        """返回策略需要绑定的提供者源码信息。"""
+        if spec.signal.provider is None:
+            return None
+        return provider_snapshot_metadata(spec.signal.provider)
+
+    @staticmethod
+    def _bind_provider_revision(conn, provider: dict | None) -> None:
+        """在给定连接中登记提供者源码修订。"""
+        if provider is None:
+            return
+        name = str(provider.get("name") or "")
+        version = str(provider.get("version") or "")
+        source_sha256 = str(provider.get("source_sha256") or "")
+        if not name or not version or not source_sha256:
+            raise SnapshotConflictError("提供者修订必须包含名称、版本和源码哈希")
+        revisions = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT source_sha256 FROM bt.provider_revision "
+                "WHERE provider_name = ? AND provider_version = ?",
+                [name, version],
+            ).fetchall()
+        }
+        if revisions and source_sha256 not in revisions:
+            raise SnapshotConflictError(
+                f"提供者 {name} v{version} 已记录不同源码；请提升 version"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO bt.provider_revision "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                name,
+                version,
+                source_sha256,
+                str(provider.get("module") or ""),
+                json.dumps(
+                    provider.get("required_factors") or [],
+                    ensure_ascii=False,
+                ),
+                BacktestStore._now(),
+            ],
+        )
+
+    def create_strategy(self, spec: StrategySpec, description: str = "") -> tuple[str, int]:
+        """创建策略并保存第一版配置。"""
+        validate_strategy_provider(spec)
+        provider = self._provider_revision(spec)
+        strategy_id = uuid.uuid4().hex
+        now = self._now()
+        with self._connect() as conn:
+            with self._transaction(conn):
+                version = self._insert_version(
+                    conn, strategy_id, spec, description, now
+                )
+                self._bind_provider_revision(conn, provider)
+        return strategy_id, version
+
+    def ensure_strategy(self, strategy_id: str, spec: StrategySpec, description: str = "") -> tuple[int, bool]:
+        """按固定标识确保策略存在；定义变了就追加新版本。
+
+        参数:
+            strategy_id: 固定策略标识。
+            spec: 目标配置。
+            description: 策略说明。
+
+        返回:
+            ``(当前版本, 是否新建了版本)``。
+        """
+        validate_strategy_provider(spec)
+        provider = self._provider_revision(spec)
+        now = self._now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT current_version FROM strategy.definition WHERE strategy_id = ?",
+                [strategy_id],
+            ).fetchone()
+            if row is None:
+                with self._transaction(conn):
+                    version = self._insert_version(
+                        conn, strategy_id, spec, description, now
+                    )
+                    self._bind_provider_revision(conn, provider)
+                return version, True
+            current = int(row[0])
+            stored = conn.execute(
+                "SELECT config_json, config_hash FROM strategy.version WHERE strategy_id = ? AND version = ?",
+                [strategy_id, current],
+            ).fetchone()
+        desired = replace(spec, version=current)
+        if stored is not None and stored[1] == desired.config_hash:
+            with self._connect() as conn:
+                with self._transaction(conn):
+                    self._bind_provider_revision(conn, provider)
+            return current, False
+        if stored is not None:
+            stored_spec = StrategySpec.from_dict(json.loads(stored[0]))
+            if replace(stored_spec, version=current).to_json() == desired.to_json():
+                now = self._now()
+                with self._connect() as conn:
+                    with self._transaction(conn):
+                        conn.execute(
+                            "UPDATE strategy.version SET config_json = ?, config_hash = ? "
+                            "WHERE strategy_id = ? AND version = ?",
+                            [
+                                desired.to_json(),
+                                desired.config_hash,
+                                strategy_id,
+                                current,
+                            ],
+                        )
+                        self._bind_provider_revision(conn, provider)
+                return current, False
+        return self.save_version(strategy_id, spec, description), True
+
+    def save_version(self, strategy_id: str, spec: StrategySpec, description: str = "") -> int:
+        """为已有策略追加不可变版本。"""
+        validate_strategy_provider(spec)
+        provider = self._provider_revision(spec)
+        now = self._now()
+        with self._connect() as conn:
+            current = conn.execute(
+                "SELECT current_version FROM strategy.definition WHERE strategy_id = ?",
+                [strategy_id],
+            ).fetchone()
+            if current is None:
+                raise BacktestError(f"策略不存在：{strategy_id}")
+            version = int(current[0]) + 1
+            versioned = replace(spec, version=version)
+            with self._transaction(conn):
+                conn.execute(
+                    "INSERT INTO strategy.version VALUES (?, ?, ?, ?, ?)",
+                    [
+                        strategy_id,
+                        version,
+                        versioned.to_json(),
+                        versioned.config_hash,
+                        now,
+                    ],
+                )
+                conn.execute(
+                    "UPDATE strategy.definition SET name = ?, current_version = ?, description = ?, updated_at = ? "
+                    "WHERE strategy_id = ?",
+                    [spec.name, version, description, now, strategy_id],
+                )
+                self._bind_provider_revision(conn, provider)
+        return version
+
+    def ensure_builtins(self) -> list[dict]:
+        """把内置策略写进策略表，与用户策略共用同一条运行路径。"""
+        for strategy_id, spec, description in BUILTINS:
+            self.ensure_strategy(strategy_id, spec, description)
+        return self.list_strategies()
+
+    def list_strategies(self) -> list[dict]:
+        """列出策略定义。"""
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT strategy_id, name, current_version, description, created_at, updated_at "
+                "FROM strategy.definition ORDER BY updated_at DESC"
+            ).df().to_dict("records")
+
+    def get_run(self, run_id: str) -> dict:
+        """读取回测运行状态。"""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM bt.run WHERE run_id = ?", [run_id]).fetchone()
+            if row is None:
+                raise RunNotFoundError(f"回测运行不存在：{run_id}")
+            columns = [item[0] for item in conn.execute("DESCRIBE bt.run").fetchall()]
+        record = dict(zip(columns, row))
+        if not record.get("snapshot_id") and record.get("metadata_json"):
+            metadata = json.loads(record["metadata_json"])
+            record["snapshot_id"] = metadata.get("snapshot_id")
+        return record
+
+    def delete_run(self, run_id: str) -> None:
+        """事务删除一次已结束运行及其全部结果表记录。
+
+        参数:
+            run_id: 要删除的回测运行标识。
+        """
+        with self._connect() as conn:
+            row = conn.execute("SELECT status FROM bt.run WHERE run_id = ?", [run_id]).fetchone()
+            if row is None:
+                raise RunNotFoundError(f"回测运行不存在：{run_id}")
+            if row[0] == "running":
+                raise RunConflictError(f"回测运行仍在执行，不能删除：{run_id}")
+            with self._transaction(conn):
+                for table in RESULT_TABLES:
+                    conn.execute(f"DELETE FROM bt.{table} WHERE run_id = ?", [run_id])
+                conn.execute("DELETE FROM bt.run WHERE run_id = ?", [run_id])
+
+    def list_runs(self, limit: int = 50) -> list[dict]:
+        """按开始时间倒序列出回测运行。
+
+        参数:
+            limit: 最多返回多少条。
+        """
+        with self._connect() as conn:
+            frame = conn.execute(
+                "SELECT run_id, strategy_id, strategy_version, start_date, end_date, init_cash, "
+                "status, started_at, finished_at, error_message, universe, benchmark, "
+                "snapshot_id, metadata_json "
+                "FROM bt.run "
+                "ORDER BY started_at DESC NULLS LAST LIMIT ?",
+                [int(limit)],
+            ).df()
+        records = frame.to_dict("records")
+        for record in records:
+            metadata = json.loads(record.pop("metadata_json")) if record.get("metadata_json") else {}
+            record["strategy_hash"] = metadata.get("strategy_hash")
+            # 老运行只在元数据里有这两项，取不到就留空
+            record["universe"] = record.get("universe") or metadata.get("universe")
+            record["benchmark"] = record.get("benchmark") or benchmark_code(metadata.get("benchmark"))
+            record["snapshot_id"] = record.get("snapshot_id") or metadata.get("snapshot_id")
+            record["elapsed_seconds"] = metadata.get("elapsed_seconds")
+            record["metrics"] = metadata.get("metrics")
+        return records
+
+    def _metadata(self, run_id: str) -> dict:
+        """读取运行的元数据 JSON。"""
+        with self._connect() as conn:
+            row = conn.execute("SELECT metadata_json FROM bt.run WHERE run_id = ?", [run_id]).fetchone()
+        if row is None or not row[0]:
+            return {}
+        return json.loads(row[0])
+
+    def get_metrics(self, run_id: str) -> dict:
+        """按已落库的日结果重算绩效指标，老运行也能查。"""
+        with self._connect() as conn:
+            frame = conn.execute("SELECT * FROM bt.daily WHERE run_id = ?", [run_id]).df()
+        if frame.empty:
+            raise BacktestError(f"回测运行没有日结果：{run_id}")
+        date_column = "trade_date" if "trade_date" in frame.columns else "index"
+        frame = frame.copy()
+        frame[date_column] = pd.to_datetime(frame[date_column])
+        metadata = self._metadata(run_id)
+        stored = metadata.get("metrics") or {}
+        params = metadata.get("params") or {}
+        risk_free_rate = stored.get(
+            "risk_free_rate",
+            params.get("risk_free_rate", 0.0),
+        )
+        metrics = summarize(
+            frame.set_index(date_column).sort_index(),
+            risk_free_rate=0.0 if risk_free_rate is None else float(risk_free_rate),
+        )
+        for name in ("cost_attribution", "turnover_attribution", "industry_exposure"):
+            if name in stored:
+                metrics[name] = stored[name]
+        return metrics
+
+    def get_result_table(self, run_id: str, table: str) -> list[dict]:
+        """读取某次运行的标准化结果表。"""
+        if table not in RESULT_TABLES:
+            raise BacktestError(f"不支持的回测结果表：{table}；可选 {list(RESULT_TABLES)}")
+        with self._connect() as conn:
+            return conn.execute(f"SELECT * FROM bt.{table} WHERE run_id = ?", [run_id]).df().to_dict("records")
+
+    def get_version(self, strategy_id: str, version: int | None = None) -> StrategySpec:
+        """读取指定版本策略。"""
+        with self._connect() as conn:
+            if version is None:
+                row = conn.execute(
+                    "SELECT current_version FROM strategy.definition WHERE strategy_id = ?",
+                    [strategy_id],
+                ).fetchone()
+                if row is None:
+                    raise BacktestError(f"策略不存在：{strategy_id}")
+                version = int(row[0])
+            row = conn.execute(
+                "SELECT config_json FROM strategy.version WHERE strategy_id = ? AND version = ?",
+                [strategy_id, version],
+            ).fetchone()
+        if row is None:
+            raise BacktestError(f"策略版本不存在：{strategy_id} v{version}")
+        return replace(StrategySpec.from_dict(json.loads(row[0])), version=version)
+
+    def record_snapshot(self, snapshot: dict) -> str:
+        """登记不可变输入快照，并检查提供者同版本源码冲突。
+
+        参数:
+            snapshot: 包含 ``snapshot_id``、``scope`` 与 ``components`` 的字典。
+
+        返回:
+            ``snapshot_id``。
+        """
+        if not isinstance(snapshot, dict):
+            raise SnapshotConflictError("输入快照必须是对象")
+        snapshot_id = snapshot.get("snapshot_id")
+        if not isinstance(snapshot_id, str) or len(snapshot_id) != 64:
+            raise SnapshotConflictError("输入快照缺少有效的 snapshot_id")
+        schema_version = str(snapshot.get("schema_version") or "")
+        if not schema_version:
+            raise SnapshotConflictError("输入快照缺少 schema_version")
+        stored_payload = json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        identity_payload = json.dumps(
+            {
+                "schema_version": schema_version,
+                "scope": snapshot.get("scope"),
+                "components": snapshot.get("components"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        scope = snapshot.get("scope") or {}
+        provider = (
+            snapshot.get("components", {})
+            .get("rules", {})
+            .get("provider")
+        )
+        with self._connect() as conn:
+            with self._transaction(conn):
+                existing = conn.execute(
+                    "SELECT payload_json FROM bt.input_snapshot WHERE snapshot_id = ?",
+                    [snapshot_id],
+                ).fetchone()
+                if existing is not None:
+                    stored_identity = json.loads(existing[0])
+                    normalized = json.dumps(
+                        {
+                            "schema_version": stored_identity.get("schema_version"),
+                            "scope": stored_identity.get("scope"),
+                            "components": stored_identity.get("components"),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    if normalized != identity_payload:
+                        raise SnapshotConflictError(
+                            f"输入快照 {snapshot_id} 已存在但内容不同"
+                        )
+                else:
+                    conn.execute(
+                        "INSERT INTO bt.input_snapshot VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        [
+                            snapshot_id,
+                            schema_version,
+                            snapshot.get("created_at") or self._now(),
+                            scope.get("start"),
+                            scope.get("end"),
+                            scope.get("universe"),
+                            scope.get("benchmark"),
+                            stored_payload,
+                        ],
+                    )
+                self._bind_provider_revision(
+                    conn, provider if isinstance(provider, dict) else None
+                )
+        return snapshot_id
+
+    def get_snapshot(self, snapshot_id: str) -> dict:
+        """按标识读取不可变输入快照。
+
+        参数:
+            snapshot_id: 快照 SHA-256。
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM bt.input_snapshot WHERE snapshot_id = ?",
+                [snapshot_id],
+            ).fetchone()
+        if row is None:
+            raise RunNotFoundError(f"输入快照不存在：{snapshot_id}")
+        return json.loads(row[0])
+
+    def start_run(
+        self,
+        strategy_id: str,
+        version: int,
+        params: BacktestParams,
+        universe: str | None = None,
+        benchmark: str | None = None,
+        snapshot_id: str | None = None,
+    ) -> str:
+        """登记一次运行，记录本次实际使用的股票池、基准与输入快照。"""
+        run_id = uuid.uuid4().hex
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO bt.run (run_id, strategy_id, strategy_version, start_date, end_date, "
+                "init_cash, status, universe, benchmark, snapshot_id, started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    run_id,
+                    strategy_id,
+                    version,
+                    params.start,
+                    params.end,
+                    params.init_cash,
+                    "running",
+                    universe,
+                    benchmark,
+                    snapshot_id,
+                    self._now(),
+                ],
+            )
+        return run_id
+
+    @staticmethod
+    def _write_frame(conn, table: str, frame: pd.DataFrame) -> None:
+        """把标准化结果追加到指定表。"""
+        if not len(frame.columns):
+            return
+        if not isinstance(frame.index, pd.RangeIndex):
+            frame = frame.reset_index(drop=False)
+        conn.register("_backtest_frame", frame)
+        existing = {row[0] for row in conn.execute(f"DESCRIBE bt.{table}").fetchall()}
+        for name, data_type, *_ in conn.execute("DESCRIBE _backtest_frame").fetchall():
+            if name not in existing:
+                conn.execute(f'ALTER TABLE bt.{table} ADD COLUMN "{name}" {data_type}')
+        columns = [row[0] for row in conn.execute("DESCRIBE _backtest_frame").fetchall()]
+        quoted = ", ".join(f'"{name}"' for name in columns)
+        conn.execute(f'INSERT INTO bt.{table} ({quoted}) SELECT {quoted} FROM _backtest_frame')
+        conn.unregister("_backtest_frame")
+
+    def finish_run(self, run_id: str, result: BacktestResult) -> None:
+        """保存回测结果并标记成功。"""
+        daily = result.daily.copy()
+        daily.index.name = "trade_date"
+        position = result.positions.rename(columns={"Column": "stock_code"}).copy()
+        holdings = result.holdings.copy()
+        orders = result.orders.copy()
+        rejection = result.rejections.copy()
+        liquidation = result.liquidations.copy()
+        allocation = result.allocations.copy()
+        corporate_action = result.corporate_actions.copy()
+        industry_exposure = result.industry_exposure.copy()
+        target_weight = result.target_weights.stack(future_stack=True).dropna().rename("target_weight").reset_index()
+        target_weight.columns = ["trade_date", "stock_code", "target_weight"]
+        frames = []
+        for table, frame in (
+            ("daily", daily),
+            ("position", position),
+            ("holding", holdings),
+            ("order", orders),
+            ("rejection", rejection),
+            ("liquidation", liquidation),
+            ("allocation", allocation),
+            ("corporate_action", corporate_action),
+            ("industry_exposure", industry_exposure),
+            ("target_weight", target_weight),
+        ):
+            if frame.empty:
+                continue
+            payload = frame.copy()
+            payload.insert(0, "run_id", run_id)
+            frames.append((table, payload))
+        with self._run_state_lock():
+            metadata = dict(result.metadata)
+            metadata["metrics"] = result.metrics
+            snapshot = metadata.get("snapshot")
+            snapshot_id = metadata.get("snapshot_id")
+            if isinstance(snapshot, dict):
+                snapshot_id = self.record_snapshot(snapshot)
+                metadata["snapshot_id"] = snapshot_id
+            try:
+                with self._connect() as conn:
+                    with self._transaction(conn):
+                        current = conn.execute(
+                            "SELECT status, snapshot_id FROM bt.run WHERE run_id = ?", [run_id]
+                        ).fetchone()
+                        if current is None:
+                            raise RunNotFoundError(f"回测运行不存在：{run_id}")
+                        if str(current[0]) != "running":
+                            raise RunConflictError(
+                                f"回测运行 {run_id} 当前状态为 {current[0]}，不能重复写入结果"
+                            )
+                        if (
+                            current[1]
+                            and snapshot_id
+                            and str(current[1]) != str(snapshot_id)
+                        ):
+                            raise SnapshotConflictError(
+                                f"运行 {run_id} 起始快照与结果快照不一致"
+                            )
+                        updated = conn.execute(
+                            "UPDATE bt.run SET status = ?, metadata_json = ?, "
+                            "snapshot_id = coalesce(?, snapshot_id), "
+                            "finished_at = ? WHERE run_id = ? AND status = 'running' "
+                            "RETURNING run_id",
+                            [
+                                "success",
+                                json.dumps(metadata, ensure_ascii=False, default=str),
+                                snapshot_id,
+                                self._now(),
+                                run_id,
+                            ],
+                        ).fetchall()
+                        if not updated:
+                            raise RunConflictError(
+                                f"回测运行 {run_id} 已结束，不能重复写入结果"
+                            )
+                        for table, payload in frames:
+                            self._write_frame(conn, table, payload)
+            except duckdb.TransactionException as error:
+                # 文件锁负责正常并发；这里兜住绕过锁的外部写入竞争。
+                try:
+                    status = str(self.get_run(run_id)["status"])
+                except RunNotFoundError:
+                    raise error
+                if status != "running":
+                    raise RunConflictError(
+                        f"回测运行 {run_id} 当前状态为 {status}，不能重复写入结果"
+                    ) from error
+                raise
+
+    def fail_run(self, run_id: str, error: Exception) -> None:
+        """把运行标记为失败；已结束的运行保持原状态。"""
+        with self._run_state_lock():
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE bt.run SET status = ?, error_message = ?, finished_at = ? "
+                    "WHERE run_id = ? AND status = 'running'",
+                    ["failed", str(error), self._now(), run_id],
+                )
+
+    def cancel_run(self, run_id: str) -> None:
+        """把运行标记为已取消；已结束的运行保持原状态。"""
+        with self._run_state_lock():
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE bt.run SET status = ?, finished_at = ? "
+                    "WHERE run_id = ? AND status = 'running'",
+                    ["cancelled", self._now(), run_id],
+                )
+

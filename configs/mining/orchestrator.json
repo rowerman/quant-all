@@ -1,0 +1,14 @@
+{
+  "schema_version": "mining_orchestrator_v1",
+  "max_rounds": 3,
+  "max_candidates": 12,
+  "full_eval_top_k": 4,
+  "max_llm_calls": 30,
+  "max_expression_depth": 6,
+  "direction": "either",
+  "min_coverage": 0.3,
+  "max_failure_rate": 0.75,
+  "min_quality_checks_for_failure_stop": 4,
+  "seed": 42,
+  "excluded_fields": []
+}

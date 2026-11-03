@@ -1,0 +1,20 @@
+# 回测、取数、计算与 Web 服务的运行时依赖。
+# 测试和静态检查依赖使用 `pip install -e ".[dev]"`。
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==25.0.1
+pypdf==6.21.2
+duckdb==1.5.5
+scipy==1.18.1
+numba==0.61.2
+joblib==1.6.0
+scikit-learn==1.9.1
+lightgbm==4.7.0
+vectorbt==0.28.5
+tushare==1.4.29
+requests==2.34.2
+six==1.17.0
+plotly==5.24.1
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn==0.53.0

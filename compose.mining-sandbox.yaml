@@ -1,0 +1,25 @@
+services:
+  mining-sandbox:
+    build:
+      context: .
+      dockerfile: research/mining_sandbox/Dockerfile
+    image: quant-mining-sandbox:s5
+    network_mode: none
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 2048m
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+      - ./data/mining_sandbox/snapshots:/snapshot:ro
+      - ./data/mining_sandbox/work:/workspace
+    command:
+      - python
+      - -c
+      - "print('mining sandbox ready')"

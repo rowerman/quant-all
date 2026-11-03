@@ -1,0 +1,55 @@
+{
+  "schema_version": "alpha_model_evaluation_plan_v1",
+  "reference": "RIDGE_RAW",
+  "selected": "LIGHTGBM_SMOOTH_4W",
+  "frozen_fold_id": "wf_2023",
+  "candidates": [
+    {
+      "name": "LIGHTGBM_SMOOTH_4W",
+      "source": {
+        "kind": "model",
+        "id": "lightgbm_ensemble_label_rank_6aea5c9299d5"
+      },
+      "score_policy": {
+        "kind": "smooth_rank",
+        "smoothing_weeks": 4
+      },
+      "holding_policy": {
+        "kind": "top_n",
+        "top_n": 30
+      }
+    },
+    {
+      "name": "RIDGE_RAW",
+      "source": {
+        "kind": "model",
+        "id": "ridge_label_rank_aaff2cb2fbcf"
+      },
+      "score_policy": {
+        "kind": "raw",
+        "smoothing_weeks": 1
+      },
+      "holding_policy": {
+        "kind": "top_n",
+        "top_n": 30
+      }
+    }
+  ],
+  "controls": [
+    {
+      "name": "B4_ALL_RANK",
+      "source": {
+        "kind": "baseline",
+        "id": "B4_ALL_RANK"
+      },
+      "score_policy": {
+        "kind": "raw",
+        "smoothing_weeks": 1
+      },
+      "holding_policy": {
+        "kind": "top_n",
+        "top_n": 30
+      }
+    }
+  ]
+}

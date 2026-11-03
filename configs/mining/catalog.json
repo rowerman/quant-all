@@ -1,0 +1,201 @@
+{
+  "schema_version": "mining_catalog_v1",
+  "data_version": "tushare_fullA_20000104_20261015",
+  "field_groups": [
+    {
+      "source": "daily_hfq",
+      "table": "md.daily_hfq",
+      "join_kind": "base",
+      "available_at": "close",
+      "fields": {
+        "open": {"label": "后复权开盘价", "dtype": "number", "dimension": "price", "unit": "元"},
+        "high": {"label": "后复权最高价", "dtype": "number", "dimension": "price", "unit": "元"},
+        "low": {"label": "后复权最低价", "dtype": "number", "dimension": "price", "unit": "元"},
+        "close": {"label": "后复权收盘价", "dtype": "number", "dimension": "price", "unit": "元"},
+        "vwap": {"label": "后复权成交量加权价", "dtype": "number", "dimension": "price", "unit": "元"},
+        "volume_share": {"label": "成交量", "dtype": "number", "dimension": "shares", "unit": "股"},
+        "amount_cny": {"label": "成交额", "dtype": "number", "dimension": "money", "unit": "元"},
+        "factor": {"label": "后复权因子", "dtype": "number", "dimension": "scalar", "unit": "无量纲"},
+        "ret": {"label": "日收益", "dtype": "number", "dimension": "ratio", "unit": "小数"},
+        "is_suspended": {"label": "当日停牌", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "is_resume": {"label": "当日复牌", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "is_ex_div": {"label": "当日除权除息", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "is_st": {"label": "当日 ST", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "is_delisting": {"label": "退市整理期", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "pe_ttm": {"label": "市盈率 TTM", "dtype": "number", "dimension": "ratio", "unit": "倍"},
+        "pb": {"label": "市净率", "dtype": "number", "dimension": "ratio", "unit": "倍"},
+        "ps_ttm": {"label": "市销率 TTM", "dtype": "number", "dimension": "ratio", "unit": "倍"},
+        "dv_ttm": {"label": "股息率 TTM", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "total_mv": {"label": "总市值", "dtype": "number", "dimension": "money", "unit": "万元"},
+        "circ_mv": {"label": "流通市值", "dtype": "number", "dimension": "money", "unit": "万元"},
+        "turnover_rate": {"label": "换手率", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "limit_ratio": {"label": "涨跌停幅度", "dtype": "number", "dimension": "ratio", "unit": "小数"},
+        "is_limit_up": {"label": "收盘涨停", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "is_limit_down": {"label": "收盘跌停", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "touched_limit_up": {"label": "盘中触及涨停", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "touched_limit_down": {"label": "盘中触及跌停", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "is_one_word_board": {"label": "一字板", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "is_price_limit_applicable": {"label": "适用涨跌停规则", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "can_buy_close": {"label": "收盘可买", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "can_sell_close": {"label": "收盘可卖", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "can_buy_open_next": {"label": "次日开盘可买", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "can_sell_open_next": {"label": "次日开盘可卖", "dtype": "boolean", "dimension": "boolean", "unit": "布尔"},
+        "stock_code": {"label": "股票代码", "dtype": "string", "dimension": "identifier", "unit": "代码", "allowed": false, "reason": "代码是键，不是因子输入"},
+        "trade_date": {"label": "交易日", "dtype": "date", "dimension": "time", "unit": "日期", "allowed": false, "reason": "日期是键，不允许进入因子值"},
+        "change": {"label": "未复权涨跌额", "dtype": "number", "dimension": "price", "unit": "元", "allowed": false, "reason": "与后复权价格混用会产生尺度错误"},
+        "pre_close": {"label": "未复权前收盘", "dtype": "number", "dimension": "price", "unit": "元", "allowed": false, "reason": "与后复权价格混用会产生尺度错误"},
+        "status": {"label": "交易状态", "dtype": "string", "dimension": "enum", "unit": "枚举", "allowed": false, "reason": "状态不能作为数值因子输入"},
+        "list_date": {"label": "上市日", "dtype": "date", "dimension": "time", "unit": "日期", "allowed": false, "reason": "日期不能作为因子输入"},
+        "delist_date": {"label": "退市日", "dtype": "date", "dimension": "time", "unit": "日期", "allowed": false, "reason": "日期不能作为因子输入"},
+        "limit_up": {"label": "未复权涨停价", "dtype": "number", "dimension": "price", "unit": "元", "allowed": false, "reason": "与后复权价格混用会产生尺度错误"},
+        "limit_down": {"label": "未复权跌停价", "dtype": "number", "dimension": "price", "unit": "元", "allowed": false, "reason": "与后复权价格混用会产生尺度错误"},
+        "pre_close_source": {"label": "前收来源", "dtype": "string", "dimension": "audit", "unit": "文本", "allowed": false, "reason": "审计字段不能作为因子输入"},
+        "st_source": {"label": "ST 来源", "dtype": "string", "dimension": "audit", "unit": "文本", "allowed": false, "reason": "审计字段不能作为因子输入"}
+      }
+    },
+    {
+      "source": "index_000300",
+      "table": "md.index_daily",
+      "join_kind": "date",
+      "available_at": "close",
+      "fields": {
+        "idx_ret_300": {"label": "沪深300日收益", "dtype": "number", "dimension": "ratio", "unit": "小数"}
+      }
+    },
+    {
+      "source": "index_000905",
+      "table": "md.index_daily",
+      "join_kind": "date",
+      "available_at": "close",
+      "fields": {
+        "idx_ret_500": {"label": "中证500日收益", "dtype": "number", "dimension": "ratio", "unit": "小数"}
+      }
+    },
+    {
+      "source": "index_000985",
+      "table": "md.index_daily",
+      "join_kind": "date",
+      "available_at": "close",
+      "fields": {
+        "idx_ret_all": {"label": "中证全指日收益", "dtype": "number", "dimension": "ratio", "unit": "小数"}
+      }
+    },
+    {
+      "source": "fin_income",
+      "table": "fin.income_statement",
+      "join_kind": "asof",
+      "available_at": "next_trading_day",
+      "fields": {
+        "inc_total_revenue": {"label": "营业总收入", "dtype": "number", "dimension": "money", "unit": "元"},
+        "inc_revenue": {"label": "营业收入", "dtype": "number", "dimension": "money", "unit": "元"},
+        "inc_oper_cost": {"label": "营业成本", "dtype": "number", "dimension": "money", "unit": "元"},
+        "inc_operate_profit": {"label": "营业利润", "dtype": "number", "dimension": "money", "unit": "元"},
+        "inc_n_income": {"label": "净利润", "dtype": "number", "dimension": "money", "unit": "元"},
+        "inc_n_income_attr_p": {"label": "归母净利润", "dtype": "number", "dimension": "money", "unit": "元"},
+        "inc_rd_exp": {"label": "研发费用", "dtype": "number", "dimension": "money", "unit": "元"}
+      }
+    },
+    {
+      "source": "fin_balance",
+      "table": "fin.balance_sheet",
+      "join_kind": "asof",
+      "available_at": "next_trading_day",
+      "fields": {
+        "bs_total_assets": {"label": "总资产", "dtype": "number", "dimension": "money", "unit": "元"},
+        "bs_total_liab": {"label": "总负债", "dtype": "number", "dimension": "money", "unit": "元"},
+        "bs_total_hldr_eqy_exc_min_int": {"label": "归母股东权益", "dtype": "number", "dimension": "money", "unit": "元"},
+        "bs_total_cur_assets": {"label": "流动资产合计", "dtype": "number", "dimension": "money", "unit": "元"},
+        "bs_total_cur_liab": {"label": "流动负债合计", "dtype": "number", "dimension": "money", "unit": "元"},
+        "bs_money_cap": {"label": "货币资金", "dtype": "number", "dimension": "money", "unit": "元"},
+        "bs_accounts_receiv": {"label": "应收账款", "dtype": "number", "dimension": "money", "unit": "元"},
+        "bs_inventories": {"label": "存货", "dtype": "number", "dimension": "money", "unit": "元"},
+        "bs_goodwill": {"label": "商誉", "dtype": "number", "dimension": "money", "unit": "元"},
+        "bs_total_share": {"label": "总股本", "dtype": "number", "dimension": "shares", "unit": "股"}
+      }
+    },
+    {
+      "source": "fin_cashflow",
+      "table": "fin.cash_flow",
+      "join_kind": "asof",
+      "available_at": "next_trading_day",
+      "fields": {
+        "cf_n_cashflow_act": {"label": "经营活动现金流净额", "dtype": "number", "dimension": "money", "unit": "元"},
+        "cf_n_cashflow_inv_act": {"label": "投资活动现金流净额", "dtype": "number", "dimension": "money", "unit": "元"},
+        "cf_n_cash_flows_fnc_act": {"label": "筹资活动现金流净额", "dtype": "number", "dimension": "money", "unit": "元"},
+        "cf_c_pay_acq_const_fiolta": {"label": "购建长期资产现金", "dtype": "number", "dimension": "money", "unit": "元"},
+        "cf_free_cashflow": {"label": "自由现金流", "dtype": "number", "dimension": "money", "unit": "元"},
+        "cf_depr_fa_coga_dpba": {"label": "折旧与摊销", "dtype": "number", "dimension": "money", "unit": "元"},
+        "cf_n_incr_cash_cash_equ": {"label": "现金及等价物净增加", "dtype": "number", "dimension": "money", "unit": "元"}
+      }
+    },
+    {
+      "source": "fin_indicator",
+      "table": "fin.fina_indicator",
+      "join_kind": "asof",
+      "available_at": "next_trading_day",
+      "fields": {
+        "fi_profit_dedt": {"label": "扣非净利润", "dtype": "number", "dimension": "money", "unit": "元"},
+        "fi_roe": {"label": "ROE", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_roe_waa": {"label": "加权平均 ROE", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_roe_dt": {"label": "扣非 ROE", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_roe_yearly": {"label": "年化 ROE", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_roa": {"label": "ROA", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_roa_yearly": {"label": "年化 ROA", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_roa2_yearly": {"label": "年化 ROA2", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_roic": {"label": "ROIC", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_grossprofit_margin": {"label": "毛利率", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_netprofit_margin": {"label": "净利率", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_debt_to_assets": {"label": "资产负债率", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_current_ratio": {"label": "流动比率", "dtype": "number", "dimension": "scalar", "unit": "倍"},
+        "fi_quick_ratio": {"label": "速动比率", "dtype": "number", "dimension": "scalar", "unit": "倍"},
+        "fi_cash_ratio": {"label": "现金比率", "dtype": "number", "dimension": "scalar", "unit": "倍"},
+        "fi_assets_turn": {"label": "总资产周转率", "dtype": "number", "dimension": "scalar", "unit": "倍"},
+        "fi_or_yoy": {"label": "营业收入同比", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_tr_yoy": {"label": "营业总收入同比", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_netprofit_yoy": {"label": "净利润同比", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_op_yoy": {"label": "营业利润同比", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_ocf_yoy": {"label": "经营现金流同比", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_assets_yoy": {"label": "总资产同比", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_eqt_yoy": {"label": "净资产同比", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_q_sales_yoy": {"label": "单季营收同比", "dtype": "number", "dimension": "ratio", "unit": "%"},
+        "fi_q_op_qoq": {"label": "单季营业利润环比", "dtype": "number", "dimension": "ratio", "unit": "%"}
+      }
+    }
+  ],
+  "operators": {
+    "add": {"kind": "arithmetic", "min_args": 2, "max_args": 2, "description": "加法"},
+    "sub": {"kind": "arithmetic", "min_args": 2, "max_args": 2, "description": "减法"},
+    "mul": {"kind": "arithmetic", "min_args": 2, "max_args": 2, "description": "乘法"},
+    "div": {"kind": "arithmetic", "min_args": 2, "max_args": 2, "description": "安全除法，分母为零返回空值"},
+    "neg": {"kind": "arithmetic", "min_args": 1, "max_args": 1, "description": "取负"},
+    "abs": {"kind": "scalar", "min_args": 1, "max_args": 1, "description": "绝对值"},
+    "ln": {"kind": "scalar", "min_args": 1, "max_args": 1, "description": "自然对数"},
+    "sqrt": {"kind": "scalar", "min_args": 1, "max_args": 1, "description": "平方根"},
+    "sign": {"kind": "scalar", "min_args": 1, "max_args": 1, "description": "符号"},
+    "least": {"kind": "scalar", "min_args": 2, "max_args": 8, "description": "逐行最小值"},
+    "greatest": {"kind": "scalar", "min_args": 2, "max_args": 8, "description": "逐行最大值"},
+    "lag": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滞后期数"},
+    "delta": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滞后差分"},
+    "mean": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滚动均值"},
+    "sum": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滚动求和"},
+    "min": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滚动最小值"},
+    "max": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滚动最大值"},
+    "median": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滚动中位数"},
+    "std": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "样本标准差"},
+    "skew": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滚动偏度"},
+    "kurt": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滚动峰度"},
+    "product": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滚动乘积"},
+    "count": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 1, "max_window": 252, "description": "滚动非空计数"},
+    "corr": {"kind": "time_series", "min_args": 3, "max_args": 3, "window_arg": 2, "min_window": 2, "max_window": 252, "description": "滚动相关"},
+    "cov": {"kind": "time_series", "min_args": 3, "max_args": 3, "window_arg": 2, "min_window": 2, "max_window": 252, "description": "滚动样本协方差"},
+    "slope": {"kind": "time_series", "min_args": 3, "max_args": 3, "window_arg": 2, "min_window": 2, "max_window": 252, "description": "滚动回归斜率"},
+    "r2": {"kind": "time_series", "min_args": 3, "max_args": 3, "window_arg": 2, "min_window": 2, "max_window": 252, "description": "滚动回归决定系数"},
+    "downside_std": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 2, "max_window": 252, "description": "滚动下行波动"},
+    "ts_rank": {"kind": "time_series", "min_args": 2, "max_args": 2, "window_arg": 1, "min_window": 2, "max_window": 252, "description": "当前值在最近窗口中的分位"},
+    "rank": {"kind": "cross_section", "min_args": 1, "max_args": 1, "description": "截面分位"},
+    "zscore": {"kind": "cross_section", "min_args": 1, "max_args": 1, "description": "截面标准化"},
+    "demean": {"kind": "cross_section", "min_args": 1, "max_args": 1, "description": "截面去均值"},
+    "scale": {"kind": "cross_section", "min_args": 1, "max_args": 1, "description": "截面绝对值归一"},
+    "signed_power": {"kind": "parameterized", "min_args": 2, "max_args": 2, "parameter_arg": 1, "min_parameter": -4, "max_parameter": 4, "description": "保号幂"}
+  }
+}

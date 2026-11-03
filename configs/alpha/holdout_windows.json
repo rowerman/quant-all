@@ -1,0 +1,21 @@
+{
+  "schema_version": "alpha_holdout_windows_v1",
+  "windows": [
+    {
+      "window_id": "holdout_2024_2026",
+      "start": "2024-01-01",
+      "end": "2026-10-15",
+      "min_label_coverage": 0.95,
+      "min_signal_days": 100,
+      "sealed": true
+    },
+    {
+      "window_id": "holdout_2026_2027",
+      "start": "2026-10-16",
+      "end": "2027-10-15",
+      "min_label_coverage": 0.95,
+      "min_signal_days": 100,
+      "sealed": false
+    }
+  ]
+}

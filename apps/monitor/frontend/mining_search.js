@@ -1,0 +1,267 @@
+import {esc, fmt, table} from './charts.js';
+import {formatTime, statusLabel} from './mining_api.js';
+
+function budgetBar(label, used, total) {
+  const maximum = Number(total) || 0;
+  const current = Number(used) || 0;
+  const percent = maximum > 0 ? Math.min(100, current / maximum * 100) : 0;
+  return `<div class="budget-item"><div><span>${esc(label)}</span><strong>${esc(fmt(current))} / ${esc(fmt(maximum))}</strong></div><div class="budget-track"><span style="width:${percent.toFixed(1)}%"></span></div></div>`;
+}
+
+function statusTag(status) {
+  return `<span class="tag mining-status mining-status-${esc(status)}">${esc(statusLabel(status))}</span>`;
+}
+
+function inputModeLabel(mode) {
+  return {
+    hypothesis: '手工研究假设',
+    free_exploration: '自由探索',
+    research: '资料驱动',
+    research_report: '资料驱动',
+    costeer: 'CoSTEER 人工提升',
+  }[mode] || '手工研究假设';
+}
+
+function candidateEvidence(item) {
+  const diagnostics = item.selection_diagnostics || {};
+  const correlation = diagnostics.correlation || {};
+  const incremental = diagnostics.incremental || {};
+  const stability = item.stability || {};
+  const statistical = item.multiple_testing || {};
+  return {
+    cluster: correlation.cluster_id || '—',
+    incremental: incremental.incremental_rank_ic,
+    stability: stability.status ? statusLabel(stability.status) : '证据不足',
+    stabilityReason: stability.reason || '—',
+    qValue: statistical.bh_q_value,
+  };
+}
+
+export function searchBudgetFields(defaults, limits) {
+  const input = (name, label, value, maximum, hint = '') => `<label>${esc(label)}<input type="number" name="${name}" value="${esc(value)}" step="1" min="1" max="${esc(maximum)}" required>${hint ? `<span class="mini muted">${esc(hint)}</span>` : ''}</label>`;
+  return [
+    input('search_turns', '最大搜索轮次', defaults.max_search_turns, limits.max_search_turns),
+    input('hypothesis_branches', '最大假设分支', defaults.max_hypothesis_branches, limits.max_hypothesis_branches),
+    input('refines_per_branch', '每分支最大修正', defaults.max_refines_per_branch, limits.max_refines_per_branch),
+    input('candidates_per_turn', '每轮最大候选', defaults.max_candidates_per_turn, limits.max_candidates_per_turn),
+    input('candidates_per_run', '每运行最大候选', defaults.max_candidates_per_run, limits.max_candidates_per_run),
+    input('full_evaluations', '完整评估候选', defaults.max_full_evaluations, limits.max_full_evaluations),
+  ].join('');
+}
+
+export function renderSearchRun(app, detail, mutateRun) {
+  const run = detail.run;
+  if (run.engine === 'v3-legacy') {
+    app.innerHTML = `<div class="page-heading">
+      <div><h1>只读旧运行 ${esc(run.run_id)}</h1><p class="intro muted">迁移自 ${esc(run.source_schema)}，不可恢复或发布。</p></div>
+      <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
+    </div>
+    <section class="card"><h2>运行状态</h2>${statusTag(run.status)}<p>${esc(run.hypothesis)}</p></section>
+    <section class="card"><h2>候选摘要</h2><div id="search-candidates"></div></section>`;
+    if (detail.candidates.length) {
+      table(app.querySelector('#search-candidates'), detail.candidates.map(item => ({
+        候选: item.name,
+        状态: statusLabel(item.status),
+        候选ID: item.candidate_id,
+        更新时间: formatTime(item.updated_at),
+      })));
+    } else {
+      app.querySelector('#search-candidates').innerHTML = '<p class="muted">没有候选摘要。</p>';
+    }
+    return;
+  }
+  const progress = detail.progress;
+  const budget = progress.budget || {};
+  const attempts = progress.attempts || {};
+  const canCancel = ['queued', 'searching', 'selecting', 'evaluating', 'holding_out'].includes(run.status);
+  const canResume = run.status === 'interrupted';
+  const research = detail.research;
+  const researchSummary = research?.summary;
+  const inputMode = research ? 'research' : (run.input_mode || 'hypothesis');
+  const direction = detail.exploration?.initial_direction;
+  const seedText = run.exploration_seed !== null && run.exploration_seed !== undefined
+    ? String(run.exploration_seed)
+    : run.effective_exploration_seed !== null && run.effective_exploration_seed !== undefined
+      ? `${run.effective_exploration_seed}（请求哈希派生）`
+      : '—';
+  app.innerHTML = `<div class="page-heading">
+    <div><h1>${esc((run.engine || 'v2').toUpperCase())} 搜索 ${esc(run.run_id)}</h1><p class="intro muted">${esc(inputModeLabel(inputMode))} · ${esc(run.hypothesis)}</p></div>
+    <a class="button-link secondary-link" href="#/mining">返回运行列表</a>
+  </div>
+  <section class="card">
+    <div class="card-header"><h2>搜索状态</h2><div>${statusTag(run.status)}</div></div>
+    <div id="mining-run-status" class="status-box">${progress.stop_reason ? esc(progress.stop_reason) : `当前阶段：${esc(statusLabel(progress.current_stage))} · 分支 ${esc(progress.current_branch_id || '—')}`}</div>
+    <div class="run-action-row">
+      ${canCancel ? '<button type="button" id="cancel-mining" class="secondary">取消运行</button>' : ''}
+      ${canResume ? '<button type="button" id="resume-mining">恢复运行</button>' : ''}
+    </div>
+    <p class="mini muted">实验链路只读取开发期反馈；选择期、最终研究期和测试段不会进入 Worker。</p>
+  </section>
+  <section class="card">
+    <h2>研究输入</h2>
+    <div class="quality-summary">
+      <span>模式：${esc(inputModeLabel(inputMode))}</span>
+      <span>${inputMode === 'free_exploration' ? `种子：${esc(seedText)}` : inputMode === 'costeer' ? '来源：服务端人工提升记录' : '输入：人工或资料候选'}</span>
+      ${direction ? `<span>首轮机制：${esc(direction.mechanism_category)}</span>` : ''}
+    </div>
+    ${direction ? `<div id="exploration-direction"></div>` : ''}
+    <p class="mini muted">${inputMode === 'free_exploration' ? '自由探索只替代初始假设。方向、种子和预算在首次 Worker 调用前冻结；公开页面不展示 Prompt、密钥或工作区路径。' : '输入和冻结预算共同确定运行内容，审批与发布仍须人工完成。'}</p>
+  </section>
+  ${research ? `<section class="card">
+    <h2>资料来源</h2>
+    ${researchSummary ? `<div class="quality-summary">
+      <span>资料 ${esc(researchSummary.materials.length)} 份</span>
+      <span>抽取因子草稿 ${esc(researchSummary.extracted_factor_count)}</span>
+      <span>转换通过 ${esc(researchSummary.accepted_count)}</span>
+      <span>预算准入 ${esc(researchSummary.admitted_count)}</span>
+    </div>
+    <div id="research-materials"></div>
+    <div id="research-decisions"></div>` : '<p class="muted">资料解析、抽取和转换正在后台执行。</p>'}
+  </section>` : ''}
+  <section class="card">
+    <h2>预算与尝试</h2>
+    <div class="budget-progress">
+      ${budgetBar('搜索轮次', progress.turns_completed, budget.max_search_turns)}
+      ${budgetBar('假设分支', detail.branch_count, budget.max_hypothesis_branches)}
+      ${budgetBar('候选尝试', attempts.proposed, budget.max_candidates_per_run)}
+      ${budgetBar('完整评估', attempts.full_evaluated, budget.max_full_evaluations)}
+      ${budgetBar('测试段领取', attempts.holdout_claimed, 1)}
+    </div>
+    <p class="mini muted">假设 ${esc(progress.hypotheses)} · 分支 ${esc(detail.branch_count)} · 候选 ${esc(progress.candidates)} · 失败候选 ${esc(progress.failed_candidates)} · 拒绝 ${esc(attempts.rejected || 0)} · 门禁失败 ${esc(attempts.gate_failed || 0)} · 当前动作 ${esc(statusLabel(progress.current_action))}</p>
+    <p class="mini muted"><strong>停止原因：</strong>${esc(progress.stop_reason || '尚在运行或未触发停止')}</p>
+    <div id="search-budget"></div>
+  </section>
+  <section class="card">
+    <h2>假设树</h2>
+    ${detail.hypotheses.length ? '<div id="search-hypotheses"></div>' : '<p class="muted">尚未登记假设。</p>'}
+  </section>
+  <section class="card">
+    <h2>逐轮反馈</h2>
+    ${detail.turns.length ? '<div id="search-turns"></div>' : '<p class="muted">尚未开始搜索轮次。</p>'}
+  </section>
+  <section class="card">
+    <h2>工具补充证据</h2>
+    <p class="mini muted">工具只能读取当前运行开发期摘要。主证据、工具补充证据与工具失败分开展示；缓存命中仍计一次调用。</p>
+    <p class="mini muted">本运行调用 ${esc(detail.analysis_tools?.total_calls || 0)} 次 · 失败 ${esc(detail.analysis_tools?.failed_calls || 0)} 次</p>
+    ${detail.analysis_tools?.total_calls ? '<div id="search-tool-calls"></div>' : '<p class="muted">本运行尚未使用分析工具。</p>'}
+  </section>
+  <section class="card">
+    <h2>候选与评分卡</h2>
+    ${detail.candidates.length ? '<div id="search-candidates"></div>' : '<p class="muted">尚无候选。</p>'}
+  </section>
+  <section class="card">
+    <h2>防过拟合证据</h2>
+    <p class="mini muted">质量通过只表示达到冻结研究门槛，不等于人工批准。模块测试段只允许一次性隔离验收。</p>
+    ${detail.multiple_testing ? `<p class="mini muted">统计尝试 ${esc(detail.multiple_testing.attempt_count)} · 评估 ${esc(detail.multiple_testing.evaluated_count)} · 可检验 ${esc(detail.multiple_testing.tested_count)} · BH 分母 ${esc(detail.multiple_testing.denominator)}</p>` : '<p class="mini muted">统计诊断尚未生成。</p>'}
+    <div id="search-overfit-evidence"></div>
+  </section>
+  <section class="card">
+    <h2>安全事件</h2>
+    <p class="mini muted">只展示脱敏业务事件，不展示 Prompt、表达式正文、行情数据或密钥。</p>
+    <div id="mining-events" class="timeline" aria-live="polite"></div>
+  </section>`;
+
+  if (detail.hypotheses.length) {
+    table(app.querySelector('#search-hypotheses'), detail.hypotheses.map(item => ({
+      轮次: item.turn_index,
+      分支: item.branch_id,
+      假设: item.statement,
+      父假设: item.parent_hypothesis_id || '—',
+    })));
+  }
+  if (direction) {
+    table(app.querySelector('#exploration-direction'), [{
+      研究方向: direction.statement,
+      机制类别: direction.mechanism_category,
+      预期方向: statusLabel(direction.expected_direction),
+      数据依赖: (direction.data_dependencies || []).join(', '),
+      表达复杂度: `${direction.expression_complexity} / 最大深度 ${direction.max_expression_depth}`,
+      可证伪条件: (direction.falsification_criteria || []).join('；'),
+      方向哈希: direction.direction_hash,
+    }]);
+  }
+  table(app.querySelector('#search-budget'), [
+    {项目: '最大搜索轮次', 冻结值: budget.max_search_turns, 当前: progress.turns_completed},
+    {项目: '最大假设分支', 冻结值: budget.max_hypothesis_branches, 当前: detail.branch_count},
+    {项目: '每分支最大修正', 冻结值: budget.max_refines_per_branch, 当前: '按分支控制'},
+    {项目: '每轮最大候选', 冻结值: budget.max_candidates_per_turn, 当前: '按轮次控制'},
+    {项目: '每运行最大候选', 冻结值: budget.max_candidates_per_run, 当前: attempts.proposed || 0},
+    {项目: '完整评估上限', 冻结值: budget.max_full_evaluations, 当前: attempts.full_evaluated || 0},
+    {项目: '连续无改善停止', 冻结值: budget.stop_after_no_improvement_turns, 当前: '由控制器判断'},
+    {项目: '每轮工具调用', 冻结值: budget.max_tool_calls_per_turn, 当前: '按轮次控制'},
+  ]);
+  if (researchSummary?.materials?.length) {
+    table(app.querySelector('#research-materials'), researchSummary.materials.map(item => ({
+      资料: item.relative_path,
+      '文档 ID': item.document_id,
+      状态: item.status === 'parsed' ? '已抽取' : item.status === 'filtered' ? '非目标资料' : '失败',
+      页码: item.page_count || '—',
+      错误: item.error_code || '—',
+    })));
+  }
+  if (researchSummary?.decisions?.length) {
+    table(app.querySelector('#research-decisions'), researchSummary.decisions.map(item => ({
+      文档: item.document_id,
+      草稿: item.draft_id,
+      筛选: statusLabel(item.status),
+      准入: item.admitted ? '是' : '否',
+      原因: item.reason_code || '—',
+      候选: item.candidate_id || '—',
+    })));
+  }
+  if (detail.turns.length) {
+    table(app.querySelector('#search-turns'), detail.turns.map(item => ({
+      轮次: item.turn_index,
+      状态: statusLabel(item.status),
+      动作: item.action ? statusLabel(item.action) : '—',
+      原因: item.reason || '—',
+      候选数: item.feedback?.candidate_count ?? 0,
+      失败数: item.feedback?.failure_count ?? 0,
+    })));
+  }
+  if (detail.candidates.length) {
+    table(app.querySelector('#search-candidates'), detail.candidates.map(item => ({
+      候选: `${item.name} · ${String(item.candidate_id).slice(-8)}`,
+      状态: statusLabel(item.status),
+      父候选: item.parent_candidate_id || '—',
+      父假设: item.hypothesis_id,
+      累计分析: item.analysis_count || 0,
+      评分阶段: item.decision_stage || '证据不足',
+      缺失项: item.missing_fields.length ? item.missing_fields.join(', ') : '—',
+    })));
+    app.querySelectorAll('#search-candidates tbody tr').forEach((row, index) => {
+      const item = detail.candidates[index];
+      const cell = row.querySelector('td');
+      cell.innerHTML = `<a href="#/mining/${encodeURIComponent(run.run_id)}/candidate/${encodeURIComponent(item.candidate_id)}">${esc(item.name)}</a><div class="mini muted">${esc(item.candidate_id)}</div>`;
+    });
+    table(app.querySelector('#search-overfit-evidence'), detail.candidates.map(item => {
+      const evidence = candidateEvidence(item);
+      return {
+        候选: `${item.name} · ${String(item.candidate_id).slice(-8)}`,
+        质量结论: statusLabel(item.research_quality?.status),
+        尝试次数: item.attempts?.proposed ?? 0,
+        相关簇: evidence.cluster,
+        增量RankIC: evidence.incremental,
+        稳定性: evidence.stability,
+        'BH q-value': evidence.qValue,
+        说明: evidence.stabilityReason,
+      };
+    }));
+  }
+  if (detail.analysis_tools?.total_calls) {
+    const calls = Object.entries(detail.analysis_tools.calls || {}).flatMap(([turn, items]) => items.map(item => ({...item, turn_index: Number(turn)})));
+    table(app.querySelector('#search-tool-calls'), calls.map(item => ({
+      轮次: item.turn_index,
+      工具: `${item.tool_name} v${item.tool_version}`,
+      候选: item.candidate_id ? String(item.candidate_id).slice(-8) : '运行级',
+      类型: item.evidence_class === 'failure' ? '工具失败' : '补充证据',
+      状态: item.status,
+      参数: JSON.stringify(item.arguments_summary || {}),
+      耗时毫秒: Number(item.duration_ms || 0).toFixed(1),
+      缓存: item.cache_hit ? '命中' : '未命中',
+      错误: item.error_code || '—',
+    })));
+  }
+  app.querySelector('#cancel-mining')?.addEventListener('click', () => mutateRun('cancel'));
+  app.querySelector('#resume-mining')?.addEventListener('click', () => mutateRun('resume'));
+}
