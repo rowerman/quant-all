@@ -3,6 +3,7 @@
 - [快速开始](getting-started.md)
 - [已知限制](limitations.md)
 - [项目全链路导读](project-guide/README.md)
+- [项目分层学习手册](project-analysis/README.md)
 - [数据与因子基础层](core/README.md)
 - [研究模块](research/README.md)
 - [C++ 批量计算扩展](native/README.md)

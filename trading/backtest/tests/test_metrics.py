@@ -80,6 +80,17 @@ def test_summary_without_benchmark_has_no_excess_keys():
     assert result["annual_return"] < 0
 
 
+def test_summary_skips_empty_benchmark_columns():
+    daily = _daily([1.0, 1.01, 1.02], benchmark=[1.0, 1.0, 1.0])
+    daily[["benchmark_return", "benchmark_nav", "excess_return"]] = np.nan
+
+    result = summarize(daily, risk_free_rate=0.0)
+
+    assert result["total_return"] == pytest.approx(0.02)
+    assert "benchmark_total_return" not in result
+    assert "information_ratio" not in result
+
+
 def test_summary_separates_cash_and_economic_cost():
     daily = _daily([1.0, 1.01])
     daily["total_cost"] = daily["cost"] + 25.0

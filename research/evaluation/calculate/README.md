@@ -656,7 +656,7 @@ calculate.jsonutil.json_safe(value: Any) -> Any
 
 返回:
     只含 dict、list、str、int、float、bool、None 的结构；
-    非有限浮点数一律转成 None。
+    非有限浮点数和缺失时间值一律转成 None。
 
 ### calculate.normalize
 

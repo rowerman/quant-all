@@ -22,7 +22,7 @@ def json_safe(value: Any) -> Any:
 
     返回:
         只含 dict、list、str、int、float、bool、None 的结构；
-        非有限浮点数一律转成 None。
+        非有限浮点数和缺失时间值一律转成 None。
     """
     if value is None:
         return None
@@ -33,7 +33,8 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set, np.ndarray, pd.Series, pd.Index)):
         return [json_safe(item) for item in value]
     if isinstance(value, (pd.Timestamp, np.datetime64, dt.datetime, dt.date)):
-        return pd.Timestamp(value).strftime("%Y-%m-%d")
+        timestamp = pd.Timestamp(value)
+        return None if pd.isna(timestamp) else timestamp.strftime("%Y-%m-%d")
     if isinstance(value, (np.bool_, bool)):
         return bool(value)
     if isinstance(value, (np.integer, int)):

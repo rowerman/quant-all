@@ -39,7 +39,8 @@ def summarize(daily: pd.DataFrame, risk_free_rate: float = 0.02) -> dict:
     参数:
         daily: 标准化日结果，需要 ``portfolio_value``、``return``、``nav``、
             ``drawdown``、``cost``、``turnover`` 列；有基准时还要
-            ``benchmark_return``、``benchmark_nav``、``excess_return``。
+            ``benchmark_return``、``benchmark_nav``、``excess_return`` 三列的
+            完整有限值。
         risk_free_rate: 年化无风险利率，默认 2%。
     """
     if daily.empty:
@@ -133,7 +134,16 @@ def summarize(daily: pd.DataFrame, risk_free_rate: float = 0.02) -> dict:
     monthly = (1.0 + returns).groupby(daily.index.to_period("M")).prod() - 1.0
     result["monthly_win_rate"] = _number((monthly > 0).mean()) if len(monthly) else None
     result["months"] = int(len(monthly))
-    if "benchmark_return" in daily.columns:
+    benchmark_columns = ("benchmark_return", "benchmark_nav", "excess_return")
+    benchmark_frame = daily.reindex(columns=benchmark_columns).apply(
+        pd.to_numeric, errors="coerce"
+    )
+    has_benchmark = bool(
+        not benchmark_frame.empty
+        and benchmark_frame.notna().all().all()
+        and np.isfinite(benchmark_frame.to_numpy(dtype="float64")).all()
+    )
+    if has_benchmark:
         benchmark_return = float(daily["benchmark_nav"].astype(float).iloc[-1]) - 1.0
         benchmark_annual = _annualize(benchmark_return, days)
         excess = daily["excess_return"].astype(float)

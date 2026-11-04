@@ -242,6 +242,67 @@ def test_backtest_detail_exposes_input_snapshot(client, store):
     assert listed[0]["snapshot_id"] == snapshot["snapshot_id"]
 
 
+def test_backtest_metrics_handles_empty_benchmark_columns(client, store):
+    """没有基准数据时，指标接口仍返回组合指标。"""
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(
+        strategy_id,
+        version,
+        BacktestParams("2024-01-01", "2024-01-03"),
+    )
+    daily = pd.DataFrame(
+        {
+            "portfolio_value": [1_000_000.0, 1_010_000.0, 1_020_000.0],
+            "cash": [1_000_000.0] * 3,
+            "nav": [1.0, 1.01, 1.02],
+            "return": [0.0, 0.01, 1.02 / 1.01 - 1.0],
+            "drawdown": [0.0, 0.0, 0.0],
+            "cost": [0.0] * 3,
+            "turnover": [0.0] * 3,
+            "benchmark_return": [None] * 3,
+            "benchmark_nav": [None] * 3,
+            "excess_return": [None] * 3,
+        },
+        index=pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
+    )
+    result = BacktestResult(
+        portfolio=object(),
+        daily=daily,
+        orders=pd.DataFrame(),
+        positions=pd.DataFrame(),
+        holdings=pd.DataFrame(),
+        target_weights=pd.DataFrame(),
+        rejections=pd.DataFrame(),
+        metrics={},
+        metadata={},
+    )
+    store.finish_run(run_id, result)
+
+    response = client.get(f"/api/backtests/{run_id}/metrics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_return"] == pytest.approx(0.02)
+    assert "information_ratio" not in payload
+
+
+def test_backtest_list_serializes_unfinished_run_with_missing_finished_at(client, store):
+    """未完成运行的空完成时间应作为 JSON null 返回。"""
+    strategy_id, version = store.create_strategy(StrategySpec())
+    run_id = store.start_run(
+        strategy_id,
+        version,
+        BacktestParams("2024-01-01", "2024-01-02"),
+    )
+
+    response = client.get("/api/backtests")
+
+    assert response.status_code == 200
+    listed = response.json()
+    assert listed[0]["run_id"] == run_id
+    assert listed[0]["finished_at"] is None
+
+
 def test_strategy_api_creates_provider_strategy(client):
     payload = {
         "description": "提供者策略接口测试",
