@@ -4,7 +4,7 @@
 - [已知限制](limitations.md)
 - [项目全链路导读](project-guide/README.md)
 - [项目学习拆分表](project-guide/11-learning-roadmap.md)
-- [项目学习文档 A1-E3](project-learning/README.md)
+- [项目学习文档](project-learning/README.md)
 - [项目分层学习手册](project-analysis/README.md)
 - [数据与因子基础层](core/README.md)
 - [研究模块](research/README.md)
