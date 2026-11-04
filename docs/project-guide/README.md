@@ -53,6 +53,7 @@ flowchart LR
 | [回测](08-backtest.md) | VectorBT 的关系、自定义账本和一次回测的完整数据流 |
 | [监测站](09-monitor-web.md) | FastAPI、SSE、调度器、API 和前端页面 |
 | [工程支撑](10-engineering-support.md) | 配置、脚本、测试、日志、错误、Docker 和维护记录 |
+| [项目学习拆分表](11-learning-roadmap.md) | 面向初学者的逐模块学习顺序与子模块拆分 |
 
 如果第一次阅读，建议按 `01 → 02 → 03 → 08 → 07 → 05 → 09` 的顺序；需要专门理解
 因子研究时，把 `04` 紧接在 `03` 后，需要专门理解 Agent 时，把 `06` 紧接在 `05` 后。
